@@ -1,25 +1,19 @@
 # Lugaru EX
 
-An updated engine for Lugaru on Windows and Linux. It plays your copy of Lugaru HD or the
-free open-source game, and never changes the game's files.
+Lugaru engine update for Lugaru HD or the free open-source game.
 
-## Key changes
+## Features
 
-- 64-bit engine with current libraries and many crash fixes
-- Runs at your monitor's refresh rate with smooth motion
-- Any resolution, windowed, borderless or fullscreen
-- Enhanced lighting with real shadows, press R to switch looks
-- Camera no longer clips into rocks
-
-## Additions
-
-- Local split screen for up to 4 players
-- Online co-op for any number of players, Windows and Linux together
-- Mods: drag and drop zips, shared with players who join your game
-- Launcher with graphics, character, controls, co-op and mod settings
-- Full controller support, Steam Deck friendly
-- Installer and auto updates
-- Colour blind filters and a texture override folder
+- 64-bit engine update and QoL fixes
+- Resolution fixes including ultrawide
+- High refresh rate support
+- Shaders
+- Native controller support and vibration
+- Local split screen, split screen online and online co-op with uncapped players
+- Mod loader and multiplayer mod sharing
+- Launcher
+- Windows, Linux and Steam Deck
+- Simple installer and auto update
 
 ## Install
 

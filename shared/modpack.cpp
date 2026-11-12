@@ -1,0 +1,492 @@
+// LugaruEX - mods: installing zips, the mod list, packing for online sharing (GPLv2+)
+#include "modpack.h"
+
+#include "fsutil.h"
+#include "miniz/miniz.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <map>
+#include <set>
+
+namespace
+{
+const uint64_t kMaxModBytes = 1024ull * 1024 * 1024; // unpacked size of one mod
+const int kMaxModFiles = 50000;
+
+// the folders of the game's Data folder: a mod is found by these
+const char* kDataFolders[] = { "textures", "maps", "sounds", "models", "campaigns", "animations", "skeleton", "dialogues", "music", "fonts" };
+
+bool isDataFolder(const std::string& n)
+{
+    const std::string l = fsu::Lower(n);
+    for (const char* d : kDataFolders) {
+        if (l == d) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// game data only: images, sounds, text, models and the extension-less files the game
+// uses (maps, skeletons, animations); never programs or scripts
+bool isDataFile(const std::string& name)
+{
+    const size_t dot = name.rfind('.');
+    if (dot == std::string::npos) {
+        return true;
+    }
+    static const std::set<std::string> ok = { "png", "jpg", "jpeg", "tga", "bmp", "ogg", "wav", "mp3", "txt", "json", "solid", "xml" };
+    return ok.count(fsu::Lower(name.substr(dot + 1))) != 0;
+}
+
+// split "a/b\c" into parts; false for anything that could leave the mod folder
+bool safeParts(const std::string& path, std::vector<std::string>& parts)
+{
+    parts.clear();
+    if (path.empty() || path[0] == '/' || path[0] == '\\' || path.find(':') != std::string::npos) {
+        return false;
+    }
+    std::string cur;
+    for (char c : path + "/") {
+        if (c == '/' || c == '\\') {
+            if (cur == "..") {
+                return false;
+            }
+            if (!cur.empty() && cur != ".") {
+                parts.push_back(cur);
+            }
+            cur.clear();
+        } else {
+            if ((unsigned char)c < 32) {
+                return false;
+            }
+            cur += c;
+        }
+    }
+    return !parts.empty();
+}
+
+std::map<std::string, std::string> readModTxt(const std::string& path)
+{
+    std::map<std::string, std::string> kv;
+    std::string t;
+    if (!fsu::ReadAll(path, t)) {
+        return kv;
+    }
+    size_t a = 0;
+    while (a < t.size()) {
+        size_t b = t.find('\n', a);
+        if (b == std::string::npos) {
+            b = t.size();
+        }
+        const std::string line = fsu::Trim(t.substr(a, b - a));
+        a = b + 1;
+        const size_t eq = line.find('=');
+        if (eq != std::string::npos && line[0] != '#' && line[0] != ';') {
+            kv[fsu::Lower(fsu::Trim(line.substr(0, eq)))] = fsu::Trim(line.substr(eq + 1));
+        }
+    }
+    return kv;
+}
+
+size_t writeToFile(void* opaque, mz_uint64 ofs, const void* buf, size_t n)
+{
+    FILE* f = (FILE*)opaque;
+    if (fseek(f, (long)ofs, SEEK_SET) != 0) {
+        return 0;
+    }
+    return fwrite(buf, 1, n, f);
+}
+
+struct Zip
+{
+    mz_zip_archive z;
+    FILE* f = nullptr;
+    bool ok = false;
+    explicit Zip(const std::string& path)
+    {
+        memset(&z, 0, sizeof(z));
+        f = fsu::Open(path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            const long long size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            ok = size > 0 && mz_zip_reader_init_cfile(&z, f, (mz_uint64)size, 0);
+        }
+    }
+    ~Zip()
+    {
+        if (ok) {
+            mz_zip_reader_end(&z);
+        }
+        if (f) {
+            fclose(f);
+        }
+    }
+};
+
+struct Item
+{
+    mz_uint index;
+    std::string rel; // path inside the mod
+    uint64_t size;
+};
+
+// the entries that make up the mod: below the most common data root (a "Data" folder,
+// or the folder that holds Textures/, Maps/...), data files only
+bool collect(Zip& zip, std::vector<Item>& items, int& modTxtIndex, std::string& error, int& skipped)
+{
+    std::string modTxtRel;
+    modTxtIndex = -1;
+    const mz_uint n = mz_zip_reader_get_num_files(&zip.z);
+    std::map<std::string, int> votes; // root prefix -> entries under it
+    std::vector<std::pair<mz_uint, std::vector<std::string>>> files;
+    for (mz_uint i = 0; i < n; i++) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&zip.z, i, &st) || st.m_is_directory) {
+            continue;
+        }
+        std::vector<std::string> parts;
+        if (!safeParts(st.m_filename, parts)) {
+            error = std::string("unsafe path in the zip: ") + st.m_filename;
+            return false;
+        }
+        files.push_back({ i, parts });
+        for (size_t k = 0; k < parts.size(); k++) {
+            std::string root;
+            for (size_t j = 0; j < k; j++) {
+                root += parts[j] + "/";
+            }
+            if (fsu::Lower(parts[k]) == "data" && k + 1 < parts.size()) {
+                votes[root + parts[k] + "/"]++;
+                break;
+            }
+            if (isDataFolder(parts[k]) && k + 1 < parts.size()) {
+                votes[root]++;
+                break;
+            }
+        }
+    }
+    if (votes.empty()) {
+        error = "no game files in it (a mod has folders like Textures, Maps or Sounds)";
+        return false;
+    }
+    std::string root;
+    int best = -1;
+    for (auto& v : votes) {
+        if (v.second > best || (v.second == best && v.first.size() < root.size())) {
+            best = v.second;
+            root = v.first;
+        }
+    }
+    uint64_t total = 0;
+    for (auto& f : files) {
+        std::string path;
+        for (size_t j = 0; j < f.second.size(); j++) {
+            path += (j ? "/" : "") + f.second[j];
+        }
+        mz_zip_archive_file_stat st;
+        mz_zip_reader_file_stat(&zip.z, f.first, &st);
+        if (fsu::Lower(f.second.back()) == "mod.txt") {
+            // the mod's description: the one nearest the top of the zip
+            if (modTxtRel.empty() || std::count(path.begin(), path.end(), '/') < std::count(modTxtRel.begin(), modTxtRel.end(), '/')) {
+                modTxtRel = path;
+                modTxtIndex = (int)f.first;
+            }
+            continue;
+        }
+        if (path.compare(0, root.size(), root) != 0) {
+            continue; // outside the mod's data (readme files and such)
+        }
+        const std::string rel = path.substr(root.size());
+        if (rel.find('/') == std::string::npos || !isDataFile(f.second.back())) {
+            skipped++; // loose files next to the data folders, programs, scripts
+            continue;
+        }
+        total += st.m_uncomp_size;
+        items.push_back({ f.first, rel, st.m_uncomp_size });
+    }
+    if (items.empty()) {
+        error = "no game files in it";
+        return false;
+    }
+    if (total > kMaxModBytes || (int)items.size() > kMaxModFiles) {
+        error = "it is too big (over 1 GB or 50000 files)";
+        return false;
+    }
+    return true;
+}
+
+bool extractItems(Zip& zip, const std::vector<Item>& items, const std::string& dest, std::string& error)
+{
+    for (const Item& it : items) {
+        const std::string out = fsu::Join(dest, it.rel);
+        fsu::MakeDirs(fsu::Parent(out));
+        FILE* f = fsu::Open(out, "wb");
+        if (!f) {
+            error = "can't write " + out;
+            return false;
+        }
+        const bool ok = mz_zip_reader_extract_to_callback(&zip.z, it.index, writeToFile, f, 0);
+        fclose(f);
+        if (!ok) {
+            error = "damaged zip (" + it.rel + ")";
+            return false;
+        }
+    }
+    return true;
+}
+
+void listFiles(const std::string& base, const std::string& rel, std::vector<std::string>& out)
+{
+    const std::string dir = rel.empty() ? base : fsu::Join(base, rel);
+    for (const std::string& n : fsu::List(dir, false)) {
+        out.push_back(rel.empty() ? n : rel + "/" + n);
+    }
+    for (const std::string& n : fsu::List(dir, true)) {
+        listFiles(base, rel.empty() ? n : rel + "/" + n, out);
+    }
+}
+} // namespace
+
+std::string Mod_SafeName(const std::string& name)
+{
+    std::string r;
+    for (unsigned char c : name) {
+        r += (c < 128 && (isalnum(c) || c == ' ' || c == '-' || c == '_')) ? (char)c : '_';
+    }
+    r = fsu::Trim(r);
+    while (!r.empty() && (r[0] == '.' || r[0] == '_')) {
+        r.erase(0, 1);
+    }
+    if (r.size() > 60) {
+        r.resize(60);
+    }
+    return r.empty() ? std::string("Mod") : r;
+}
+
+bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std::string& folderOut, std::string& error)
+{
+    Zip zip(zipPath);
+    if (!zip.ok) {
+        error = "not a zip file (or it is damaged)";
+        return false;
+    }
+    std::vector<Item> items;
+    int modTxt = -1;
+    int skipped = 0;
+    if (!collect(zip, items, modTxt, error, skipped)) {
+        return false;
+    }
+    // the mod's name: mod.txt's name=, else the zip's file name
+    std::string name = fsu::BaseName(zipPath);
+    name = name.substr(0, name.rfind('.'));
+    std::string modTxtData;
+    if (modTxt >= 0) {
+        size_t n = 0;
+        if (void* p = mz_zip_reader_extract_to_heap(&zip.z, (mz_uint)modTxt, &n, 0)) {
+            modTxtData.assign((const char*)p, n);
+            mz_free(p);
+            const size_t k = fsu::Lower(modTxtData).find("name=");
+            if (k != std::string::npos) {
+                const size_t e = modTxtData.find('\n', k);
+                const std::string v = fsu::Trim(modTxtData.substr(k + 5, e == std::string::npos ? std::string::npos : e - k - 5));
+                if (!v.empty()) {
+                    name = v;
+                }
+            }
+        }
+    }
+    std::string folder = Mod_SafeName(name);
+    for (int k = 2; fsu::IsDir(fsu::Join(modsDir, folder)) || fsu::IsFile(fsu::Join(modsDir, folder)); k++) {
+        folder = Mod_SafeName(name) + " " + std::to_string(k);
+    }
+    // unpack into a hidden folder first, so a failed install leaves nothing behind
+    const std::string tmp = fsu::Join(modsDir, ".installing");
+    fsu::RemoveTree(tmp);
+    fsu::MakeDirs(tmp);
+    if (!extractItems(zip, items, tmp, error)) {
+        fsu::RemoveTree(tmp);
+        return false;
+    }
+    if (modTxtData.empty()) {
+        modTxtData = "name=" + folder + "\n"; // (a second copy shows as "Name 2")
+    }
+    fsu::WriteAll(fsu::Join(tmp, "mod.txt"), modTxtData);
+    if (!fsu::Rename(tmp, fsu::Join(modsDir, folder))) {
+        fsu::RemoveTree(tmp);
+        error = "can't create the mod's folder in " + modsDir;
+        return false;
+    }
+    folderOut = folder;
+    return true;
+}
+
+bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::string& error)
+{
+    Zip zip(zipPath);
+    if (!zip.ok) {
+        error = "damaged download";
+        return false;
+    }
+    std::vector<Item> items;
+    int modTxt = -1;
+    int skipped = 0;
+    if (!collect(zip, items, modTxt, error, skipped)) {
+        return false;
+    }
+    fsu::MakeDirs(destDir);
+    return extractItems(zip, items, destDir, error);
+}
+
+bool Mod_PackFolder(const std::string& folder, const std::string& zipPath)
+{
+    std::vector<std::string> files;
+    listFiles(folder, "", files);
+    std::sort(files.begin(), files.end());
+    FILE* f = fsu::Open(zipPath, "wb");
+    if (!f) {
+        return false;
+    }
+    mz_zip_archive z;
+    memset(&z, 0, sizeof(z));
+    bool ok = mz_zip_writer_init_cfile(&z, f, 0);
+    MZ_TIME_T fixed = 315532800; // 1980-01-01: no dates, so the same mod packs to the same bytes
+    for (const std::string& rel : files) {
+        if (!ok) {
+            break;
+        }
+        if (rel.find('/') == std::string::npos || !isDataFile(fsu::BaseName(rel))) {
+            continue; // mod.txt and anything that isn't game data stay home
+        }
+        std::string data;
+        if (!fsu::ReadAll(fsu::Join(folder, rel), data)) {
+            continue;
+        }
+        ok = mz_zip_writer_add_mem_ex_v2(&z, rel.c_str(), data.data(), data.size(), nullptr, 0, MZ_BEST_SPEED, 0, 0, &fixed, nullptr, 0, nullptr, 0);
+    }
+    ok = ok && mz_zip_writer_finalize_archive(&z);
+    mz_zip_writer_end(&z);
+    fclose(f);
+    if (!ok) {
+        fsu::RemoveTree(zipPath);
+    }
+    return ok;
+}
+
+uint64_t Mod_HashFile(const std::string& path)
+{
+    FILE* f = fsu::Open(path, "rb");
+    if (!f) {
+        return 0;
+    }
+    uint64_t h = 1469598103934665603ull;
+    unsigned char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        for (size_t i = 0; i < n; i++) {
+            h = (h ^ buf[i]) * 1099511628211ull;
+        }
+    }
+    fclose(f);
+    return h ? h : 1;
+}
+
+std::vector<ModInfo> Mod_List(const std::string& modsDir)
+{
+    std::vector<ModInfo> v;
+    for (const std::string& d : fsu::List(modsDir, true)) {
+        if (d.empty() || d[0] == '.') {
+            continue;
+        }
+        ModInfo m;
+        m.folder = d;
+        const std::string dir = fsu::Join(modsDir, d);
+        auto kv = readModTxt(fsu::Join(dir, "mod.txt"));
+        m.name = kv.count("name") && !kv["name"].empty() ? kv["name"] : d;
+        m.author = kv["author"];
+        m.version = kv["version"];
+        m.description = kv["description"];
+        std::vector<std::string> files;
+        listFiles(dir, "", files);
+        for (const std::string& f : files) {
+            m.bytes += fsu::Size(fsu::Join(dir, f));
+        }
+        m.files = (int)files.size();
+        v.push_back(m);
+    }
+    return v;
+}
+
+bool Mod_Delete(const std::string& modsDir, const std::string& folder)
+{
+    std::vector<std::string> parts;
+    if (folder.empty() || folder[0] == '.' || !safeParts(folder, parts) || parts.size() != 1) {
+        return false;
+    }
+    return fsu::RemoveTree(fsu::Join(modsDir, folder));
+}
+
+std::vector<ModEntry> Mod_ParseList(const std::string& value)
+{
+    std::vector<ModEntry> v;
+    size_t a = 0;
+    while (a <= value.size()) {
+        size_t b = value.find('|', a);
+        if (b == std::string::npos) {
+            b = value.size();
+        }
+        std::string item = fsu::Trim(value.substr(a, b - a));
+        a = b + 1;
+        if (item.empty()) {
+            continue;
+        }
+        ModEntry e;
+        e.on = item[0] != '-';
+        if (item[0] == '-' || item[0] == '+') {
+            item.erase(0, 1);
+        }
+        e.folder = fsu::Trim(item);
+        if (!e.folder.empty()) {
+            v.push_back(e);
+        }
+    }
+    return v;
+}
+
+std::string Mod_FormatList(const std::vector<ModEntry>& list)
+{
+    std::string s;
+    for (size_t i = 0; i < list.size(); i++) {
+        s += (i ? "|" : "") + std::string(list[i].on ? "+" : "-") + list[i].folder;
+    }
+    return s;
+}
+
+std::vector<ModEntry> Mod_Order(const std::vector<ModEntry>& saved, const std::vector<ModInfo>& installed)
+{
+    std::set<std::string> have, listed;
+    for (auto& m : installed) {
+        have.insert(m.folder);
+    }
+    std::vector<ModEntry> out;
+    for (auto& m : installed) { // new mods: on, and first
+        bool known = false;
+        for (auto& s : saved) {
+            known |= s.folder == m.folder;
+        }
+        if (!known) {
+            out.push_back({ m.folder, true });
+            listed.insert(m.folder);
+        }
+    }
+    for (auto& s : saved) {
+        if (have.count(s.folder) && !listed.count(s.folder)) {
+            out.push_back(s);
+            listed.insert(s.folder);
+        }
+    }
+    return out;
+}

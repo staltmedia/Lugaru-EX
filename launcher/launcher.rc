@@ -1,0 +1,187 @@
+// LugaruEX launcher - GPLv2+
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDI_APP ICON "../lugaru/Dist/Windows/Lugaru.ico"
+
+1 RT_MANIFEST "launcher.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,4,7,0
+PRODUCTVERSION 0,4,7,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "LugaruEX Launcher"
+            VALUE "ProductName", "LugaruEX"
+            VALUE "FileVersion", "0.4.7"
+            VALUE "LegalCopyright", "GPLv2+ (based on OSS Lugaru)"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+
+IDD_MAIN DIALOGEX 0, 0, 300, 330
+STYLE DS_SETFONT | DS_CENTER | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+CAPTION "Lugaru HD - LugaruEX Configuration"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_BANNER, "Static", SS_OWNERDRAW, 0, 0, 300, 75
+    CONTROL         "", IDC_TABS, "SysTabControl32", WS_TABSTOP, 6, 80, 288, 222
+    CONTROL         "Auto Update", IDC_AUTOUPDATE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 312, 60, 10
+    LTEXT           "", IDC_VERSION, 72, 313, 108, 10
+    DEFPUSHBUTTON   "Play!", IDOK, 184, 309, 52, 15
+    PUSHBUTTON      "Quit", IDCANCEL, 242, 309, 52, 15
+END
+
+IDD_PAGE_GFX DIALOGEX 0, 0, 282, 204
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Monitor:", -1, 6, 8, 58, 9
+    COMBOBOX        IDC_MONITOR, 66, 6, 210, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Screen resolution:", -1, 6, 24, 58, 9
+    COMBOBOX        IDC_RES, 66, 22, 130, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_CUSTW, 202, 22, 30, 12, ES_NUMBER | WS_TABSTOP
+    CTEXT           "x", -1, 233, 24, 8, 9
+    EDITTEXT        IDC_CUSTH, 242, 22, 30, 12, ES_NUMBER | WS_TABSTOP
+    LTEXT           "", IDC_ASPECT, 66, 37, 210, 9
+
+    LTEXT           "Display mode:", -1, 6, 52, 58, 9
+    COMBOBOX        IDC_MODE, 66, 50, 90, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    COMBOBOX        IDC_REFRESH, 206, 50, 70, 120, CBS_DROPDOWNLIST | WS_VSCROLL | NOT WS_VISIBLE
+
+    LTEXT           "Antialiasing:", -1, 6, 68, 58, 9
+    COMBOBOX        IDC_MSAA, 66, 66, 90, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Anisotropic:", -1, 164, 68, 40, 9
+    COMBOBOX        IDC_AF, 206, 66, 70, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    LTEXT           "FPS cap:", -1, 6, 84, 58, 9
+    COMBOBOX        IDC_FPSCAP, 66, 82, 90, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "V-Sync:", -1, 164, 84, 40, 9
+    COMBOBOX        IDC_VSYNC, 206, 82, 70, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    LTEXT           "Field of view:", -1, 6, 100, 58, 9
+    CONTROL         "", IDC_FOV, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 62, 98, 160, 14
+    LTEXT           "90", IDC_FOVLBL, 226, 100, 50, 9
+
+    LTEXT           "Texture quality:", -1, 6, 118, 58, 9
+    COMBOBOX        IDC_TEXQ, 66, 116, 90, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    CONTROL         "Shaders", IDC_SHADERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 164, 118, 116, 10
+    CONTROL         "High Resolution Textures", IDC_OVERRIDES, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 164, 134, 116, 10
+
+    LTEXT           "Colour blind mode:", -1, 6, 136, 62, 9
+    COMBOBOX        IDC_COLORBLIND, 70, 134, 90, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+END
+
+IDD_PAGE_MP DIALOGEX 0, 0, 282, 204
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "Single player", IDC_MP_OFF, "Button", BS_RADIOBUTTON | WS_GROUP | WS_TABSTOP, 8, 8, 120, 10
+    CONTROL         "Host a co-op game", IDC_MP_HOST, "Button", BS_RADIOBUTTON, 8, 24, 120, 10
+    LTEXT           "UDP port:", -1, 24, 40, 50, 9
+    EDITTEXT        IDC_PORT, 80, 38, 50, 12, ES_NUMBER | WS_TABSTOP
+    CONTROL         "Join a co-op game", IDC_MP_JOIN, "Button", BS_RADIOBUTTON, 8, 58, 120, 10
+    LTEXT           "Host IP:", -1, 24, 74, 50, 9
+    EDITTEXT        IDC_ADDR, 80, 72, 120, 12, ES_AUTOHSCROLL | WS_TABSTOP
+    CONTROL         "LAN - host on this network / find the host automatically", IDC_LAN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 92, 260, 10
+    CONTROL         "Share mods (send yours when hosting, get the host's when joining)", IDC_SHAREMODS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 106, 268, 10
+    LTEXT           "", IDC_MPNOTE, 8, 122, 268, 76
+END
+
+IDD_PAGE_CHAR DIALOGEX 0, 0, 282, 204
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "Default", IDC_CH_DEFAULT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 8, 145, 10
+    LTEXT           "Model:", -1, 8, 28, 40, 9
+    COMBOBOX        IDC_CH_MODEL, 50, 26, 100, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Skin:", -1, 8, 46, 40, 9
+    COMBOBOX        IDC_CH_SKIN, 50, 44, 100, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Clothes:", -1, 8, 64, 40, 9
+    COMBOBOX        IDC_CH_CLOTHES, 50, 62, 100, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_CH_NOTE, 8, 82, 145, 74, NOT WS_VISIBLE
+    CONTROL         "", IDC_CH_PREVIEW, "LugaruEXPreview", WS_CHILD | WS_VISIBLE, 158, 4, 120, 196
+END
+
+IDD_PAGE_CONTROLS DIALOGEX 0, 0, 282, 204
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Preset:", -1, 6, 8, 28, 9
+    COMBOBOX        IDC_CT_PRESET, 34, 6, 98, 120, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Save", IDC_CT_SAVE, 136, 5, 32, 14
+    PUSHBUTTON      "Load", IDC_CT_LOAD, 171, 5, 32, 14
+    PUSHBUTTON      "Delete", IDC_CT_DELETE, 206, 5, 34, 14
+    PUSHBUTTON      "Defaults", IDC_CT_RESET, 243, 5, 35, 14
+    CONTROL         "", IDC_CT_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 6, 24, 168, 154
+    LTEXT           "", IDC_CT_HINT, 6, 181, 272, 20
+    LTEXT           "Controller:", -1, 180, 24, 98, 9
+    COMBOBOX        IDC_CT_PAD, 180, 34, 98, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    CONTROL         "", IDC_CT_VIZ, "LugaruEXPadViz", WS_CHILD | WS_VISIBLE, 180, 50, 98, 82
+    CONTROL         "Vibration", IDC_CT_VIBRATION, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 180, 138, 98, 10
+    LTEXT           "Look speed:", -1, 180, 152, 60, 9
+    CONTROL         "", IDC_CT_LOOK, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 176, 162, 78, 14
+    LTEXT           "100%", IDC_CT_LOOKLBL, 254, 164, 26, 9
+END
+
+IDD_PAGE_LOCAL DIALOGEX 0, 0, 282, 204
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "No controllers connected yet - plug one in and it joins as a player.", IDC_LC_EMPTY, 6, 8, 112, 30
+    LTEXT           "", IDC_LC_LABEL1, 6, 8, 112, 10
+    COMBOBOX        IDC_LC_CHAR1, 6, 19, 96, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "x", IDC_LC_REMOVE1, 104, 18, 14, 13
+    LTEXT           "", 1501, 6, 44, 112, 10
+    COMBOBOX        1511, 6, 55, 96, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "x", 1521, 104, 54, 14, 13
+    LTEXT           "", 1502, 6, 80, 112, 10
+    COMBOBOX        1512, 6, 91, 96, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "x", 1522, 104, 90, 14, 13
+    LTEXT           "", 1503, 6, 116, 112, 10
+    COMBOBOX        1513, 6, 127, 96, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "x", 1523, 104, 126, 14, 13
+    CONTROL         "", IDC_LC_CANVAS, "LugaruEXLayout", WS_CHILD | WS_VISIBLE, 124, 4, 154, 104
+    LTEXT           "", IDC_LC_NOTE, 124, 112, 154, 90
+END
+
+IDD_PAGE_MODS DIALOGEX 0, 0, 282, 204
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_MD_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 6, 6, 270, 150
+    PUSHBUTTON      "Add mod...", IDC_MD_ADD, 6, 160, 56, 14
+    PUSHBUTTON      "Up", IDC_MD_UP, 66, 160, 34, 14
+    PUSHBUTTON      "Down", IDC_MD_DOWN, 104, 160, 34, 14
+    PUSHBUTTON      "Mods folder", IDC_MD_FOLDER, 222, 160, 54, 14
+    LTEXT           "", IDC_MD_NOTE, 6, 178, 270, 24
+END
+
+IDD_SETUP DIALOGEX 0, 0, 300, 262
+STYLE DS_SETFONT | DS_CENTER | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+CAPTION "LugaruEX Setup"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_BANNER, "Static", SS_OWNERDRAW, 0, 0, 300, 75
+    LTEXT           "Install LugaruEX into this game folder:", -1, 8, 82, 284, 10
+    LISTBOX         IDC_SU_LIST, 8, 94, 284, 66, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER | WS_TABSTOP
+    PUSHBUTTON      "Browse...", IDC_SU_BROWSE, 8, 164, 60, 14
+    PUSHBUTTON      "Get the free game data", IDC_SU_FREE, 72, 164, 96, 14
+    CONTROL         "Steam's Play button opens LugaruEX", IDC_SU_STEAM, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 184, 284, 10
+    CONTROL         "Shortcut on the desktop and in the Start menu", IDC_SU_SHORTCUT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 197, 284, 10
+    LTEXT           "", IDC_SU_STATUS, 8, 211, 284, 26
+    DEFPUSHBUTTON   "Install", IDOK, 184, 241, 52, 15
+    PUSHBUTTON      "Quit", IDCANCEL, 242, 241, 52, 15
+END

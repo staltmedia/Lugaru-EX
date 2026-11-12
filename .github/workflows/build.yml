@@ -1,0 +1,209 @@
+# LugaruEX builds: Linux (engine + launcher, statically linked) and Windows (build.bat),
+# with the release files; Linux uses vcpkg x64-linux and OpenAL Soft from source so its audio
+# backends load at run time. Then a smoke test on OSS Lugaru's free data under a virtual X
+# server, and a host + guest online test on one machine.
+name: Build
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      wine:
+        description: "Also test the Windows build under Wine (Proton stand-in; optional, slow)"
+        type: boolean
+        default: false
+
+env:
+  VCPKG_COMMIT: e54ef0fcc9a82033a61e51002552a910a5d57282
+  OPENAL_VERSION: 1.23.1
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config autoconf automake autoconf-archive libtool curl zip unzip tar \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxinerama-dev libxss-dev libxxf86vm-dev \
+            libxkbcommon-dev libwayland-dev wayland-protocols libegl1-mesa-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libudev-dev libdrm-dev libgbm-dev libdecor-0-dev \
+            xvfb xauth mesa-utils libgl1-mesa-dri imagemagick
+
+      - name: Cache vcpkg packages
+        id: vcpkgcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-x64-linux-${{ env.VCPKG_COMMIT }}-v1
+
+      - name: vcpkg libraries
+        run: |
+          git clone https://github.com/microsoft/vcpkg vcpkg
+          git -C vcpkg checkout -q $VCPKG_COMMIT
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          ./vcpkg/vcpkg install --triplet x64-linux "sdl2[core,x11,wayland]" libpng libjpeg-turbo libogg libvorbis zlib jsoncpp
+
+      - name: Save vcpkg packages
+        if: steps.vcpkgcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-x64-linux-${{ env.VCPKG_COMMIT }}-v1
+
+      - name: Cache OpenAL Soft
+        id: openal
+        uses: actions/cache/restore@v4
+        with:
+          path: deps
+          key: openal-${{ env.OPENAL_VERSION }}-static-v1
+
+      - name: OpenAL Soft (static; PipeWire / PulseAudio / ALSA loaded at run time)
+        if: steps.openal.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL https://github.com/kcat/openal-soft/archive/refs/tags/$OPENAL_VERSION.tar.gz | tar xz
+          cmake -S openal-soft-$OPENAL_VERSION -B build/openal -G Ninja -DCMAKE_BUILD_TYPE=Release -DLIBTYPE=STATIC \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DALSOFT_DLOPEN=ON -DALSOFT_UTILS=OFF -DALSOFT_EXAMPLES=OFF \
+            -DALSOFT_INSTALL_CONFIG=OFF -DALSOFT_INSTALL_HRTF_DATA=OFF -DALSOFT_INSTALL_AMBDEC_PRESETS=OFF \
+            -DALSOFT_INSTALL_EXAMPLES=OFF -DALSOFT_INSTALL_UTILS=OFF -DALSOFT_BACKEND_SNDIO=OFF \
+            -DALSOFT_BACKEND_JACK=OFF -DALSOFT_BACKEND_PORTAUDIO=OFF -DALSOFT_BACKEND_SDL2=OFF \
+            -DCMAKE_INSTALL_PREFIX=$PWD/deps
+          cmake --build build/openal
+          cmake --install build/openal
+          cp openal-soft-$OPENAL_VERSION/COPYING deps/openal-soft-COPYING
+
+      - name: Save OpenAL Soft
+        if: steps.openal.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: deps
+          key: openal-${{ env.OPENAL_VERSION }}-static-v1
+
+      - name: Engine
+        run: |
+          export PKG_CONFIG_PATH=$PWD/deps/lib/pkgconfig:$PWD/vcpkg/installed/x64-linux/lib/pkgconfig
+          cmake -S lugaru -B build/engine -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_TOOLCHAIN_FILE=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_MANIFEST_MODE=OFF
+          cmake --build build/engine -- -k 0
+
+      - name: Launcher
+        run: |
+          cmake -S launcher-sdl -B build/launcher -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_MANIFEST_MODE=OFF
+          cmake --build build/launcher -- -k 0
+
+      - name: Package
+        run: bash tools/package-linux.sh build dist
+
+      - name: What the binaries need from the system
+        run: |
+          for b in dist/LugaruEX/lugaruex dist/LugaruEX/lugaruex-launcher; do echo "== $b"; ldd $b; readelf -d $b | grep -i "path" || true; done
+          objdump -T dist/LugaruEX/lugaruex | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LugaruEX-linux-x64
+          path: dist/*.tar.gz
+
+      - name: Smoke test on OSS Lugaru data
+        timeout-minutes: 20
+        run: bash tools/ci-linux-test.sh dist test-out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-output
+          path: test-out
+
+  # Windows: the same static build as on a developer PC (build.bat), and the release files
+  # (tools/package.ps1: the zip and Setup.exe)
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg packages
+        id: vcpkgwin
+        uses: actions/cache/restore@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT }}-v1
+
+      - name: vcpkg libraries
+        shell: cmd
+        run: |
+          git clone https://github.com/microsoft/vcpkg vcpkg || exit /b 1
+          git -C vcpkg checkout -q %VCPKG_COMMIT% || exit /b 1
+          call vcpkg\bootstrap-vcpkg.bat -disableMetrics || exit /b 1
+          vcpkg\vcpkg install --triplet x64-windows-static sdl2 openal-soft libpng libjpeg-turbo libogg libvorbis zlib jsoncpp fmt dirent opengl-registry || exit /b 1
+          vcpkg\vcpkg install --triplet x64-windows pkgconf || exit /b 1
+
+      - name: Save vcpkg packages
+        if: steps.vcpkgwin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT }}-v1
+
+      - name: Build
+        shell: cmd
+        run: call build.bat
+
+      - name: Package
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\package.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LugaruEX-win64
+          path: |
+            dist/*-win64.zip
+            dist/*-Setup.exe
+
+  # The Windows build under Wine - the way Proton runs it on Linux and the Steam Deck -
+  # including a Windows host (Wine) + native Linux guest online. Optional: only when asked
+  # for (Run workflow > wine), with hard time limits.
+  wine:
+    needs: [linux, windows]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.wine }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: LugaruEX-win64
+          path: winbuild
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: LugaruEX-linux-x64
+          path: linuxbuild
+
+      - name: Wine (WineHQ stable) and test tools
+        timeout-minutes: 8
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo mkdir -pm755 /etc/apt/keyrings
+          sudo wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+          sudo wget -qNP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources
+          sudo apt-get update
+          sudo apt-get install -y --install-recommends winehq-stable xvfb imagemagick x11-apps libgl1-mesa-dri mesa-utils unzip
+
+      - name: Launcher and game under Wine
+        timeout-minutes: 15
+        run: bash tools/ci-wine-test.sh winbuild/*-win64.zip wine-out linuxbuild/LugaruEX-*-linux-x64.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wine-output
+          path: wine-out

@@ -1,0 +1,92 @@
+// LugaruEX launcher resource ids
+#pragma once
+
+#define IDI_APP 1
+#define IDD_MAIN 100
+#define IDD_PAGE_GFX 101
+#define IDD_PAGE_MP 102
+
+#define IDC_BANNER 1000
+#define IDC_TABS 1001
+#define IDC_VERSION 1002
+
+#define IDC_MONITOR 1100
+#define IDC_RES 1101
+#define IDC_CUSTW 1102
+#define IDC_CUSTH 1103
+#define IDC_MODE 1104
+#define IDC_REFRESH 1105
+#define IDC_MSAA 1106
+#define IDC_AF 1107
+#define IDC_VSYNC 1108
+#define IDC_FPSCAP 1109
+#define IDC_FOV 1110
+#define IDC_FOVLBL 1111
+#define IDC_TEXQ 1112
+#define IDC_OVERRIDES 1113
+#define IDC_COLORBLIND 1114
+#define IDC_ASPECT 1115
+
+#define IDC_MP_OFF 1200
+#define IDC_MP_HOST 1201
+#define IDC_MP_JOIN 1202
+#define IDC_PORT 1203
+#define IDC_ADDR 1204
+#define IDC_NAME 1205
+#define IDC_MPNOTE 1206
+#define IDC_LAN 1207
+
+#define IDD_PAGE_CHAR 103
+#define IDC_SIMRATE 1116
+#define IDC_CH_DEFAULT 1300
+#define IDC_CH_MODEL 1301
+#define IDC_CH_SKIN 1302
+#define IDC_CH_PREVIEW 1303
+#define IDC_CH_NOTE 1304
+#define IDC_CH_CLOTHES 1305
+
+#define IDD_PAGE_CONTROLS 104
+#define IDD_PAGE_LOCAL 105
+#define IDC_SHADERS 1117
+
+#define IDC_CT_PRESET 1400
+#define IDC_CT_SAVE 1401
+#define IDC_CT_LOAD 1402
+#define IDC_CT_DELETE 1403
+#define IDC_CT_LIST 1404
+#define IDC_CT_HINT 1405
+#define IDC_CT_PAD 1406
+#define IDC_CT_VIZ 1407
+#define IDC_CT_VIBRATION 1408
+#define IDC_CT_LOOK 1409
+#define IDC_CT_LOOKLBL 1410
+#define IDC_CT_RESET 1411
+
+#define IDC_LC_LABEL1 1500
+#define IDC_LC_CHAR1 1510
+#define IDC_LC_REMOVE1 1520
+#define IDC_LC_CANVAS 1540
+#define IDC_LC_AUTO 1541
+#define IDC_LC_NOTE 1542
+#define IDC_LC_EMPTY 1543
+
+#define IDD_PAGE_MODS 106
+#define IDC_MD_LIST 1600
+#define IDC_MD_ADD 1601
+#define IDC_MD_UP 1602
+#define IDC_MD_DOWN 1603
+#define IDC_MD_FOLDER 1604
+#define IDC_MD_NOTE 1605
+#define IDM_MD_TOGGLE 1610
+#define IDM_MD_DELETE 1611
+#define IDM_MD_OPEN 1612
+#define IDC_SHAREMODS 1208
+#define IDC_AUTOUPDATE 1009
+
+#define IDD_SETUP 107
+#define IDC_SU_LIST 1700
+#define IDC_SU_BROWSE 1701
+#define IDC_SU_FREE 1702
+#define IDC_SU_STEAM 1703
+#define IDC_SU_SHORTCUT 1704
+#define IDC_SU_STATUS 1705

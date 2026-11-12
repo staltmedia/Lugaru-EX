@@ -1,0 +1,13 @@
+# build outputs, packages, local backups, dependencies
+/build/
+/dist/
+/backup/
+/vcpkg/
+*.ini
+*.log
+# Lugaru's own data is not needed: the engine runs on your Lugaru HD Data folder.
+# Only the one free texture the HD data lacks is kept.
+/lugaru/Data/*
+!/lugaru/Data/Textures/
+/lugaru/Data/Textures/*
+!/lugaru/Data/Textures/FontMono.png

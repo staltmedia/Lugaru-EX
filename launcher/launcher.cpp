@@ -1,0 +1,2518 @@
+/*
+LugaruEX launcher - a classic "configure before playing" dialog for Lugaru HD.
+
+Copyright (C) 2026 - LugaruEX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+The banner is composed at run time from the user's own game files
+(Data/Textures/Eyelid.png and Data/Textures/Lugaru.png); no game art is
+embedded in this program.
+*/
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <commctrl.h>
+#include <shellapi.h>
+#include <shlobj.h>
+#include <shlwapi.h>
+#include <uxtheme.h>
+#include <wincodec.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <fstream>
+#include <map>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <atomic>
+#include <thread>
+#include <shobjidl.h>
+
+#include "resource.h"
+#include "preview.h"
+#include "skins.h"
+#include "pad.h"
+#include <SDL.h> // controller button numbers (controller navigation)
+#include "padviz.h"
+#include "controls.h"
+#include "customskins.h"
+#include "local.h"
+#include "mods.h"
+#include "../shared/fsutil.h"
+#include "../shared/setup.h"
+#include "../shared/update.h"
+
+#pragma comment(lib, "uxtheme.lib")
+
+#define EX_LAUNCHER_VERSION "0.4.7" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+enum
+{
+    WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
+    WM_UPDATE_STATE = WM_APP + 11   // the update download moved on
+};
+static void UpdateThread(HWND notify, std::string exDir, std::string repo);
+
+// ----------------------------------------------------------------------------
+// Settings / ini
+
+struct Settings
+{
+    int width = 0, height = 0; // 0 = native desktop
+    std::string mode = "borderless";
+    int monitor = -1, refresh = 0; // -1 = pick the fastest monitor
+    int vsync = 1, fpscap = -1, fov = 90; // vsync: 0 off, 1 on, 2 adaptive; fpscap -1 = match display
+    int msaa = 4, af = 16;
+    int texq = 1, overrides = 1;
+    int colorblind = 0; // 0 off, 1 deuteranopia, 2 protanopia, 3 tritanopia
+    int lighting = 1; // set in game with R (kept, not shown in the launcher)
+    int shaders = 1;  // lighting looks on/off
+    int simrate = 0, interp = 1; // simrate 0 = match monitor refresh
+    std::string mpmode = "off";
+    int lan = 0; // LAN: hosts announce themselves, joiners find them automatically
+    int port = 27015;
+    std::string addr = "127.0.0.1:27015";
+    int chDefault = 0; // new installs: Random (a skin nobody else in the level wears)
+    std::string chModel = "rabbit";
+    std::string chSkin = "random"; // engine path, e.g. Textures/FurBrown.jpg, or "random"
+    std::string chClothes = "default"; // default (the level's own) / none / shirt / camo / ...
+    int shareMods = 1;  // online: send this PC's mods when hosting, take the host's when joining
+    int autoUpdate = 1; // check GitHub for a new LugaruEX when the launcher starts
+    std::string updateRepo; // [Launcher] UpdateRepo: another GitHub repository to update from
+};
+
+
+static std::wstring g_exeDir;
+static Settings g_set;
+
+// Everything of LugaruEX lives in <game>\LugaruEX\ (this launcher is the game's Lugaru.exe)
+static std::wstring g_exDir;
+static std::wstring IniPath() { return g_exDir + L"LugaruEX.ini"; }
+
+// LugaruEX 0.2 put its files straight into the game folder: move the settings and
+// texture overrides into LugaruEX\ and remove the old copies (never a file of the game itself)
+static void TidyOldInstall()
+{
+    CreateDirectoryW(g_exDir.c_str(), NULL);
+    const std::wstring oldIni = g_exeDir + L"LugaruEX.ini";
+    if (PathFileExistsW(oldIni.c_str()) && !PathFileExistsW(IniPath().c_str())) {
+        MoveFileW(oldIni.c_str(), IniPath().c_str());
+    }
+    const std::wstring oldOvr = g_exeDir + L"Overrides", newOvr = g_exDir + L"Overrides";
+    if (PathIsDirectoryW(oldOvr.c_str())) {
+        DeleteFileW((oldOvr + L"\\README.txt").c_str());
+        if (!RemoveDirectoryW(oldOvr.c_str()) && !PathIsDirectoryW(newOvr.c_str())) {
+            MoveFileW(oldOvr.c_str(), newOvr.c_str()); // textures were put there: keep them
+        }
+    }
+    if (!PathIsDirectoryW(oldOvr.c_str())) {
+        CreateDirectoryW(newOvr.c_str(), NULL); // where upscaled texture packs go
+    }
+    if (!PathFileExistsW((g_exDir + L"LugaruEX.exe").c_str())) {
+        return; // a developer build run from elsewhere: leave the folder alone
+    }
+    static const wchar_t* kOld[] = { L"LugaruEX.exe", L"LugaruEX Launcher.exe", L"LugaruEX - Steam Play button.bat",
+                                     L"LugaruEX - Uninstall.bat", L"LugaruEX-restore.bat", L"SDL2.dll", L"OpenAL32.dll",
+                                     L"fmt.dll", L"jpeg62.dll", L"jsoncpp.dll", L"libpng16.dll", L"ogg.dll", L"vorbis.dll",
+                                     L"vorbisfile.dll", L"z.dll", L"vcruntime140.dll", L"vcruntime140_1.dll", L"msvcp140.dll",
+                                     L"msvcp140_atomic_wait.dll" };
+    for (const wchar_t* f : kOld) {
+        DeleteFileW((g_exeDir + f).c_str());
+    }
+}
+
+static std::wstring ExeDir()
+{
+    wchar_t buf[MAX_PATH];
+    GetModuleFileNameW(NULL, buf, MAX_PATH);
+    PathRemoveFileSpecW(buf);
+    return std::wstring(buf) + L"\\";
+}
+
+static std::string trim(const std::string& s)
+{
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) {
+        return "";
+    }
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+static std::string lower(std::string s)
+{
+    for (auto& c : s) {
+        c = (char)tolower((unsigned char)c);
+    }
+    return s;
+}
+
+static std::wstring widen(const std::string& s)
+{
+    if (s.empty()) {
+        return L"";
+    }
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), NULL, 0);
+    std::wstring w(n, 0);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
+    return w;
+}
+
+static std::string narrow(const std::wstring& w)
+{
+    if (w.empty()) {
+        return "";
+    }
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), NULL, 0, NULL, NULL);
+    std::string s(n, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, NULL, NULL);
+    return s;
+}
+
+static void LoadIni(Settings& s)
+{
+    std::ifstream f(IniPath());
+    if (!f) {
+        return;
+    }
+    std::map<std::string, std::string> kv;
+    std::string line, sec;
+    while (std::getline(f, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == ';' || line[0] == '#') {
+            continue;
+        }
+        if (line[0] == '[') {
+            sec = lower(trim(line.substr(1, line.find(']') - 1)));
+            continue;
+        }
+        size_t eq = line.find('=');
+        if (eq != std::string::npos) {
+            kv[sec + "." + lower(trim(line.substr(0, eq)))] = trim(line.substr(eq + 1));
+        }
+    }
+    auto gi = [&](const char* k, int& v) {
+        auto it = kv.find(k);
+        if (it != kv.end() && !it->second.empty()) {
+            v = atoi(it->second.c_str());
+        }
+    };
+    auto gs = [&](const char* k, std::string& v) {
+        auto it = kv.find(k);
+        if (it != kv.end()) {
+            v = it->second;
+        }
+    };
+    gi("display.width", s.width);
+    gi("display.height", s.height);
+    gs("display.mode", s.mode);
+    s.mode = lower(s.mode);
+    gi("display.monitor", s.monitor);
+    gi("display.refreshrate", s.refresh);
+    gi("display.vsync", s.vsync);
+    gi("display.fpscap", s.fpscap);
+    gi("display.fov", s.fov);
+    gi("display.msaa", s.msaa);
+    gi("display.anisotropy", s.af);
+    gi("display.texturequality", s.texq);
+    gi("display.textureoverrides", s.overrides);
+    gi("display.colorblind", s.colorblind);
+    gi("display.lighting", s.lighting);
+    gi("display.shaders", s.shaders);
+    gi("engine.simrate", s.simrate);
+    gi("engine.interpolation", s.interp);
+    gs("multiplayer.mode", s.mpmode);
+    s.mpmode = lower(s.mpmode);
+    gi("multiplayer.port", s.port);
+    gi("multiplayer.lan", s.lan);
+    gs("multiplayer.address", s.addr);
+    gi("player.default", s.chDefault);
+    gs("player.model", s.chModel);
+    s.chModel = lower(s.chModel);
+    gs("player.skin", s.chSkin);
+    gs("player.clothes", s.chClothes);
+    gi("multiplayer.sharemods", s.shareMods);
+    gi("launcher.autoupdate", s.autoUpdate);
+    gs("launcher.updaterepo", s.updateRepo);
+}
+
+static bool SaveIni(const Settings& s)
+{
+    std::ofstream o(IniPath(), std::ios::trunc | std::ios::binary);
+    if (!o) {
+        return false;
+    }
+    o << "; LugaruEX settings - written by the launcher (Lugaru.exe), read by LugaruEX.exe\r\n"
+      << "[Display]\r\n"
+      << "; Width/Height 0 = native desktop resolution\r\n"
+      << "Width=" << s.width << "\r\n"
+      << "Height=" << s.height << "\r\n"
+      << "; windowed | borderless | fullscreen\r\n"
+      << "Mode=" << s.mode << "\r\n"
+      << "Monitor=" << s.monitor << "\r\n"
+      << "RefreshRate=" << s.refresh << "\r\n"
+      << "; 0 off, 1 on (no tearing), 2 adaptive (tears below refresh)\r\n"
+      << "VSync=" << s.vsync << "\r\n"
+      << "; -1 = match the display refresh rate, 0 = unlimited\r\n"
+      << "FPSCap=" << s.fpscap << "\r\n"
+      << "; vertical field of view in degrees (original game: 90)\r\n"
+      << "FOV=" << s.fov << "\r\n"
+      << "MSAA=" << s.msaa << "\r\n"
+      << "Anisotropy=" << s.af << "\r\n"
+      << "; 0 = half size, 1 = full size\r\n"
+      << "TextureQuality=" << s.texq << "\r\n"
+      << "TextureOverrides=" << s.overrides << "\r\n"
+      << "; HUD and menus always keep their proportions on wide screens\r\n"
+      << "HUDAspect=1\r\n"
+      << "; colour blind filter: 0 off, 1 deuteranopia, 2 protanopia, 3 tritanopia\r\n"
+      << "Colorblind=" << s.colorblind << "\r\n"
+      << "; lighting look, cycled in game with R (0 = Original, 1 = Enhanced)\r\n"
+      << "Lighting=" << s.lighting << "\r\n"
+      << "; 0 = shaders off (Original look only)\r\n"
+      << "Shaders=" << s.shaders << "\r\n"
+      << "\r\n[Engine]\r\n"
+      << "; fixed simulation rate (steps per second, 0 = match the monitor) and render interpolation\r\n"
+      << "SimRate=" << s.simrate << "\r\n"
+      << "Interpolation=" << s.interp << "\r\n"
+      << "\r\n[Multiplayer]\r\n"
+      << "; off | host | join\r\n"
+      << "Mode=" << s.mpmode << "\r\n"
+      << "Port=" << s.port << "\r\n"
+      << "Address=" << s.addr << "\r\n"
+      << "; 1 = LAN: the host announces itself on the local network, Join finds it automatically\r\n"
+      << "LAN=" << s.lan << "\r\n"
+      << "; 1 = share mods online: send yours when hosting, download the host's when joining\r\n"
+      << "ShareMods=" << s.shareMods << "\r\n"
+      << "\r\n[Player]\r\n"
+      << "; Default=1 keeps the character each level defines\r\n"
+      << "Default=" << s.chDefault << "\r\n"
+      << "; rabbit | wolf\r\n"
+      << "Model=" << s.chModel << "\r\n"
+      << "Skin=" << s.chSkin << "\r\n"
+      << "; default (the level's own) | none | shirt | camo | snowcamo | desertcamo | leather | gi\r\n"
+      << "Clothes=" << s.chClothes << "\r\n"
+      << "\r\n[Launcher]\r\n"
+      << "; 1 = look for a new LugaruEX on GitHub when the launcher starts, and install it\r\n"
+      << "AutoUpdate=" << s.autoUpdate << "\r\n"
+      << (s.updateRepo.empty() ? std::string() : "UpdateRepo=" + s.updateRepo + "\r\n");
+    return o.good();
+}
+
+// ----------------------------------------------------------------------------
+// Monitors and modes (same order as SDL2: primary first, then the others)
+
+struct Monitor
+{
+    std::wstring device; // \\.\DISPLAY1
+    std::wstring label;
+    int curW = 0, curH = 0, curHz = 0;
+    std::vector<std::pair<int, int>> res; // sorted, unique
+    std::map<std::pair<int, int>, std::set<int>> rates;
+};
+
+static std::vector<Monitor> g_mons;
+
+static void EnumMonitors()
+{
+    g_mons.clear();
+    for (int pass = 0; pass < 2; pass++) {
+        DISPLAY_DEVICEW dd = { sizeof(dd) };
+        for (DWORD i = 0; EnumDisplayDevicesW(NULL, i, &dd, 0); i++, dd.cb = sizeof(dd)) {
+            if (!(dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)) {
+                continue;
+            }
+            const bool primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
+            if ((pass == 0) != primary) {
+                continue;
+            }
+            Monitor m;
+            m.device = dd.DeviceName;
+            DISPLAY_DEVICEW md = { sizeof(md) };
+            std::wstring friendly = dd.DeviceString;
+            if (EnumDisplayDevicesW(dd.DeviceName, 0, &md, 0) && md.DeviceString[0]) {
+                friendly = md.DeviceString;
+            }
+            DEVMODEW dm = { 0 };
+            dm.dmSize = sizeof(dm);
+            if (EnumDisplaySettingsW(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm)) {
+                m.curW = dm.dmPelsWidth;
+                m.curH = dm.dmPelsHeight;
+                m.curHz = dm.dmDisplayFrequency;
+            }
+            std::set<std::pair<int, int>> uniq;
+            for (DWORD k = 0;; k++) {
+                DEVMODEW d = { 0 };
+                d.dmSize = sizeof(d);
+                if (!EnumDisplaySettingsW(dd.DeviceName, k, &d)) {
+                    break;
+                }
+                if ((int)d.dmPelsWidth < 640 || (int)d.dmPelsHeight < 480) {
+                    continue;
+                }
+                auto key = std::make_pair((int)d.dmPelsWidth, (int)d.dmPelsHeight);
+                uniq.insert(key);
+                if (d.dmDisplayFrequency > 1) {
+                    m.rates[key].insert((int)d.dmDisplayFrequency);
+                }
+            }
+            if (m.curW) {
+                uniq.insert({ m.curW, m.curH });
+            }
+            m.res.assign(uniq.begin(), uniq.end());
+            std::sort(m.res.begin(), m.res.end(), [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
+                return a.first != b.first ? a.first > b.first : a.second > b.second;
+            });
+            wchar_t lbl[256];
+            swprintf(lbl, 256, L"%d: %s  (%dx%d @ %d Hz)", (int)g_mons.size() + 1, friendly.c_str(), m.curW, m.curH, m.curHz);
+            m.label = lbl;
+            g_mons.push_back(m);
+        }
+    }
+    if (g_mons.empty()) {
+        Monitor m;
+        m.label = L"1: Default display";
+        m.curW = GetSystemMetrics(SM_CXSCREEN);
+        m.curH = GetSystemMetrics(SM_CYSCREEN);
+        m.res = { { m.curW, m.curH }, { 1920, 1080 }, { 1280, 720 }, { 1024, 768 } };
+        g_mons.push_back(m);
+    }
+}
+
+static std::wstring AspectName(int w, int h)
+{
+    if (w <= 0 || h <= 0) {
+        return L"";
+    }
+    const double r = (double)w / h;
+    struct A
+    {
+        double r;
+        const wchar_t* n;
+    } known[] = { { 4.0 / 3, L"4:3" }, { 5.0 / 4, L"5:4" }, { 3.0 / 2, L"3:2" }, { 16.0 / 10, L"16:10" }, { 16.0 / 9, L"16:9" },
+                  { 64.0 / 27, L"21:9" }, { 43.0 / 18, L"21:9" }, { 12.0 / 5, L"21:9" }, { 32.0 / 9, L"32:9" }, { 32.0 / 10, L"32:10" } };
+    for (auto& a : known) {
+        if (fabs(r - a.r) < 0.012) {
+            return a.n;
+        }
+    }
+    wchar_t b[32];
+    swprintf(b, 32, L"%.2f:1", r);
+    return b;
+}
+
+// ----------------------------------------------------------------------------
+// Banner (WIC image loading, composed with GDI)
+
+struct Image
+{
+    int w = 0, h = 0;
+    std::vector<BYTE> px; // 32bpp premultiplied BGRA, top-down
+};
+
+static bool LoadImageWIC(const std::wstring& path, Image& img)
+{
+    IWICImagingFactory* fac = NULL;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&fac)))) {
+        return false;
+    }
+    bool ok = false;
+    IWICBitmapDecoder* dec = NULL;
+    IWICBitmapFrameDecode* frame = NULL;
+    IWICFormatConverter* conv = NULL;
+    if (SUCCEEDED(fac->CreateDecoderFromFilename(path.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec)) &&
+        SUCCEEDED(dec->GetFrame(0, &frame)) && SUCCEEDED(fac->CreateFormatConverter(&conv)) &&
+        SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, NULL, 0, WICBitmapPaletteTypeCustom))) {
+        UINT w, h;
+        conv->GetSize(&w, &h);
+        img.w = w;
+        img.h = h;
+        img.px.resize((size_t)w * h * 4);
+        ok = SUCCEEDED(conv->CopyPixels(NULL, w * 4, (UINT)img.px.size(), img.px.data()));
+    }
+    if (conv) {
+        conv->Release();
+    }
+    if (frame) {
+        frame->Release();
+    }
+    if (dec) {
+        dec->Release();
+    }
+    fac->Release();
+    return ok;
+}
+
+static HBITMAP MakeDib(HDC dc, int w, int h, void** bits)
+{
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    return CreateDIBSection(dc, &bi, DIB_RGB_COLORS, bits, NULL, 0);
+}
+
+static HBITMAP ImageToBitmap(HDC dc, const Image& img)
+{
+    void* bits = NULL;
+    HBITMAP b = MakeDib(dc, img.w, img.h, &bits);
+    if (b && bits) {
+        memcpy(bits, img.px.data(), img.px.size());
+    }
+    return b;
+}
+
+static bool SavePNG(const std::wstring& path, const Image& img)
+{
+    IWICImagingFactory* fac = NULL;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&fac)))) {
+        return false;
+    }
+    bool ok = false;
+    IWICBitmap* bmp = NULL;
+    IWICStream* stream = NULL;
+    IWICBitmapEncoder* enc = NULL;
+    IWICBitmapFrameEncode* frame = NULL;
+    if (SUCCEEDED(fac->CreateBitmapFromMemory(img.w, img.h, GUID_WICPixelFormat32bppBGRA, img.w * 4, (UINT)img.px.size(), (BYTE*)img.px.data(), &bmp)) &&
+        SUCCEEDED(fac->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)) &&
+        SUCCEEDED(fac->CreateEncoder(GUID_ContainerFormatPng, NULL, &enc)) && SUCCEEDED(enc->Initialize(stream, WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(enc->CreateNewFrame(&frame, NULL)) && SUCCEEDED(frame->Initialize(NULL))) {
+        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
+        ok = SUCCEEDED(frame->SetSize(img.w, img.h)) && SUCCEEDED(frame->SetPixelFormat(&fmt)) && SUCCEEDED(frame->WriteSource(bmp, NULL)) &&
+             SUCCEEDED(frame->Commit()) && SUCCEEDED(enc->Commit());
+    }
+    for (IUnknown* u : { (IUnknown*)frame, (IUnknown*)enc, (IUnknown*)stream, (IUnknown*)bmp, (IUnknown*)fac }) {
+        if (u) {
+            u->Release();
+        }
+    }
+    return ok;
+}
+
+// "EX" in the style of the LUGARU letters: a classical capital (Sylfaen - the closest
+// Trajan-like face every Windows has), thickened to LUGARU's stroke weight, with its
+// deep-red-to-orange gradient (sampled row by row from the user's logo), a sculpted
+// bevel lit from above, the glowing orange lip on the bottom edges, a soft sheen and
+// a soft drop shadow. capH = the letters' height in pixels (serifs included); `put`
+// blends a pixel at (x, y) = glyph top-left + offset. outW/outH: the glyphs' size.
+static std::wstring ExFontFace(HDC dc)
+{
+    static std::wstring face;
+    if (!face.empty()) {
+        return face;
+    }
+    for (const wchar_t* f : { L"Trajan Pro 3", L"Trajan Pro", L"Perpetua Titling MT", L"Sylfaen", L"Palatino Linotype" }) {
+        HFONT h = CreateFontW(-40, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              ANTIALIASED_QUALITY, VARIABLE_PITCH, f);
+        HGDIOBJ o = SelectObject(dc, h);
+        wchar_t got[64] = {};
+        GetTextFaceW(dc, 64, got);
+        SelectObject(dc, o);
+        DeleteObject(h);
+        if (_wcsicmp(got, f) == 0) {
+            face = f;
+            return face;
+        }
+    }
+    face = L"Times New Roman";
+    return face;
+}
+
+// coverage (0..1) of "EX" at a font height, 4x supersampled, cropped to the glyphs plus
+// `pad` pixels; strokes thickened to stemRatio x the glyph height
+struct ExMask
+{
+    int w = 0, h = 0, gw = 0, gh = 0, pad = 0;
+    std::vector<float> a;
+    float at(int x, int y) const { return (x < 0 || y < 0 || x >= w || y >= h) ? 0.f : a[(size_t)y * w + x]; }
+};
+
+static ExMask RenderExMask(HDC screen, float fontPx, int pad, float stemRatio)
+{
+    const int SS = 4;
+    const int MW = (int)(fontPx * 2.4f * SS) + 16, MH = (int)(fontPx * 1.6f * SS) + 16;
+    void* mbits = NULL;
+    HBITMAP mbmp = MakeDib(screen, MW, MH, &mbits);
+    HDC mdc = CreateCompatibleDC(screen);
+    HGDIOBJ mo = SelectObject(mdc, mbmp);
+    memset(mbits, 0, (size_t)MW * MH * 4);
+    HFONT ef = CreateFontW(-(int)(fontPx * SS), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
+                           CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, VARIABLE_PITCH, ExFontFace(screen).c_str());
+    HGDIOBJ eo = SelectObject(mdc, ef);
+    SetBkMode(mdc, TRANSPARENT);
+    SetTextColor(mdc, RGB(255, 255, 255));
+    RECT mr = { 8 * SS, 8, MW, MH };
+    DrawTextW(mdc, L"EX", -1, &mr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+    GdiFlush();
+    std::vector<BYTE> big((size_t)MW * MH);
+    for (size_t i = 0; i < big.size(); i++) {
+        big[i] = ((const BYTE*)mbits)[i * 4 + 1];
+    }
+    SelectObject(mdc, eo);
+    DeleteObject(ef);
+    SelectObject(mdc, mo);
+    DeleteObject(mbmp);
+    DeleteDC(mdc);
+
+    int x0 = MW, x1 = -1, y0 = MH, y1 = -1;
+    for (int y = 0; y < MH; y++) {
+        for (int x = 0; x < MW; x++) {
+            if (big[(size_t)y * MW + x] > 100) {
+                x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
+            }
+        }
+    }
+    ExMask m;
+    if (x1 < x0) {
+        return m;
+    }
+    // thicken: measure the E's stem (first run in the middle row) and grow every stroke
+    int stem = 0;
+    for (int x = x0, ym = (y0 + y1) / 2; x <= x1; x++) {
+        if (big[(size_t)ym * MW + x] > 127) {
+            stem++;
+        } else if (stem) {
+            break;
+        }
+    }
+    const int grow = std::max(0, (int)lroundf((stemRatio * (y1 - y0 + 1) - stem) / 2));
+    if (grow > 0) {
+        std::vector<BYTE> tmp(big.size());
+        for (int y = 0; y < MH; y++) { // horizontal max
+            for (int x = 0; x < MW; x++) {
+                BYTE v = 0;
+                for (int k = std::max(0, x - grow); k <= std::min(MW - 1, x + grow); k++) {
+                    v = std::max(v, big[(size_t)y * MW + k]);
+                }
+                tmp[(size_t)y * MW + x] = v;
+            }
+        }
+        for (int y = 0; y < MH; y++) { // vertical max
+            for (int x = 0; x < MW; x++) {
+                BYTE v = 0;
+                for (int k = std::max(0, y - grow); k <= std::min(MH - 1, y + grow); k++) {
+                    v = std::max(v, tmp[(size_t)k * MW + x]);
+                }
+                big[(size_t)y * MW + x] = v;
+            }
+        }
+        x0 = std::max(0, x0 - grow), x1 = std::min(MW - 1, x1 + grow), y0 = std::max(0, y0 - grow), y1 = std::min(MH - 1, y1 + grow);
+    }
+    // down to 1x, glyph box from x0/y0, plus the pad
+    m.pad = pad;
+    m.gw = (x1 - x0 + SS) / SS;
+    m.gh = (y1 - y0 + SS) / SS;
+    m.w = m.gw + 2 * pad;
+    m.h = m.gh + 2 * pad;
+    m.a.assign((size_t)m.w * m.h, 0.f);
+    for (int y = 0; y < m.gh; y++) {
+        for (int x = 0; x < m.gw; x++) {
+            int s = 0;
+            for (int sy = 0; sy < SS; sy++) {
+                for (int sx = 0; sx < SS; sx++) {
+                    const int bx = x0 + x * SS + sx, by = y0 + y * SS + sy;
+                    s += (bx < MW && by < MH) ? big[(size_t)by * MW + bx] : 0;
+                }
+            }
+            m.a[(size_t)(y + pad) * m.w + (x + pad)] = s / (255.f * SS * SS);
+        }
+    }
+    return m;
+}
+
+static std::vector<float> BoxBlur(const std::vector<float>& src, int w, int h, int r)
+{
+    std::vector<float> a = src, b(src.size());
+    for (int pass = 0; pass < 2; pass++) {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                float s = 0;
+                for (int k = -r; k <= r; k++) {
+                    const int xx = std::max(0, std::min(w - 1, x + k));
+                    s += a[(size_t)y * w + xx];
+                }
+                b[(size_t)y * w + x] = s / (2 * r + 1);
+            }
+        }
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                float s = 0;
+                for (int k = -r; k <= r; k++) {
+                    const int yy = std::max(0, std::min(h - 1, y + k));
+                    s += b[(size_t)yy * w + x];
+                }
+                a[(size_t)y * w + x] = s / (2 * r + 1);
+            }
+        }
+    }
+    return a;
+}
+
+template <typename Put>
+static void PaintEX(HDC screen, int capH, const float (*grad)[3], int x, int y, Put put, int* outW = nullptr, int* outH = nullptr)
+{
+    capH = std::max(8, capH);
+    // size the font by the letters actually drawn (faces differ in cap height)
+    float fontPx = capH / 0.66f;
+    ExMask probe = RenderExMask(screen, fontPx, 0, 0.f);
+    if (probe.gh > 0) {
+        fontPx *= (float)capH / probe.gh;
+    }
+    const int pad = std::max(3, capH / 8);
+    ExMask m = RenderExMask(screen, fontPx, pad, 0.105f); // LUGARU's stems are ~1/10 of its height
+    if (m.gh <= 0) {
+        return;
+    }
+    if (outW) {
+        *outW = m.gw;
+    }
+    if (outH) {
+        *outH = m.gh;
+    }
+    // soft drop shadow, down and to the right
+    const int sr = std::max(1, capH / 30);
+    const std::vector<float> shadow = BoxBlur(m.a, m.w, m.h, sr);
+    const int so = std::max(1, capH / 28);
+    for (int my = 0; my < m.h; my++) {
+        for (int mx = 0; mx < m.w; mx++) {
+            const float a = shadow[(size_t)my * m.w + mx];
+            if (a > 0.004f) {
+                put(x + mx - m.pad + so, y + my - m.pad + so, 0.f, 0.f, 0.f, a * 0.75f);
+            }
+        }
+    }
+    // bevel: a height field from the softened coverage, lit as a surface
+    const int br = std::max(1, (int)lroundf(capH * 0.03f));
+    const std::vector<float> hgt = BoxBlur(m.a, m.w, m.h, br);
+    auto H = [&](int px, int py) { return (px < 0 || py < 0 || px >= m.w || py >= m.h) ? 0.f : hgt[(size_t)py * m.w + px]; };
+    const float k = capH * 0.07f;                  // bevel steepness
+    const float L[3] = { -0.28f, -0.78f, 0.56f }; // key light from above, a little left (y down)
+    for (int my = 0; my < m.h; my++) {
+        const int gy = my - m.pad;
+        const int t = std::max(0, std::min(63, gy * 64 / std::max(1, m.gh)));
+        const float* c = grad ? grad[t] : nullptr;
+        const float base[3] = { c ? c[0] : 225.f, c ? c[1] : 20.f + 40.f * t / 64.f, c ? c[2] : 2.f };
+        for (int mx = 0; mx < m.w; mx++) {
+            const float a = m.at(mx, my);
+            if (a <= 0.004f) {
+                continue;
+            }
+            float nx = -(H(mx + 1, my) - H(mx - 1, my)) * k, ny = -(H(mx, my + 1) - H(mx, my - 1)) * k, nz = 1.f;
+            const float nl = sqrtf(nx * nx + ny * ny + nz * nz);
+            nx /= nl, ny /= nl, nz /= nl;
+            const float diff = nx * L[0] + ny * L[1] + nz * L[2];
+            float r = base[0] * (0.74f + 0.36f * diff), g = base[1] * (0.70f + 0.42f * diff), b = base[2] * (0.7f + 0.4f * diff);
+            // the LUGARU letters glow orange along their bottom edges
+            const float lip = std::min(1.f, powf(std::max(0.f, ny), 1.5f) * 0.95f + 0.2f * std::max(0.f, (float)gy / m.gh - 0.88f) / 0.12f);
+            r = r + (255.f - r) * lip;
+            g = g + (150.f - g) * lip;
+            b = b + (40.f - b) * lip;
+            // a soft sheen where the bevel faces the key light
+            const float hx = L[0], hy = L[1], hz = L[2] + 1.f, hl = sqrtf(hx * hx + hy * hy + hz * hz);
+            const float spec = powf(std::max(0.f, (nx * hx + ny * hy + nz * hz) / hl), 40.f) * 0.32f;
+            r += 255.f * spec, g += 200.f * spec, b += 140.f * spec;
+            put(x + mx - m.pad, y + my - m.pad, std::min(255.f, r), std::min(255.f, g), std::min(255.f, b), std::min(1.f, a));
+        }
+    }
+}
+
+static HBITMAP g_banner = NULL;
+static bool g_setupMode = false; // running as the installer
+static int g_bannerW = 0, g_bannerH = 0;
+
+static void BuildBanner(HWND ctl)
+{
+    RECT rc;
+    GetClientRect(ctl, &rc);
+    const int W = rc.right, H = rc.bottom;
+    HDC screen = GetDC(ctl);
+    HDC dc = CreateCompatibleDC(screen);
+    void* bits = NULL;
+    g_banner = MakeDib(screen, W, H, &bits);
+    g_bannerW = W;
+    g_bannerH = H;
+    HGDIOBJ old = SelectObject(dc, g_banner);
+
+    // dark red-black gradient fallback
+    for (int y = 0; y < H; y++) {
+        BYTE* row = (BYTE*)bits + (size_t)y * W * 4;
+        for (int x = 0; x < W; x++) {
+            row[x * 4 + 0] = 8;
+            row[x * 4 + 1] = 8;
+            row[x * 4 + 2] = (BYTE)(20 + 30 * y / H);
+            row[x * 4 + 3] = 255;
+        }
+    }
+
+    HDC src = CreateCompatibleDC(screen);
+    Image eye, logo;
+    const std::wstring tex = g_exeDir + L"Data\\Textures\\";
+    if (LoadImageWIC(tex + L"Eyelid.png", eye) && eye.w > 0) {
+        HBITMAP b = ImageToBitmap(screen, eye);
+        HGDIOBJ o = SelectObject(src, b);
+        // scale to cover, centred
+        const double s = std::max((double)W / eye.w, (double)H / eye.h);
+        const int sw = (int)(W / s), sh = (int)(H / s);
+        SetStretchBltMode(dc, HALFTONE);
+        StretchBlt(dc, 0, 0, W, H, src, (eye.w - sw) / 2, (eye.h - sh) / 2, sw, sh, SRCCOPY);
+        SelectObject(src, o);
+        DeleteObject(b);
+    }
+    if (LoadImageWIC(tex + L"Lugaru.png", logo) && logo.w > 0) {
+        // The logo is drawn on black without an alpha channel: derive alpha from
+        // brightness (colours are then already premultiplied over black).
+        bool opaque = true;
+        for (size_t i = 3; i < logo.px.size(); i += 4) {
+            if (logo.px[i] != 255) {
+                opaque = false;
+                break;
+            }
+        }
+        if (opaque) {
+            for (size_t i = 0; i < logo.px.size(); i += 4) {
+                BYTE* p = &logo.px[i];
+                p[3] = std::max(p[0], std::max(p[1], p[2]));
+            }
+        }
+        // Find the red "LUGARU" letters and the cream "HD" in the user's logo.
+        // The HD is erased and "EX" takes its place, painted with the LUGARU
+        // letters' own colours (sampled row by row) so it matches the logo.
+        auto px = [&](int x, int y) { return &logo.px[((size_t)y * logo.w + x) * 4]; };
+        int hdL = logo.w, hdR = 0, hdT = logo.h, hdB = 0;
+        for (int y = 0; y < logo.h; y++) {
+            for (int x = 0; x < logo.w; x++) {
+                const BYTE* p = px(x, y);
+                if (p[2] > 160 && p[1] > 130 && p[0] > 90) { // cream-white
+                    hdL = std::min(hdL, x), hdR = std::max(hdR, x), hdT = std::min(hdT, y), hdB = std::max(hdB, y);
+                }
+            }
+        }
+        // LUGARU: red-to-orange letter pixels left of the HD (so the HD's orange
+        // foot doesn't count); redB = the letters' baseline
+        int redT = logo.h, redB = 0, redL = logo.w, redR = 0;
+        auto letter = [](const BYTE* p) { return p[2] > 90 && p[0] < p[2] * 0.45f && p[1] < p[2] * 0.9f; };
+        for (int y = 0; y < logo.h; y++) {
+            for (int x = 0; x < logo.w; x++) {
+                const BYTE* p = px(x, y);
+                if (letter(p)) {
+                    if (x < hdL - 2) {
+                        redT = std::min(redT, y), redB = std::max(redB, y), redL = std::min(redL, x);
+                    }
+                    if (y < hdT) {
+                        redR = std::max(redR, x);
+                    }
+                }
+            }
+        }
+        const bool found = redB > redT && hdR > hdL && hdB > hdT;
+        if (found) {
+            // Erase the HD. It is drawn over the LUGARU letters: where it covered them (the
+            // R's leg crossing into the U) they are rebuilt from the letter on both sides,
+            // and the R's tail below the baseline stays. Zone = the HD and a margin.
+            const int zx0 = std::max(0, hdL - 10), zx1 = std::min(logo.w - 1, hdR + 6), zy0 = std::max(0, hdT - 3);
+            auto inZone = [&](int x, int y) { return x >= zx0 && x <= zx1 && y >= zy0 && y < logo.h; };
+            auto lum = [&](int x, int y) { const BYTE* p = px(x, y); return (int)std::max(p[0], std::max(p[1], p[2])); };
+            // 1. the HD's own colours: cream / white / grey, and its orange-tinted parts
+            //    (LUGARU's orange has almost no blue - under 15% of its red - the HD's tint has more)
+            std::vector<char> erased((size_t)logo.w * logo.h, 0);
+            for (int y = zy0; y < logo.h; y++) {
+                for (int x = zx0; x <= zx1; x++) {
+                    BYTE* p = px(x, y);
+                    const int mx = std::max(p[0], std::max(p[1], p[2])), mn = std::min(p[0], std::min(p[1], p[2]));
+                    if (mx > 12 && (p[0] > p[2] * 0.28f || mx - mn < mx * 0.35f)) {
+                        if (mx > 30) {
+                            hdB = std::max(hdB, y); // the real foot of the HD
+                        }
+                        erased[(size_t)y * logo.w + x] = 1;
+                        p[0] = p[1] = p[2] = p[3] = 0;
+                    }
+                }
+            }
+            // 2. rebuild letter strokes the HD covered: across the gap along the row, the
+            //    stroke's diagonals or the column, whichever finds letter on both sides closest
+            auto solid = [&](int x, int y) {
+                return x >= 0 && y >= 0 && x < logo.w && y < logo.h && !erased[(size_t)y * logo.w + x] && lum(x, y) > 150; // stroke interiors, not their dark edges
+            };
+            std::vector<BYTE> fill(logo.px);
+            const int dirs[4][2] = { { 1, 0 }, { 1, 1 }, { 1, -1 }, { 0, 1 } };
+            for (int y = zy0; y <= std::min(logo.h - 1, redB + 12); y++) {
+                for (int x = zx0; x <= zx1; x++) {
+                    if (!erased[(size_t)y * logo.w + x]) {
+                        continue;
+                    }
+                    int best = 99, ax = 0, ay = 0, bx = 0, by = 0, da = 0;
+                    for (const auto& d : dirs) {
+                        int a = -1, b = -1;
+                        for (int s = 1; s <= 9 && a < 0; s++) {
+                            if (solid(x - d[0] * s, y - d[1] * s)) {
+                                a = s;
+                            }
+                        }
+                        for (int s = 1; s <= 9 && b < 0; s++) {
+                            if (solid(x + d[0] * s, y + d[1] * s)) {
+                                b = s;
+                            }
+                        }
+                        if (a > 0 && b > 0 && a + b < best) {
+                            best = a + b, da = a;
+                            ax = x - d[0] * a, ay = y - d[1] * a, bx = x + d[0] * b, by = y + d[1] * b;
+                        }
+                    }
+                    if (best <= 10) { // a gap no wider than the HD's stems
+                        const float t = (float)da / best;
+                        const BYTE *pa = px(ax, ay), *pb = px(bx, by);
+                        BYTE* q = &fill[((size_t)y * logo.w + x) * 4];
+                        for (int c = 0; c < 4; c++) {
+                            q[c] = (BYTE)(pa[c] + (pb[c] - pa[c]) * t);
+                        }
+                    }
+                }
+            }
+            logo.px.swap(fill);
+            // 3. what is left in the zone stays only if it belongs to a LUGARU letter: lit and
+            //    connected to the letters outside the zone (the R's tail may hang a little
+            //    below the baseline; the HD's orange shading further down goes)
+            const int tailB = std::min(logo.h - 1, redB + std::max(4, (redB - redT) / 9));
+            std::vector<char> keep((size_t)logo.w * logo.h, 0);
+            std::vector<std::pair<int, int>> st;
+            for (int y = zy0; y <= tailB; y++) {
+                for (int x = zx0; x <= zx1; x++) {
+                    if (lum(x, y) <= 25) {
+                        continue;
+                    }
+                    bool edge = false; // touches a lit pixel outside the zone
+                    for (int dy = -1; dy <= 1 && !edge; dy++) {
+                        for (int dx = -1; dx <= 1 && !edge; dx++) {
+                            const int nx = x + dx, ny = y + dy;
+                            edge = nx >= 0 && ny >= 0 && nx < logo.w && ny < logo.h && !inZone(nx, ny) && lum(nx, ny) > 25;
+                        }
+                    }
+                    if (edge) {
+                        st.push_back({ x, y });
+                    }
+                }
+            }
+            while (!st.empty()) {
+                const auto q = st.back();
+                st.pop_back();
+                const int x = q.first, y = q.second;
+                if (!inZone(x, y) || y > tailB) {
+                    continue;
+                }
+                char& k = keep[(size_t)y * logo.w + x];
+                if (k || lum(x, y) <= 25) {
+                    continue;
+                }
+                k = 1;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (dx || dy) {
+                            st.push_back({ x + dx, y + dy });
+                        }
+                    }
+                }
+            }
+            for (int y = zy0; y < logo.h; y++) {
+                for (int x = zx0; x <= zx1; x++) {
+                    if (!keep[(size_t)y * logo.w + x]) {
+                        BYTE* p = px(x, y);
+                        p[0] = p[1] = p[2] = p[3] = 0;
+                    }
+                }
+            }
+        }
+        float grad[64][3] = {};
+        if (found) {
+            bool valid[64] = {};
+            for (int t = 0; t < 64; t++) {
+                const int y0 = redT + (redB - redT) * t / 64, y1 = std::max(y0 + 1, redT + (redB - redT) * (t + 1) / 64);
+                double s[3] = {}, n = 0;
+                for (int y = y0; y < y1; y++) {
+                    for (int x = 0; x < hdL - 2; x++) {
+                        const BYTE* p = &logo.px[((size_t)y * logo.w + x) * 4];
+                        if (p[2] > 150 && letter(p)) { // solid letter body, not the soft edges
+                            s[0] += p[2], s[1] += p[1], s[2] += p[0], n++;
+                        }
+                    }
+                }
+                valid[t] = n >= 12; // a thin serif row alone gives a dull colour
+                for (int c = 0; c < 3; c++) {
+                    grad[t][c] = n > 0 ? (float)(s[c] / n) : 0.f;
+                }
+            }
+            for (int t = 0; t < 64; t++) { // fill weak rows from the nearest good one
+                if (valid[t]) {
+                    continue;
+                }
+                for (int d = 1; d < 64; d++) {
+                    const int a = t - d, b2 = t + d;
+                    const int k = (b2 < 64 && valid[b2]) ? b2 : ((a >= 0 && valid[a]) ? a : -1);
+                    if (k >= 0) {
+                        grad[t][0] = grad[k][0], grad[t][1] = grad[k][1], grad[t][2] = grad[k][2];
+                        break;
+                    }
+                }
+            }
+            // smooth it (rows full of serifs read a little off: EX showed bands)
+            float sm[64][3];
+            for (int t = 0; t < 64; t++) {
+                float s[3] = {}, n = 0;
+                for (int d = -5; d <= 5; d++) {
+                    const int k = std::max(0, std::min(63, t + d));
+                    for (int c = 0; c < 3; c++) {
+                        s[c] += grad[k][c];
+                    }
+                    n++;
+                }
+                for (int c = 0; c < 3; c++) {
+                    sm[t][c] = s[c] / n;
+                }
+            }
+            memcpy(grad, sm, sizeof(sm));
+        }
+
+        const int lh = (int)(H * 0.92);
+        const float sc = (float)lh / logo.h;
+        const int lw = (int)(logo.w * sc);
+
+        // The game's main menu gets the same edit at the logo's own size
+        // (LugaruEX\Data\Textures\LugaruEX-Logo.png, made from the user's file;
+        // the menu draws it additively, so it stays opaque on black like the original)
+        // EX ends where LUGARU ends (under the "RU"), so it fits the logo's width
+        int exW = 0, exH = 0;
+        int capLogo = hdB - hdT + 1; // as tall as the HD was
+        const int exTopLogo = redB + std::max(3, (redB - redT) / 22); // just under LUGARU's baseline
+        if (found) {
+            // fit under LUGARU inside the logo image (the menu's texture): letters + shadow + a margin
+            capLogo = std::max(12, std::min(capLogo, (int)((logo.h - 3 - exTopLogo) / 1.12f)));
+            PaintEX(screen, capLogo, nullptr, -10000, -10000, [](int, int, float, float, float, float) {}, &exW, &exH); // measure
+        }
+        const int exLogoX = found ? std::max(2, std::min(hdL, redR - exW)) : 0;
+        if (found) {
+            Image menu = logo;
+            for (size_t i = 3; i < menu.px.size(); i += 4) {
+                menu.px[i] = 255;
+            }
+            PaintEX(screen, capLogo, grad, exLogoX, exTopLogo, [&](int x, int y, float r, float g, float bl, float a) {
+                if (x < 0 || y < 0 || x >= menu.w || y >= menu.h || a <= 0) {
+                    return;
+                }
+                BYTE* d = &menu.px[((size_t)y * menu.w + x) * 4];
+                d[2] = (BYTE)std::min(255.f, d[2] * (1 - a) + r * a);
+                d[1] = (BYTE)std::min(255.f, d[1] * (1 - a) + g * a);
+                d[0] = (BYTE)std::min(255.f, d[0] * (1 - a) + bl * a);
+            });
+            // the same ember glow as the launcher's banner (the menu adds the image over its
+            // backdrop, so the glow shows as a warm haze around the letters)
+            {
+                std::vector<float> cv((size_t)menu.w * menu.h);
+                for (size_t i = 0; i < cv.size(); i++) {
+                    const BYTE* p = &menu.px[i * 4];
+                    cv[i] = std::min(1.f, std::max(p[0], std::max(p[1], p[2])) / 160.f);
+                }
+                const std::vector<float> gl = BoxBlur(cv, menu.w, menu.h, std::max(2, menu.h / 22));
+                for (size_t i = 0; i < cv.size(); i++) {
+                    const float g = gl[i] * (1.f - cv[i]) * 0.42f;
+                    BYTE* p = &menu.px[i * 4];
+                    p[2] = (BYTE)std::min(255.f, p[2] + 255.f * g);
+                    p[1] = (BYTE)std::min(255.f, p[1] + 66.f * g);
+                    p[0] = (BYTE)std::min(255.f, p[0] + 16.f * g);
+                }
+            }
+            if (!g_setupMode) { // (the installer only borrows the game's art for its banner)
+                const std::wstring dir = g_exeDir + L"LugaruEX\\Data\\Textures";
+                SHCreateDirectoryExW(NULL, dir.c_str(), NULL);
+                SavePNG(dir + L"\\LugaruEX-Logo.png", menu);
+            }
+        }
+
+        // "EX" for the banner, cap height = the HD's height
+        const int capH = found ? (int)(capLogo * sc) : (int)(H * 0.3f);
+        int gw = 0, gh = 0;
+        PaintEX(screen, capH, nullptr, -10000, -10000, [](int, int, float, float, float, float) {}, &gw, &gh); // measure
+        const int gap = std::max(2, capH / 7);
+
+        // centre LUGARU + EX together (EX sits where the HD was)
+        const int contentL = (int)((found ? redL : 0) * sc);
+        const int exLeft = found ? (int)(exLogoX * sc) : (int)(logo.w * 0.7f * sc) + gap;
+        const int contentR = std::max(found ? (int)(redR * sc) : lw, exLeft + gw);
+        const int exTop = found ? (int)(exTopLogo * sc) : (int)(logo.h * 0.6f * sc); // EX hangs just below LUGARU's baseline
+        const int contentT = found ? (int)(redT * sc) : 0, contentB = found ? exTop + gh : lh;
+        const int lx = (W - (contentR - contentL)) / 2 - contentL, ly = (H - (contentB - contentT)) / 2 - contentT;
+
+        HBITMAP b = ImageToBitmap(screen, logo);
+        HGDIOBJ o = SelectObject(src, b);
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        SetStretchBltMode(dc, HALFTONE);
+        AlphaBlend(dc, lx, ly, lw, lh, src, 0, 0, logo.w, logo.h, bf);
+        SelectObject(src, o);
+        DeleteObject(b);
+        GdiFlush();
+
+        // where the letters are (LUGARU from the logo's alpha, EX as it is painted): for the glow
+        std::vector<float> cover((size_t)W * H, 0.f);
+        for (int y = std::max(0, ly); y < std::min(H, ly + lh); y++) {
+            for (int x = std::max(0, lx); x < std::min(W, lx + lw); x++) {
+                const int sx = std::min(logo.w - 1, (int)((x - lx) / sc)), sy = std::min(logo.h - 1, (int)((y - ly) / sc));
+                cover[(size_t)y * W + x] = logo.px[((size_t)sy * logo.w + sx) * 4 + 3] / 255.f;
+            }
+        }
+
+        // paint EX: logo colours by height, light from the top-left like the letters, soft shadow
+        BYTE* D = (BYTE*)bits;
+        PaintEX(screen, capH, found ? grad : nullptr, lx + exLeft, ly + exTop, [&](int x, int y, float r, float g, float bl, float a) {
+            if (x < 0 || y < 0 || x >= W || y >= H || a <= 0) {
+                return;
+            }
+            BYTE* d = &D[((size_t)y * W + x) * 4];
+            d[2] = (BYTE)std::min(255.f, d[2] * (1 - a) + r * a);
+            d[1] = (BYTE)std::min(255.f, d[1] * (1 - a) + g * a);
+            d[0] = (BYTE)std::min(255.f, d[0] * (1 - a) + bl * a);
+            if (r + g + bl > 0) { // (not the shadow)
+                float& cv = cover[(size_t)y * W + x];
+                cv = std::max(cv, a);
+            }
+        });
+        // an ember glow around the letters, like the game's bloom
+        const std::vector<float> glow = BoxBlur(cover, W, H, std::max(2, H / 16));
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                const float gl = glow[(size_t)y * W + x] * (1.f - cover[(size_t)y * W + x]) * 0.55f;
+                BYTE* d = &D[((size_t)y * W + x) * 4];
+                d[2] = (BYTE)std::min(255.f, d[2] + 255.f * gl);
+                d[1] = (BYTE)std::min(255.f, d[1] + 70.f * gl);
+                d[0] = (BYTE)std::min(255.f, d[0] + 18.f * gl);
+            }
+        }
+    }
+    // a gentle vignette draws the eye to the middle
+    {
+        BYTE* D = (BYTE*)bits;
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                const float u = (x + .5f) / W - .5f, v = ((y + .5f) / H - .5f) * 0.6f;
+                const float k = 1.f - 0.55f * std::min(1.f, (u * u + v * v) * 2.6f);
+                BYTE* d = &D[((size_t)y * W + x) * 4];
+                d[0] = (BYTE)(d[0] * k), d[1] = (BYTE)(d[1] * k), d[2] = (BYTE)(d[2] * k);
+            }
+        }
+    }
+    DeleteDC(src);
+
+    // test hook LUGARUEX_SAVE_BANNER=<file.png>: write the finished banner out
+    if (const char* sp = getenv("LUGARUEX_SAVE_BANNER")) {
+        Image im;
+        im.w = W;
+        im.h = H;
+        im.px.assign((const BYTE*)bits, (const BYTE*)bits + (size_t)W * H * 4);
+        for (size_t i = 3; i < im.px.size(); i += 4) {
+            im.px[i] = 255;
+        }
+        SavePNG(std::wstring(sp, sp + strlen(sp)), im);
+    }
+
+    // GDI text leaves alpha at 0 - the bitmap is only BitBlt'ed so that's fine.
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    ReleaseDC(ctl, screen);
+}
+
+// ----------------------------------------------------------------------------
+// Dialog
+
+static HWND g_main = NULL, g_tabs = NULL, g_gfx = NULL, g_mp = NULL, g_ct = NULL, g_lc = NULL, g_md = NULL;
+
+
+static int ComboSel(HWND page, int id)
+{
+    return (int)SendDlgItemMessageW(page, id, CB_GETCURSEL, 0, 0);
+}
+static LPARAM ComboData(HWND page, int id)
+{
+    int s = ComboSel(page, id);
+    return s < 0 ? -1 : SendDlgItemMessageW(page, id, CB_GETITEMDATA, s, 0);
+}
+static int ComboAdd(HWND page, int id, const std::wstring& text, LPARAM data)
+{
+    int i = (int)SendDlgItemMessageW(page, id, CB_ADDSTRING, 0, (LPARAM)text.c_str());
+    SendDlgItemMessageW(page, id, CB_SETITEMDATA, i, data);
+    return i;
+}
+static void ComboSelectData(HWND page, int id, LPARAM data, int fallback = 0)
+{
+    int n = (int)SendDlgItemMessageW(page, id, CB_GETCOUNT, 0, 0);
+    for (int i = 0; i < n; i++) {
+        if (SendDlgItemMessageW(page, id, CB_GETITEMDATA, i, 0) == data) {
+            SendDlgItemMessageW(page, id, CB_SETCURSEL, i, 0);
+            return;
+        }
+    }
+    SendDlgItemMessageW(page, id, CB_SETCURSEL, fallback, 0);
+}
+
+static const LPARAM CUSTOM_RES = 0x7fffffff;
+
+static void GetSelectedRes(int& w, int& h)
+{
+    LPARAM d = ComboData(g_gfx, IDC_RES);
+    if (d == CUSTOM_RES || d < 0) {
+        w = GetDlgItemInt(g_gfx, IDC_CUSTW, NULL, FALSE);
+        h = GetDlgItemInt(g_gfx, IDC_CUSTH, NULL, FALSE);
+    } else {
+        w = (int)(d & 0xFFFF);
+        h = (int)((d >> 16) & 0xFFFF);
+    }
+}
+
+static void UpdateAspectLabel()
+{
+    int w, h;
+    GetSelectedRes(w, h);
+    std::wstring t;
+    if (w > 0 && h > 0) {
+        t = L"Aspect " + AspectName(w, h);
+        if (ComboData(g_gfx, IDC_RES) == CUSTOM_RES) {
+            t += L"  -  custom sizes work best in Windowed or Borderless";
+        }
+    }
+    SetDlgItemTextW(g_gfx, IDC_ASPECT, t.c_str());
+}
+
+// FPS cap choices: the detected refresh rate of the chosen display (or the
+// chosen exclusive-fullscreen rate), or unlimited. want: -1 match, 0 unlimited,
+// -2 keep the current choice.
+static void FillFpsCap(int want)
+{
+    if (want == -2) {
+        want = (ComboData(g_gfx, IDC_FPSCAP) == 0) ? 0 : -1;
+    }
+    int mon = std::max(0, ComboSel(g_gfx, IDC_MONITOR));
+    int hz = (mon < (int)g_mons.size()) ? g_mons[mon].curHz : 0;
+    if (ComboData(g_gfx, IDC_MODE) == 2 && mon < (int)g_mons.size()) {
+        if (ComboData(g_gfx, IDC_REFRESH) > 0) {
+            hz = (int)ComboData(g_gfx, IDC_REFRESH);
+        } else { // "Default" = the engine picks the highest rate for this size
+            int w, h;
+            GetSelectedRes(w, h);
+            auto it = g_mons[mon].rates.find({ w, h });
+            if (it != g_mons[mon].rates.end() && !it->second.empty()) {
+                hz = *it->second.rbegin();
+            }
+        }
+    }
+    SendDlgItemMessageW(g_gfx, IDC_FPSCAP, CB_RESETCONTENT, 0, 0);
+    ComboAdd(g_gfx, IDC_FPSCAP, hz > 0 ? L"Match display (" + std::to_wstring(hz) + L" Hz)" : std::wstring(L"Match display"), -1);
+    ComboAdd(g_gfx, IDC_FPSCAP, L"Unlimited", 0);
+    ComboSelectData(g_gfx, IDC_FPSCAP, want, 0);
+}
+
+static void FillRefresh(int wantHz)
+{
+    HWND c = GetDlgItem(g_gfx, IDC_REFRESH);
+    SendMessageW(c, CB_RESETCONTENT, 0, 0);
+    ComboAdd(g_gfx, IDC_REFRESH, L"Default", 0);
+    int mon = std::max(0, ComboSel(g_gfx, IDC_MONITOR));
+    int w, h;
+    GetSelectedRes(w, h);
+    if (mon < (int)g_mons.size()) {
+        auto it = g_mons[mon].rates.find({ w, h });
+        if (it != g_mons[mon].rates.end()) {
+            for (auto r = it->second.rbegin(); r != it->second.rend(); ++r) {
+                ComboAdd(g_gfx, IDC_REFRESH, std::to_wstring(*r) + L" Hz", *r);
+            }
+        }
+    }
+    (void)wantHz;
+    ComboSelectData(g_gfx, IDC_REFRESH, 0, 0); // always "Default" (the choice is hidden)
+    const bool fs = ComboData(g_gfx, IDC_MODE) == 2;
+    EnableWindow(c, fs);
+    FillFpsCap(-2); // the detected rate may have changed
+}
+
+static void FillResolutions(int wantW, int wantH)
+{
+    HWND c = GetDlgItem(g_gfx, IDC_RES);
+    SendMessageW(c, CB_RESETCONTENT, 0, 0);
+    int mon = std::max(0, ComboSel(g_gfx, IDC_MONITOR));
+    const Monitor& m = g_mons[std::min(mon, (int)g_mons.size() - 1)];
+    if (wantW <= 0 || wantH <= 0) {
+        wantW = m.curW;
+        wantH = m.curH;
+    }
+    bool found = false;
+    for (auto& r : m.res) {
+        wchar_t b[96];
+        swprintf(b, 96, L"%d x %d   (%s)%s", r.first, r.second, AspectName(r.first, r.second).c_str(),
+                 (r.first == m.curW && r.second == m.curH) ? L"  native" : L"");
+        int i = ComboAdd(g_gfx, IDC_RES, b, (LPARAM)((r.first & 0xFFFF) | ((r.second & 0xFFFF) << 16)));
+        if (r.first == wantW && r.second == wantH) {
+            SendMessageW(c, CB_SETCURSEL, i, 0);
+            found = true;
+        }
+    }
+    int ci = ComboAdd(g_gfx, IDC_RES, L"Custom...", CUSTOM_RES);
+    if (!found) {
+        SendMessageW(c, CB_SETCURSEL, ci, 0);
+    }
+    SetDlgItemInt(g_gfx, IDC_CUSTW, wantW, FALSE);
+    SetDlgItemInt(g_gfx, IDC_CUSTH, wantH, FALSE);
+    const bool custom = ComboData(g_gfx, IDC_RES) == CUSTOM_RES;
+    EnableWindow(GetDlgItem(g_gfx, IDC_CUSTW), custom);
+    EnableWindow(GetDlgItem(g_gfx, IDC_CUSTH), custom);
+    UpdateAspectLabel();
+}
+
+static void UpdateFovLabel()
+{
+    int v = (int)SendDlgItemMessageW(g_gfx, IDC_FOV, TBM_GETPOS, 0, 0);
+    wchar_t b[64];
+    swprintf(b, 64, L"%d\u00B0%s", v, v == 90 ? L" (original)" : L"");
+    SetDlgItemTextW(g_gfx, IDC_FOVLBL, b);
+}
+
+static void UpdateMpEnable()
+{
+    const bool host = IsDlgButtonChecked(g_mp, IDC_MP_HOST) == BST_CHECKED;
+    const bool join = IsDlgButtonChecked(g_mp, IDC_MP_JOIN) == BST_CHECKED;
+    const bool lan = IsDlgButtonChecked(g_mp, IDC_LAN) == BST_CHECKED;
+    EnableWindow(GetDlgItem(g_mp, IDC_PORT), host);
+    EnableWindow(GetDlgItem(g_mp, IDC_ADDR), join && !lan); // LAN finds the host by itself
+    EnableWindow(GetDlgItem(g_mp, IDC_LAN), host || join);
+}
+
+static void InitGfxPage(HWND p)
+{
+    g_gfx = p;
+    for (auto& m : g_mons) {
+        ComboAdd(p, IDC_MONITOR, m.label, 0);
+    }
+    SendDlgItemMessageW(p, IDC_MONITOR, CB_SETCURSEL, (g_set.monitor < (int)g_mons.size()) ? g_set.monitor : 0, 0);
+    EnableWindow(GetDlgItem(p, IDC_MONITOR), g_mons.size() > 1);
+
+    ComboAdd(p, IDC_MODE, L"Windowed", 0);
+    ComboAdd(p, IDC_MODE, L"Borderless window", 1);
+    ComboAdd(p, IDC_MODE, L"Exclusive fullscreen", 2);
+    ComboSelectData(p, IDC_MODE, g_set.mode == "fullscreen" ? 2 : (g_set.mode == "windowed" ? 0 : 1), 1);
+
+    FillResolutions(g_set.width, g_set.height);
+    FillRefresh(g_set.refresh);
+
+    ComboAdd(p, IDC_MSAA, L"Off", 0);
+    ComboAdd(p, IDC_MSAA, L"2x MSAA", 2);
+    ComboAdd(p, IDC_MSAA, L"4x MSAA", 4);
+    ComboAdd(p, IDC_MSAA, L"8x MSAA", 8);
+    ComboSelectData(p, IDC_MSAA, g_set.msaa, 0);
+
+    ComboAdd(p, IDC_AF, L"Off", 0);
+    for (int a : { 2, 4, 8, 16 }) {
+        ComboAdd(p, IDC_AF, std::to_wstring(a) + L"x", a);
+    }
+    ComboSelectData(p, IDC_AF, g_set.af, 0);
+
+    // FPS cap: the display's own refresh rate (detected) or unlimited.
+    // Older ini files with a number are treated as "match display".
+    FillFpsCap(g_set.fpscap == 0 ? 0 : -1);
+    ComboAdd(p, IDC_VSYNC, L"Off", 0);
+    ComboAdd(p, IDC_VSYNC, L"On (no tearing)", 1);
+    ComboAdd(p, IDC_VSYNC, L"Adaptive", 2);
+    ComboSelectData(p, IDC_VSYNC, g_set.vsync, 1);
+
+    SendDlgItemMessageW(p, IDC_FOV, TBM_SETRANGE, TRUE, MAKELPARAM(60, 120));
+    SendDlgItemMessageW(p, IDC_FOV, TBM_SETPOS, TRUE, std::max(60, std::min(120, g_set.fov)));
+    UpdateFovLabel();
+
+    ComboAdd(p, IDC_TEXQ, L"Low (half size)", 0);
+    ComboAdd(p, IDC_TEXQ, L"High (full size)", 1);
+    ComboSelectData(p, IDC_TEXQ, g_set.texq, 1);
+    CheckDlgButton(p, IDC_OVERRIDES, g_set.overrides ? BST_CHECKED : BST_UNCHECKED);
+    ComboAdd(p, IDC_COLORBLIND, L"Off", 0);
+    ComboAdd(p, IDC_COLORBLIND, L"Deuteranopia", 1);
+    ComboAdd(p, IDC_COLORBLIND, L"Protanopia", 2);
+    ComboAdd(p, IDC_COLORBLIND, L"Tritanopia", 3);
+    ComboSelectData(p, IDC_COLORBLIND, g_set.colorblind, 0);
+    CheckDlgButton(p, IDC_SHADERS, g_set.shaders ? BST_CHECKED : BST_UNCHECKED);
+}
+
+static void InitMpPage(HWND p)
+{
+    g_mp = p;
+    int id = g_set.mpmode == "host" ? IDC_MP_HOST : (g_set.mpmode == "join" ? IDC_MP_JOIN : IDC_MP_OFF);
+    CheckRadioButton(p, IDC_MP_OFF, IDC_MP_JOIN, id);
+    SetDlgItemInt(p, IDC_PORT, g_set.port, FALSE);
+    SetDlgItemTextW(p, IDC_ADDR, widen(g_set.addr).c_str());
+    CheckDlgButton(p, IDC_LAN, g_set.lan ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(p, IDC_SHAREMODS, g_set.shareMods ? BST_CHECKED : BST_UNCHECKED);
+    SetDlgItemTextW(p, IDC_MPNOTE,
+                    L"Compatible with Radmin VPN, Hamachi, ZeroTier, Tailscale and other virtual LANs.");
+    UpdateMpEnable();
+}
+
+// ---- Character page ----
+static HWND g_ch = NULL;
+
+
+
+static bool FindSkinFile(const SkinInfo& s, std::wstring& out)
+{
+    // Overrides (either name, png or jpg), then the original HD file in Data
+    std::wstring oss = widen(s.path).substr(9); // strip "Textures/"
+    std::wstring base[2] = { oss.substr(0, oss.rfind(L'.')), std::wstring(s.hdFile).substr(0, std::wstring(s.hdFile).rfind(L'.')) };
+    for (auto& b : base) {
+        for (const wchar_t* e : { L".png", L".jpg" }) {
+            std::wstring p = g_exDir + L"Overrides\\Textures\\" + b + e;
+            if (PathFileExistsW(p.c_str())) {
+                out = p;
+                return true;
+            }
+        }
+    }
+    for (const std::wstring& f : { std::wstring(s.hdFile), oss }) {
+        std::wstring p = g_exeDir + L"Data\\Textures\\" + f;
+        if (PathFileExistsW(p.c_str())) {
+            out = p;
+            return true;
+        }
+    }
+    return false;
+}
+
+// skin list item data: 0..15 built-in (kSkins), kCustomBase+n player-made, kNewSkin "New skin..."
+static const LPARAM kCustomBase = 1000, kNewSkin = 900, kRandomSkin = 800; // 800 = "Random": one nobody else in the level wears
+static const LPARAM kDefaultSkin = 700; // "Default": the skin the level gives its player
+static std::vector<CustomSkin> g_customSkins;
+static std::string g_lastSkin; // engine path of the last real choice (to go back to if "New skin..." is cancelled)
+
+static std::string SkinPathOf(LPARAM d)
+{
+    if (d >= 0 && d < (LPARAM)(sizeof(kSkins) / sizeof(kSkins[0]))) {
+        return kSkins[d].path;
+    }
+    if (d == kRandomSkin) {
+        return "random";
+    }
+    if (d == kDefaultSkin) {
+        return "default";
+    }
+    if (d >= kCustomBase && d < kCustomBase + (LPARAM)g_customSkins.size()) {
+        return g_customSkins[d - kCustomBase].enginePath;
+    }
+    return "";
+}
+
+static void UpdatePreview()
+{
+    // animated 3D model (preview.cpp); greyed out while "Default" is ticked
+    LPARAM d = ComboData(g_ch, IDC_CH_SKIN);
+    std::wstring file;
+    if (d == kRandomSkin || d == kDefaultSkin) { // Random / Default: show the model with its first skin
+        const std::string m = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+        for (const auto& k : kSkins) {
+            if (m == k.model && FindSkinFile(k, file)) {
+                break;
+            }
+            file.clear();
+        }
+    } else if (d >= kCustomBase && d < kCustomBase + (LPARAM)g_customSkins.size()) {
+        file = g_customSkins[d - kCustomBase].file;
+    } else if (!(d >= 0 && d < (LPARAM)(sizeof(kSkins) / sizeof(kSkins[0])) && FindSkinFile(kSkins[d], file))) {
+        file.clear();
+    }
+    const std::string model = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+    const bool def = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
+    Preview_Set(GetDlgItem(g_ch, IDC_CH_PREVIEW), model, file, def);
+}
+
+static void FillSkins(const std::string& wantPath)
+{
+    SendDlgItemMessageW(g_ch, IDC_CH_SKIN, CB_RESETCONTENT, 0, 0);
+    const std::string model = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+    int sel = 0, n = 0;
+    ComboAdd(g_ch, IDC_CH_SKIN, L"Random", kRandomSkin);
+    ComboAdd(g_ch, IDC_CH_SKIN, L"Default", kDefaultSkin);
+    if (_stricmp(wantPath.c_str(), "random") == 0) {
+        sel = 0;
+    } else if (_stricmp(wantPath.c_str(), "default") == 0) {
+        sel = 1;
+    } else {
+        sel = 2; // the first real skin, unless the one asked for is found below
+    }
+    for (int i = 0; i < (int)(sizeof(kSkins) / sizeof(kSkins[0])); i++) {
+        std::wstring f;
+        if (model != kSkins[i].model || !FindSkinFile(kSkins[i], f)) {
+            continue;
+        }
+        int idx = ComboAdd(g_ch, IDC_CH_SKIN, kSkins[i].label, i);
+        if (_stricmp(wantPath.c_str(), kSkins[i].path) == 0) {
+            sel = idx;
+        }
+        n++;
+    }
+    g_customSkins = CustomSkins_List();
+    for (size_t i = 0; i < g_customSkins.size(); i++) {
+        if (g_customSkins[i].model != model) {
+            continue;
+        }
+        int idx = ComboAdd(g_ch, IDC_CH_SKIN, g_customSkins[i].label, kCustomBase + (LPARAM)i);
+        if (_stricmp(wantPath.c_str(), g_customSkins[i].enginePath.c_str()) == 0) {
+            sel = idx;
+        }
+    }
+    ComboAdd(g_ch, IDC_CH_SKIN, L"New skin...", kNewSkin);
+    SendDlgItemMessageW(g_ch, IDC_CH_SKIN, CB_SETCURSEL, sel, 0);
+    g_lastSkin = SkinPathOf(ComboData(g_ch, IDC_CH_SKIN));
+    UpdatePreview();
+}
+
+// "New skin...": pick an image, it is copied (as PNG) into LugaruEX\Data\Textures\Custom
+static void NewSkin()
+{
+    const std::string model = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+    CustomSkin s;
+    if (CustomSkins_Import(g_main, model, s)) {
+        FillSkins(s.enginePath);
+    } else {
+        FillSkins(g_lastSkin);
+    }
+}
+
+
+// "Clothes": outfits made of the game's own clothing textures (wolves wear none),
+// Random (a different outfit each level), and the player's own images
+static const struct
+{
+    const char* key;
+    const wchar_t* label;
+} kClothes[] = { { "default", L"Default" }, { "random", L"Random" }, { "none", L"None" }, { "shirt", L"Shirt and pants" },
+                 { "camo", L"Camo" }, { "snowcamo", L"Snow camo" }, { "desertcamo", L"Desert camo" }, { "leather", L"Leather armor" },
+                 { "gi", L"Gi" } };
+static const LPARAM kClothesCustomBase = 2000, kNewClothes = 1900;
+static std::vector<CustomSkin> g_customClothes;
+static std::string g_lastClothes = "default"; // to go back to if "New clothes..." is cancelled
+
+static std::string ClothesKeyOf(LPARAM d)
+{
+    if (d >= 0 && d < (LPARAM)(sizeof(kClothes) / sizeof(kClothes[0]))) {
+        return kClothes[d].key;
+    }
+    if (d >= kClothesCustomBase && d < kClothesCustomBase + (LPARAM)g_customClothes.size()) {
+        return "custom:" + g_customClothes[d - kClothesCustomBase].enginePath;
+    }
+    return "default";
+}
+
+static void FillClothes(const std::string& want)
+{
+    SendDlgItemMessageW(g_ch, IDC_CH_CLOTHES, CB_RESETCONTENT, 0, 0);
+    int sel = 0;
+    for (int i = 0; i < (int)(sizeof(kClothes) / sizeof(kClothes[0])); i++) {
+        const int idx = ComboAdd(g_ch, IDC_CH_CLOTHES, kClothes[i].label, i);
+        if (_stricmp(want.c_str(), kClothes[i].key) == 0) {
+            sel = idx;
+        }
+    }
+    g_customClothes.clear();
+    for (const CustomSkin& c : CustomSkins_List()) {
+        if (c.model == "clothes") {
+            g_customClothes.push_back(c);
+        }
+    }
+    for (size_t i = 0; i < g_customClothes.size(); i++) {
+        const int idx = ComboAdd(g_ch, IDC_CH_CLOTHES, g_customClothes[i].label, kClothesCustomBase + (LPARAM)i);
+        if (_stricmp(want.c_str(), ("custom:" + g_customClothes[i].enginePath).c_str()) == 0) {
+            sel = idx;
+        }
+    }
+    ComboAdd(g_ch, IDC_CH_CLOTHES, L"New clothes...", kNewClothes);
+    SendDlgItemMessageW(g_ch, IDC_CH_CLOTHES, CB_SETCURSEL, sel, 0);
+    g_lastClothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
+}
+static void UpdateCharEnable()
+{
+    const bool def = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
+    EnableWindow(GetDlgItem(g_ch, IDC_CH_MODEL), !def);
+    EnableWindow(GetDlgItem(g_ch, IDC_CH_SKIN), !def);
+    // clothes follow the same rules, and wolves wear none
+    EnableWindow(GetDlgItem(g_ch, IDC_CH_CLOTHES), !def && ComboData(g_ch, IDC_CH_MODEL) != 1);
+    UpdatePreview();
+}
+
+static void InitCharPage(HWND p)
+{
+    g_ch = p;
+    CheckDlgButton(p, IDC_CH_DEFAULT, g_set.chDefault ? BST_CHECKED : BST_UNCHECKED);
+    ComboAdd(p, IDC_CH_MODEL, L"Rabbit", 0);
+    ComboAdd(p, IDC_CH_MODEL, L"Wolf", 1);
+    ComboSelectData(p, IDC_CH_MODEL, g_set.chModel == "wolf" ? 1 : 0, 0);
+    FillSkins(g_set.chSkin);
+    FillClothes(g_set.chClothes);
+    UpdateCharEnable();
+}
+
+static INT_PTR CALLBACK PageProc(HWND p, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg != WM_INITDIALOG) {
+        if (p == g_ct && g_ct) {
+            if (INT_PTR r = Controls_Proc(p, msg, wp, lp)) {
+                return r;
+            }
+            return FALSE;
+        }
+        if (p == g_md && g_md) {
+            if (INT_PTR r = Mods_Proc(p, msg, wp, lp)) {
+                return r;
+            }
+            return FALSE;
+        }
+        if (p == g_lc && g_lc) {
+            if (INT_PTR r = Local_Proc(p, msg, wp, lp)) {
+                return r;
+            }
+            return FALSE;
+        }
+    }
+    switch (msg) {
+        case WM_INITDIALOG:
+            EnableThemeDialogTexture(p, ETDT_ENABLETAB);
+            if (lp == IDD_PAGE_GFX) {
+                InitGfxPage(p);
+            } else if (lp == IDD_PAGE_CHAR) {
+                InitCharPage(p);
+            } else if (lp == IDD_PAGE_CONTROLS) {
+                g_ct = p;
+                Controls_Init(p, g_exeDir, IniPath());
+            } else if (lp == IDD_PAGE_MODS) {
+                g_md = p;
+                Mods_Init(p, g_exDir, IniPath());
+            } else if (lp == IDD_PAGE_LOCAL) {
+                g_lc = p;
+                Local_Init(p, IniPath());
+            } else {
+                InitMpPage(p);
+            }
+            return TRUE;
+        case WM_HSCROLL:
+            if ((HWND)lp == GetDlgItem(p, IDC_FOV)) {
+                UpdateFovLabel();
+            }
+            return TRUE;
+        case WM_COMMAND: {
+            const int id = LOWORD(wp), code = HIWORD(wp);
+            if (p == g_gfx) {
+                if (id == IDC_MONITOR && code == CBN_SELCHANGE) {
+                    FillResolutions(0, 0);
+                    FillRefresh(0);
+                } else if (id == IDC_RES && code == CBN_SELCHANGE) {
+                    const bool custom = ComboData(p, IDC_RES) == CUSTOM_RES;
+                    EnableWindow(GetDlgItem(p, IDC_CUSTW), custom);
+                    EnableWindow(GetDlgItem(p, IDC_CUSTH), custom);
+                    if (!custom) {
+                        int w, h;
+                        GetSelectedRes(w, h);
+                        SetDlgItemInt(p, IDC_CUSTW, w, FALSE);
+                        SetDlgItemInt(p, IDC_CUSTH, h, FALSE);
+                    }
+                    UpdateAspectLabel();
+                    FillRefresh((int)ComboData(p, IDC_REFRESH));
+                } else if (id == IDC_REFRESH && code == CBN_SELCHANGE) {
+                    FillFpsCap(-2);
+                } else if ((id == IDC_CUSTW || id == IDC_CUSTH) && code == EN_CHANGE) {
+                    UpdateAspectLabel();
+                } else if (id == IDC_MODE && code == CBN_SELCHANGE) {
+                    FillRefresh((int)ComboData(p, IDC_REFRESH));
+                }
+            } else if (p == g_mp) {
+                if (id == IDC_MP_OFF || id == IDC_MP_HOST || id == IDC_MP_JOIN) {
+                    // the labels between the buttons split the auto radio group, so keep
+                    // exactly one mode selected ourselves
+                    CheckRadioButton(p, IDC_MP_OFF, IDC_MP_JOIN, id);
+                    UpdateMpEnable();
+                }
+                if (id == IDC_LAN) {
+                    UpdateMpEnable();
+                }
+            } else if (p == g_ch) {
+                if (id == IDC_CH_DEFAULT) {
+                    UpdateCharEnable();
+                } else if (id == IDC_CH_MODEL && code == CBN_SELCHANGE) {
+                    FillSkins("");
+                    UpdateCharEnable(); // wolves: no clothes
+                } else if (id == IDC_CH_SKIN && code == CBN_SELCHANGE) {
+                    if (ComboData(g_ch, IDC_CH_SKIN) == kNewSkin) {
+                        NewSkin();
+                    } else {
+                        g_lastSkin = SkinPathOf(ComboData(g_ch, IDC_CH_SKIN));
+                        UpdatePreview();
+                    }
+                } else if (id == IDC_CH_CLOTHES && code == CBN_SELCHANGE) {
+                    if (ComboData(g_ch, IDC_CH_CLOTHES) == kNewClothes) {
+                        // pick an image: it is saved as LugaruEX\Data\Textures\Custom\clothes\<name>.png
+                        CustomSkin made;
+                        if (CustomSkins_Import(g_main, "clothes", made)) {
+                            FillClothes("custom:" + made.enginePath);
+                        } else {
+                            FillClothes(g_lastClothes);
+                        }
+                    } else {
+                        g_lastClothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
+                    }
+                }
+            }
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static void ShowPage(int i)
+{
+    ShowWindow(g_gfx, i == 0 ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_ch, i == 1 ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_ct, i == 2 ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_lc, i == 3 ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_mp, i == 4 ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_md, i == 5 ? SW_SHOW : SW_HIDE);
+}
+
+static bool CollectSettings()
+{
+    Settings& s = g_set;
+    s.monitor = std::max(0, ComboSel(g_gfx, IDC_MONITOR));
+    int w, h;
+    GetSelectedRes(w, h);
+    if (w < 640 || h < 480 || w > 16384 || h > 16384) {
+        MessageBoxW(g_main, L"Please enter a resolution of at least 640 x 480.", L"LugaruEX", MB_ICONWARNING);
+        return false;
+    }
+    s.width = w;
+    s.height = h;
+    LPARAM mode = ComboData(g_gfx, IDC_MODE);
+    s.mode = mode == 2 ? "fullscreen" : (mode == 0 ? "windowed" : "borderless");
+    s.refresh = 0; // the display's own / best refresh rate (the choice was removed)
+    s.msaa = (int)std::max<LPARAM>(0, ComboData(g_gfx, IDC_MSAA));
+    s.af = (int)std::max<LPARAM>(0, ComboData(g_gfx, IDC_AF));
+    s.vsync = (int)std::max<LPARAM>(0, ComboData(g_gfx, IDC_VSYNC));
+    // simulation rate is always automatic now (SimRate in the ini is kept for experts)
+    s.fpscap = ComboData(g_gfx, IDC_FPSCAP) == 0 ? 0 : -1; // -1 = match display refresh
+    s.fov = (int)SendDlgItemMessageW(g_gfx, IDC_FOV, TBM_GETPOS, 0, 0);
+    s.texq = (int)std::max<LPARAM>(0, ComboData(g_gfx, IDC_TEXQ));
+    s.overrides = IsDlgButtonChecked(g_gfx, IDC_OVERRIDES) == BST_CHECKED;
+    s.colorblind = (int)std::max<LPARAM>(0, ComboData(g_gfx, IDC_COLORBLIND));
+    s.lan = IsDlgButtonChecked(g_mp, IDC_LAN) == BST_CHECKED;
+    s.shareMods = IsDlgButtonChecked(g_mp, IDC_SHAREMODS) == BST_CHECKED;
+    s.autoUpdate = IsDlgButtonChecked(g_main, IDC_AUTOUPDATE) == BST_CHECKED;
+    s.shaders = IsDlgButtonChecked(g_gfx, IDC_SHADERS) == BST_CHECKED;
+
+    s.mpmode = IsDlgButtonChecked(g_mp, IDC_MP_HOST) == BST_CHECKED ? "host" : (IsDlgButtonChecked(g_mp, IDC_MP_JOIN) == BST_CHECKED ? "join" : "off");
+    int port = GetDlgItemInt(g_mp, IDC_PORT, NULL, FALSE);
+    s.port = (port > 0 && port < 65536) ? port : 27015;
+    wchar_t buf[256] = {};
+    GetDlgItemTextW(g_mp, IDC_ADDR, buf, 256);
+    s.addr = trim(narrow(buf));
+    s.chDefault = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
+    s.chModel = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+    LPARAM sk = ComboData(g_ch, IDC_CH_SKIN);
+    s.chSkin = SkinPathOf(sk);
+    s.chClothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
+    if (s.mpmode == "join" && s.addr.empty()) {
+        MessageBoxW(g_main, L"Enter the host's address as IP:port (for example 100.64.0.2:27015).", L"LugaruEX", MB_ICONWARNING);
+        return false;
+    }
+    return true;
+}
+
+// ---- controller navigation (Steam Deck through Proton, couch play): D-pad / left stick
+// move between controls, A selects, B closes a list, LB / RB switch tabs, Start plays
+static void SendKey(WORD vk)
+{
+    INPUT in[2] = {};
+    in[0].type = in[1].type = INPUT_KEYBOARD;
+    in[0].ki.wVk = in[1].ki.wVk = vk;
+    in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, in, sizeof(INPUT));
+}
+
+static std::wstring ClassOf(HWND h)
+{
+    wchar_t c[64] = {};
+    GetClassNameW(h, c, 64);
+    return c;
+}
+
+static HWND CurrentPage()
+{
+    HWND pages[] = { g_gfx, g_ch, g_ct, g_lc, g_mp, g_md };
+    const int cur = TabCtrl_GetCurSel(g_tabs);
+    return (cur >= 0 && cur < 6) ? pages[cur] : NULL;
+}
+
+// the page's controls in tab order, then Play! and Quit
+static std::vector<HWND> Focusables()
+{
+    std::vector<HWND> v;
+    HWND page = CurrentPage();
+    for (HWND c = page ? GetWindow(page, GW_CHILD) : NULL; c; c = GetWindow(c, GW_HWNDNEXT)) {
+        if (!IsWindowVisible(c) || !IsWindowEnabled(c)) {
+            continue;
+        }
+        const std::wstring k = ClassOf(c);
+        if (k == L"Button") {
+            if ((GetWindowLongW(c, GWL_STYLE) & BS_TYPEMASK) == BS_GROUPBOX) {
+                continue;
+            }
+        } else if (k != L"ComboBox" && k != L"Edit" && k != L"msctls_trackbar32" && k != L"SysListView32") {
+            continue;
+        }
+        v.push_back(c);
+    }
+    v.push_back(GetDlgItem(g_main, IDOK));
+    v.push_back(GetDlgItem(g_main, IDCANCEL));
+    return v;
+}
+
+static void FocusOn(HWND h)
+{
+    SetFocus(h);
+    SendMessageW(g_main, WM_CHANGEUISTATE, MAKEWPARAM(UIS_CLEAR, UISF_HIDEFOCUS | UISF_HIDEACCEL), 0);
+    if (ClassOf(h) == L"SysListView32" && ListView_GetNextItem(h, -1, LVNI_SELECTED) < 0) {
+        ListView_SetItemState(h, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    }
+}
+
+static void MoveFocus(int dir)
+{
+    const std::vector<HWND> v = Focusables();
+    HWND f = GetFocus();
+    int i = (int)(std::find(v.begin(), v.end(), f) - v.begin());
+    if (i == (int)v.size() && f) { // e.g. the edit box inside a combo
+        i = (int)(std::find(v.begin(), v.end(), GetParent(f)) - v.begin());
+    }
+    const int n = (int)v.size();
+    i = (i >= n) ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
+    FocusOn(v[i]);
+}
+
+static void PadNavigate()
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    if (pid != GetCurrentProcessId() || !g_tabs) {
+        return; // only while this launcher (or one of its lists) is in front
+    }
+    bool held[4] = {}, a = false, b = false, x = false, lb = false, rb = false, start = false; // held: up, down, left, right
+    for (auto& p : Pad_List()) {
+        if (!p.connected) {
+            continue;
+        }
+        held[0] |= p.btn[SDL_CONTROLLER_BUTTON_DPAD_UP] || p.ly < -0.6f;
+        held[1] |= p.btn[SDL_CONTROLLER_BUTTON_DPAD_DOWN] || p.ly > 0.6f;
+        held[2] |= p.btn[SDL_CONTROLLER_BUTTON_DPAD_LEFT] || p.lx < -0.6f;
+        held[3] |= p.btn[SDL_CONTROLLER_BUTTON_DPAD_RIGHT] || p.lx > 0.6f;
+        auto pressed = [&](int k) { return p.btn[k] && !p.prevBtn[k]; };
+        a |= pressed(SDL_CONTROLLER_BUTTON_A);
+        b |= pressed(SDL_CONTROLLER_BUTTON_B);
+        lb |= pressed(SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+        rb |= pressed(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+        start |= pressed(SDL_CONTROLLER_BUTTON_START);
+        x |= pressed(SDL_CONTROLLER_BUTTON_X);
+    }
+    if (Controls_Capturing()) {
+        if (Controls_CapturingKeys() && b) {
+            Controls_CancelCapture(); // a controller can't type the key: B backs out
+        }
+        return; // the Controls tab takes the next button
+    }
+    if (start) {
+        PostMessageW(g_main, WM_COMMAND, IDOK, 0);
+        return;
+    }
+    if (lb || rb) {
+        const int n = TabCtrl_GetItemCount(g_tabs), cur = TabCtrl_GetCurSel(g_tabs);
+        const int next = (cur + (rb ? 1 : n - 1)) % n;
+        TabCtrl_SetCurSel(g_tabs, next);
+        ShowPage(next);
+        const std::vector<HWND> v = Focusables();
+        FocusOn(v.front());
+        return;
+    }
+    HWND f = GetFocus();
+    const std::wstring k = f ? ClassOf(f) : L"";
+    const bool dropped = k == L"ComboBox" && SendMessageW(f, CB_GETDROPPEDSTATE, 0, 0);
+    if (a) {
+        if (!f || (GetAncestor(f, GA_ROOT) != g_main)) {
+            MoveFocus(1);
+        } else if (k == L"Button") {
+            SendMessageW(f, BM_CLICK, 0, 0);
+        } else if (k == L"ComboBox") {
+            if (dropped) {
+                SendKey(VK_RETURN);
+            } else {
+                SendMessageW(f, CB_SHOWDROPDOWN, TRUE, 0);
+            }
+        } else if (k == L"SysListView32") {
+            if (CurrentPage() == g_md) {
+                Mods_PadToggle();
+            } else {
+                Controls_ActivateRow();
+            }
+        }
+    }
+    if (x && f && k == L"SysListView32" && CurrentPage() == g_md) {
+        Mods_PadDelete();
+    }
+    if (b && dropped) {
+        SendMessageW(f, CB_SHOWDROPDOWN, FALSE, 0);
+    }
+    // directions, repeating while held
+    static bool was[4] = {};
+    static DWORD since[4] = {}, last[4] = {};
+    const DWORD now = GetTickCount();
+    for (int d = 0; d < 4; d++) {
+        bool fire = false;
+        if (held[d] && !was[d]) {
+            fire = true;
+            since[d] = last[d] = now;
+        } else if (held[d] && now - since[d] > 400 && now - last[d] > 110) {
+            fire = true;
+            last[d] = now;
+        }
+        was[d] = held[d];
+        if (!fire) {
+            continue;
+        }
+        const bool vertical = d < 2, forward = (d == 1 || d == 3);
+        if (dropped || (k == L"SysListView32" && vertical)) {
+            if (vertical) {
+                // lists: move inside, and leave them past the first / last row
+                const int cnt = dropped ? (int)SendMessageW(f, CB_GETCOUNT, 0, 0) : ListView_GetItemCount(f);
+                const int sel = dropped ? (int)SendMessageW(f, CB_GETCURSEL, 0, 0) : ListView_GetNextItem(f, -1, LVNI_SELECTED);
+                if (!dropped && ((!forward && sel <= 0) || (forward && sel >= cnt - 1))) {
+                    MoveFocus(forward ? 1 : -1);
+                } else {
+                    SendKey(forward ? VK_DOWN : VK_UP);
+                }
+            }
+        } else if (!vertical && (k == L"msctls_trackbar32" || k == L"Edit")) {
+            SendKey(forward ? VK_RIGHT : VK_LEFT);
+        } else {
+            MoveFocus(forward ? 1 : -1);
+        }
+    }
+}
+
+static HANDLE g_engineProcess = NULL;
+
+static bool LaunchEngine()
+{
+    std::wstring exe = g_exDir + L"LugaruEX.exe";
+    if (!PathFileExistsW(exe.c_str())) {
+        exe = g_exeDir + L"LugaruEX.exe"; // developer layout: engine next to the launcher
+    }
+    if (!PathFileExistsW(exe.c_str())) {
+        MessageBoxW(g_main, (L"Could not find " + exe + L"\nPlease reinstall LugaruEX.").c_str(), L"LugaruEX", MB_ICONERROR);
+        return false;
+    }
+    // pass through any extra command line arguments (e.g. -d for dev tools)
+    std::wstring cmd = L"\"" + exe + L"\"";
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i = 1; argv && i < argc; i++) {
+        cmd += L" \"";
+        cmd += argv[i];
+        cmd += L"\"";
+    }
+    if (argv) {
+        LocalFree(argv);
+    }
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    std::vector<wchar_t> cl(cmd.begin(), cmd.end());
+    cl.push_back(0);
+    if (!CreateProcessW(exe.c_str(), cl.data(), NULL, NULL, FALSE, 0, NULL, g_exeDir.c_str(), &si, &pi)) {
+        MessageBoxW(g_main, L"Failed to start LugaruEX.exe.", L"LugaruEX", MB_ICONERROR);
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    g_engineProcess = pi.hProcess; // waited for after the dialog closes
+    return true;
+}
+
+static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+        case WM_INITDIALOG: {
+            g_main = d;
+            HICON ic = LoadIconW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_APP));
+            SendMessageW(d, WM_SETICON, ICON_BIG, (LPARAM)ic);
+            SendMessageW(d, WM_SETICON, ICON_SMALL, (LPARAM)ic);
+            BuildBanner(GetDlgItem(d, IDC_BANNER));
+
+            g_tabs = GetDlgItem(d, IDC_TABS);
+            TCITEMW ti = { TCIF_TEXT };
+            ti.pszText = (LPWSTR)L"Graphics";
+            TabCtrl_InsertItem(g_tabs, 0, &ti);
+            ti.pszText = (LPWSTR)L"Character";
+            TabCtrl_InsertItem(g_tabs, 1, &ti);
+            ti.pszText = (LPWSTR)L"Controls";
+            TabCtrl_InsertItem(g_tabs, 2, &ti);
+            ti.pszText = (LPWSTR)L"Local";
+            TabCtrl_InsertItem(g_tabs, 3, &ti);
+            ti.pszText = (LPWSTR)L"Multiplayer";
+            TabCtrl_InsertItem(g_tabs, 4, &ti);
+            ti.pszText = (LPWSTR)L"Mods";
+            TabCtrl_InsertItem(g_tabs, 5, &ti);
+
+            CreateDialogParamW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDD_PAGE_GFX), d, PageProc, IDD_PAGE_GFX);
+            CreateDialogParamW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDD_PAGE_CHAR), d, PageProc, IDD_PAGE_CHAR);
+            CreateDialogParamW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDD_PAGE_CONTROLS), d, PageProc, IDD_PAGE_CONTROLS);
+            CreateDialogParamW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDD_PAGE_LOCAL), d, PageProc, IDD_PAGE_LOCAL);
+            CreateDialogParamW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDD_PAGE_MODS), d, PageProc, IDD_PAGE_MODS);
+            CreateDialogParamW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDD_PAGE_MP), d, PageProc, IDD_PAGE_MP);
+            RECT r;
+            GetWindowRect(g_tabs, &r);
+            MapWindowPoints(NULL, d, (POINT*)&r, 2);
+            TabCtrl_AdjustRect(g_tabs, FALSE, &r);
+            for (HWND pg : { g_gfx, g_ch, g_ct, g_lc, g_mp, g_md }) {
+                SetWindowPos(pg, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, 0);
+            }
+            {
+                // test hook LUGARUEX_LAUNCHER_TAB=n: open on tab n (screenshots)
+                const char* t = getenv("LUGARUEX_LAUNCHER_TAB");
+                const int first = t ? std::max(0, std::min(5, atoi(t))) : 0;
+                TabCtrl_SetCurSel(g_tabs, first);
+                ShowPage(first);
+            }
+            SetTimer(d, 7, 16, NULL); // controller polling for the Controls / Local tabs
+
+            CheckDlgButton(d, IDC_AUTOUPDATE, g_set.autoUpdate ? BST_CHECKED : BST_UNCHECKED);
+            DragAcceptFiles(d, TRUE); // mod zips dropped anywhere on the window
+            if (g_set.autoUpdate) { // look for a new LugaruEX meanwhile (it installs on the next start)
+                std::thread(UpdateThread, d, narrow(g_exDir), g_set.updateRepo.empty() ? std::string(kUpdateRepo) : g_set.updateRepo).detach();
+            }
+            std::wstring ver = L"LugaruEX 0.4.7";
+            if (!PathFileExistsW((g_exeDir + L"Data").c_str())) {
+                ver = L"No game Data folder here!";
+            }
+            SetDlgItemTextW(d, IDC_VERSION, ver.c_str());
+            return TRUE;
+        }
+        case WM_TIMER:
+            if (wp == 7) {
+                Pad_Update();
+                Controls_Tick();
+                Local_Tick();
+                PadNavigate();
+            }
+            return TRUE;
+        case WM_UPDATE_STATE: {
+            std::string* s = (std::string*)lp;
+            if (wp == 1) {
+                SetDlgItemTextW(d, IDC_VERSION, (L"Downloading LugaruEX " + widen(*s) + L"...").c_str());
+            } else if (wp == 2) {
+                SetDlgItemTextW(d, IDC_VERSION, (L"LugaruEX " + widen(*s) + L" installs next start").c_str());
+            }
+            delete s;
+            return TRUE;
+        }
+        case WM_DROPFILES: {
+            HDROP drop = (HDROP)wp;
+            std::vector<std::wstring> files;
+            const UINT n = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
+            for (UINT i = 0; i < n; i++) {
+                wchar_t f[MAX_PATH * 2];
+                if (DragQueryFileW(drop, i, f, MAX_PATH * 2)) {
+                    files.push_back(f);
+                }
+            }
+            DragFinish(drop);
+            TabCtrl_SetCurSel(g_tabs, 5); // show the Mods tab with the new mods
+            ShowPage(5);
+            Mods_Install(files);
+            return TRUE;
+        }
+        case WM_DRAWITEM: {
+            DRAWITEMSTRUCT* di = (DRAWITEMSTRUCT*)lp;
+            if (di->CtlID == IDC_BANNER && g_banner) {
+                HDC m = CreateCompatibleDC(di->hDC);
+                HGDIOBJ o = SelectObject(m, g_banner);
+                BitBlt(di->hDC, 0, 0, g_bannerW, g_bannerH, m, 0, 0, SRCCOPY);
+                SelectObject(m, o);
+                DeleteDC(m);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_NOTIFY: {
+            NMHDR* n = (NMHDR*)lp;
+            if (n->hwndFrom == g_tabs && n->code == TCN_SELCHANGE) {
+                ShowPage(TabCtrl_GetCurSel(g_tabs));
+            }
+            break;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                if (!CollectSettings()) {
+                    return TRUE;
+                }
+                if (!SaveIni(g_set)) {
+                    MessageBoxW(d, L"Could not write the settings file (LugaruEX\\LugaruEX.ini).", L"LugaruEX", MB_ICONWARNING);
+                } else {
+                    Controls_Save(IniPath()); // [Keys] [Pad]
+                    Local_Save(IniPath());    // [Local]
+                    Mods_Save(IniPath());     // [Mods]
+                }
+                if (LaunchEngine()) {
+                    EndDialog(d, IDOK);
+                }
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(d, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        case WM_DPICHANGED:
+            // keep it simple: the dialog is created at the launch DPI
+            break;
+    }
+    return FALSE;
+}
+
+// ----------------------------------------------------------------------------
+// Installer (this program with a release zip appended = LugaruEX-<ver>-Setup.exe, or run
+// from an unpacked release outside a game folder) and updates from GitHub
+
+static std::string U8(const std::wstring& w)
+{
+    return narrow(w);
+}
+
+// the release zip appended to this exe: ... zip bytes, then "LGXPAYLD" + its offset (8 bytes)
+static bool ExtractPayload(const std::wstring& exe, const std::string& zipOut)
+{
+    FILE* f = _wfopen(exe.c_str(), L"rb");
+    if (!f) {
+        return false;
+    }
+    bool ok = false;
+    _fseeki64(f, 0, SEEK_END);
+    const long long size = _ftelli64(f);
+    char tag[8] = {};
+    unsigned long long off = 0;
+    if (size > 16 && _fseeki64(f, size - 16, SEEK_SET) == 0 && fread(tag, 1, 8, f) == 8 && fread(&off, 1, 8, f) == 8 &&
+        memcmp(tag, "LGXPAYLD", 8) == 0 && off > 0 && (long long)off < size - 16) {
+        FILE* o = fsu::Open(zipOut, "wb");
+        if (o) {
+            _fseeki64(f, (long long)off, SEEK_SET);
+            std::vector<char> buf(1 << 16);
+            long long left = size - 16 - (long long)off;
+            ok = true;
+            while (left > 0 && ok) {
+                const size_t n = (size_t)std::min<long long>(left, (long long)buf.size());
+                ok = fread(buf.data(), 1, n, f) == n && fwrite(buf.data(), 1, n, o) == n;
+                left -= n;
+            }
+            ok = (fclose(o) == 0) && ok;
+        }
+    }
+    fclose(f);
+    return ok;
+}
+
+static std::vector<GameFolder> g_games;
+static std::string g_package; // UTF-8 folder holding Lugaru.exe + LugaruEX\ to install
+static HWND g_setup = NULL;
+static std::atomic<uint64_t> g_dlBytes(0);
+static std::atomic<bool> g_dlBusy(false);
+
+static void FillGames(int select)
+{
+    HWND l = GetDlgItem(g_setup, IDC_SU_LIST);
+    SendMessageW(l, LB_RESETCONTENT, 0, 0);
+    for (const GameFolder& g : g_games) {
+        std::wstring t = widen(g.kind) + L"   " + widen(g.path) + (g.hasLugaruEX ? L"   (has LugaruEX: update)" : L"");
+        SendMessageW(l, LB_ADDSTRING, 0, (LPARAM)t.c_str());
+    }
+    if (!g_games.empty()) {
+        SendMessageW(l, LB_SETCURSEL, std::max(0, std::min(select, (int)g_games.size() - 1)), 0);
+    }
+    const int s = (int)SendMessageW(l, LB_GETCURSEL, 0, 0);
+    const bool steam = s >= 0 && g_games[s].steam;
+    EnableWindow(GetDlgItem(g_setup, IDC_SU_STEAM), steam);
+    SetDlgItemTextW(g_setup, IDC_SU_STATUS, g_games.empty() ? L"No copy of Lugaru found. Pick its folder with Browse..., or get the free "
+                                                              L"open-source game data (about 40 MB, CC-BY-SA)."
+                                                            : L"");
+}
+
+static std::wstring PickFolder(HWND owner)
+{
+    std::wstring out;
+    IFileOpenDialog* d = NULL;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) {
+        DWORD o = 0;
+        d->GetOptions(&o);
+        d->SetOptions(o | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        d->SetTitle(L"Choose your Lugaru folder (the one with Data in it)");
+        if (SUCCEEDED(d->Show(owner))) {
+            IShellItem* it = NULL;
+            if (SUCCEEDED(d->GetResult(&it))) {
+                PWSTR p = NULL;
+                if (SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH, &p))) {
+                    out = p;
+                    CoTaskMemFree(p);
+                }
+                it->Release();
+            }
+        }
+        d->Release();
+    }
+    return out;
+}
+
+static void FreeDataThread(HWND d)
+{
+    const std::string dir = Setup_FreeGameFolder(), zip = dir + "\\lugaru-data.zip";
+    fsu::MakeDirs(dir);
+    std::string err;
+    bool ok = Http_GetFile(Setup_FreeDataUrl(), zip, &g_dlBytes, err) && Setup_UnpackFreeData(zip, dir, err);
+    fsu::RemoveTree(zip);
+    g_dlBusy = false;
+    PostMessageW(d, WM_FREEDATA_DONE, ok ? 1 : 0, (LPARAM) new std::string(err));
+}
+
+// install into the chosen folder; a folder that needs admin rights: run this again elevated
+static bool InstallInto(const GameFolder& g, bool steamButton, bool shortcut, HWND owner, bool elevated)
+{
+    if (!g.writable && !elevated) {
+        std::wstring args = L"--setup-to \"" + widen(g.path) + L"\" --package \"" + widen(g_package) + L"\"";
+        args += steamButton ? L"" : L" --no-steam";
+        args += shortcut ? L"" : L" --no-shortcut";
+        SHELLEXECUTEINFOW se = { sizeof(se) };
+        se.fMask = SEE_MASK_NOCLOSEPROCESS;
+        se.hwnd = owner;
+        se.lpVerb = L"runas";
+        wchar_t self[MAX_PATH];
+        GetModuleFileNameW(NULL, self, MAX_PATH);
+        se.lpFile = self;
+        se.lpParameters = args.c_str();
+        se.nShow = SW_SHOWNORMAL;
+        if (!ShellExecuteExW(&se) || !se.hProcess) {
+            return false;
+        }
+        WaitForSingleObject(se.hProcess, INFINITE);
+        DWORD code = 1;
+        GetExitCodeProcess(se.hProcess, &code);
+        CloseHandle(se.hProcess);
+        return code == 0;
+    }
+    SetupOptions o;
+    o.steamPlayButton = steamButton;
+    o.shortcut = shortcut;
+    std::string launcher, err;
+    GameFolder w = g;
+    w.writable = true;
+    if (!Setup_Install(g_package, w, o, launcher, err)) {
+        MessageBoxW(owner, (L"Installing failed: " + widen(err)).c_str(), L"LugaruEX Setup", MB_ICONERROR);
+        return false;
+    }
+    return true;
+}
+
+static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+        case WM_INITDIALOG: {
+            g_setup = d;
+            HICON ic = LoadIconW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_APP));
+            SendMessageW(d, WM_SETICON, ICON_BIG, (LPARAM)ic);
+            SendMessageW(d, WM_SETICON, ICON_SMALL, (LPARAM)ic);
+            BuildBanner(GetDlgItem(d, IDC_BANNER));
+            CheckDlgButton(d, IDC_SU_STEAM, BST_CHECKED);
+            CheckDlgButton(d, IDC_SU_SHORTCUT, BST_CHECKED);
+            FillGames(0);
+            return TRUE;
+        }
+        case WM_DRAWITEM: {
+            DRAWITEMSTRUCT* di = (DRAWITEMSTRUCT*)lp;
+            if (di->CtlID == IDC_BANNER && g_banner) {
+                HDC m = CreateCompatibleDC(di->hDC);
+                HGDIOBJ o = SelectObject(m, g_banner);
+                BitBlt(di->hDC, 0, 0, g_bannerW, g_bannerH, m, 0, 0, SRCCOPY);
+                SelectObject(m, o);
+                DeleteDC(m);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_TIMER:
+            if (g_dlBusy) {
+                wchar_t t[128];
+                swprintf(t, 128, L"Getting the free game data from the OSS Lugaru project... %.1f MB", g_dlBytes / 1048576.0);
+                SetDlgItemTextW(d, IDC_SU_STATUS, t);
+            }
+            return TRUE;
+        case WM_FREEDATA_DONE: {
+            std::string* err = (std::string*)lp;
+            KillTimer(d, 1);
+            EnableWindow(GetDlgItem(d, IDC_SU_FREE), TRUE);
+            EnableWindow(GetDlgItem(d, IDOK), TRUE);
+            if (wp) {
+                g_games = Setup_FindGames();
+                int sel = 0;
+                for (int i = 0; i < (int)g_games.size(); i++) {
+                    if (fsu::Lower(g_games[i].path) == fsu::Lower(Setup_FreeGameFolder())) {
+                        sel = i;
+                    }
+                }
+                FillGames(sel);
+                SetDlgItemTextW(d, IDC_SU_STATUS, L"The free game data is ready. Press Install.");
+            } else {
+                SetDlgItemTextW(d, IDC_SU_STATUS, (L"Could not get the free game data: " + widen(*err)).c_str());
+            }
+            delete err;
+            return TRUE;
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDC_SU_LIST:
+                    if (HIWORD(wp) == LBN_SELCHANGE) {
+                        const int s = (int)SendDlgItemMessageW(d, IDC_SU_LIST, LB_GETCURSEL, 0, 0);
+                        EnableWindow(GetDlgItem(d, IDC_SU_STEAM), s >= 0 && s < (int)g_games.size() && g_games[s].steam);
+                    }
+                    return TRUE;
+                case IDC_SU_BROWSE: {
+                    const std::wstring p = PickFolder(d);
+                    if (p.empty()) {
+                        return TRUE;
+                    }
+                    GameFolder g = Setup_Describe(U8(p));
+                    if (g.path.empty()) {
+                        MessageBoxW(d, L"That folder has no Lugaru game data in it (a Data folder with Maps inside).", L"LugaruEX Setup", MB_ICONWARNING);
+                        return TRUE;
+                    }
+                    g_games.insert(g_games.begin(), g);
+                    FillGames(0);
+                    return TRUE;
+                }
+                case IDC_SU_FREE:
+                    if (!g_dlBusy) {
+                        g_dlBusy = true;
+                        g_dlBytes = 0;
+                        EnableWindow(GetDlgItem(d, IDC_SU_FREE), FALSE);
+                        EnableWindow(GetDlgItem(d, IDOK), FALSE);
+                        SetTimer(d, 1, 250, NULL);
+                        std::thread(FreeDataThread, d).detach();
+                    }
+                    return TRUE;
+                case IDOK: {
+                    const int s = (int)SendDlgItemMessageW(d, IDC_SU_LIST, LB_GETCURSEL, 0, 0);
+                    if (s < 0 || s >= (int)g_games.size()) {
+                        MessageBoxW(d, L"Pick the game folder to install into (or get the free game data first).", L"LugaruEX Setup", MB_ICONINFORMATION);
+                        return TRUE;
+                    }
+                    const GameFolder g = g_games[s];
+                    SetCursor(LoadCursor(NULL, IDC_WAIT));
+                    if (InstallInto(g, IsDlgButtonChecked(d, IDC_SU_STEAM) == BST_CHECKED, IsDlgButtonChecked(d, IDC_SU_SHORTCUT) == BST_CHECKED, d, false)) {
+                        const std::wstring launcher = widen(fsu::Join(fsu::Join(g.path, "LugaruEX"), Setup_LauncherName()));
+                        MessageBoxW(d, (L"LugaruEX is installed in\n" + widen(g.path) +
+                                        (g.steam && IsDlgButtonChecked(d, IDC_SU_STEAM) == BST_CHECKED ? L"\n\nSteam's Play button now opens it." : L"") +
+                                        L"\n\nThe launcher opens now.").c_str(),
+                                    L"LugaruEX Setup", MB_ICONINFORMATION);
+                        ShellExecuteW(NULL, L"open", launcher.c_str(), NULL, widen(g.path).c_str(), SW_SHOWNORMAL);
+                        EndDialog(d, IDOK);
+                    }
+                    return TRUE;
+                }
+                case IDCANCEL:
+                    EndDialog(d, IDCANCEL);
+                    return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+// ---- updates: found and downloaded while the launcher is open, put in place on its next start
+static std::wstring g_updateNote;
+
+static void UpdateThread(HWND notify, std::string exDir, std::string repo)
+{
+    UpdateInfo info;
+    std::string err;
+    if (!Update_Latest(repo, Update_Platform(), info, err) || !Update_IsNewer(info.version, EX_LAUNCHER_VERSION)) {
+        return;
+    }
+    const std::string dir = exDir + "update";
+    fsu::MakeDirs(dir);
+    const std::string pkg = dir + "/" + info.asset;
+    if (fsu::IsFile(dir + "/ready.txt")) {
+        return; // already downloaded
+    }
+    PostMessageW(notify, WM_UPDATE_STATE, 1, (LPARAM) new std::string(info.version));
+    if (Update_Download(info, pkg, nullptr, err) && fsu::WriteAll(dir + "/ready.txt", info.version + "\n" + info.asset + "\n")) {
+        PostMessageW(notify, WM_UPDATE_STATE, 2, (LPARAM) new std::string(info.version));
+    } else {
+        PostMessageW(notify, WM_UPDATE_STATE, 0, (LPARAM) new std::string(err));
+    }
+}
+
+// a downloaded update waiting: put it in place and start the new launcher (true = this one quits)
+static bool ApplyPendingUpdate()
+{
+    const std::string ex = narrow(g_exDir), dir = ex + "update";
+    std::string ready;
+    if (!fsu::ReadAll(dir + "/ready.txt", ready)) {
+        return false;
+    }
+    const std::string version = fsu::Trim(ready.substr(0, ready.find('\n')));
+    const std::string asset = fsu::Trim(ready.substr(ready.find('\n') + 1));
+    std::string err, launcher;
+    bool ok = false;
+    if (Update_IsNewer(version, EX_LAUNCHER_VERSION) && !asset.empty() && asset.find_first_of("/\\") == std::string::npos) {
+        const std::string tmp = dir + "/unpacked";
+        GameFolder g;
+        g.path = narrow(g_exeDir);
+        g.path.pop_back(); // (no trailing slash)
+        g.writable = true;
+        SetupOptions o;
+        o.steamPlayButton = false; // (an earlier install decides: Lugaru.exe is updated when it is ours)
+        o.shortcut = false;
+        ok = Setup_Unpack(dir + "/" + asset, tmp, err) && Setup_Install(tmp, g, o, launcher, err);
+    }
+    fsu::RemoveTree(dir); // used or not, never try it twice
+    if (!ok) {
+        if (!err.empty()) {
+            MessageBoxW(NULL, (L"The LugaruEX update could not be installed: " + widen(err)).c_str(), L"LugaruEX", MB_ICONWARNING);
+        }
+        return false;
+    }
+    // start the new launcher (it is at this program's path now) with the same arguments
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(NULL, self, MAX_PATH);
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    std::wstring cmd = GetCommandLineW();
+    std::vector<wchar_t> cl(cmd.begin(), cmd.end());
+    cl.push_back(0);
+    if (CreateProcessW(self, cl.data(), NULL, NULL, FALSE, 0, NULL, g_exeDir.c_str(), &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return true;
+    }
+    return false;
+}
+
+// before anything else: installer? (returns true when this run was the installer)
+static bool RunSetupIfNeeded(HINSTANCE inst)
+{
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::wstring setupTo, package;
+    bool noSteam = false, noShortcut = false;
+    for (int i = 1; argv && i < argc; i++) {
+        const std::wstring a = argv[i];
+        if (a == L"--setup-to" && i + 1 < argc) {
+            setupTo = argv[++i];
+        } else if (a == L"--package" && i + 1 < argc) {
+            package = argv[++i];
+        } else if (a == L"--no-steam") {
+            noSteam = true;
+        } else if (a == L"--no-shortcut") {
+            noShortcut = true;
+        }
+    }
+    if (argv) {
+        LocalFree(argv);
+    }
+    if (!setupTo.empty()) { // the elevated half of an install into a protected folder
+        g_package = narrow(package);
+        GameFolder g = Setup_Describe(narrow(setupTo));
+        g.writable = true;
+        ExitProcess(InstallInto(g, !noSteam, !noShortcut, NULL, true) ? 0 : 1);
+    }
+    wchar_t selfW[MAX_PATH];
+    GetModuleFileNameW(NULL, selfW, MAX_PATH);
+    const std::string tmpZip = narrow(std::wstring(_wgetenv(L"TEMP") ? _wgetenv(L"TEMP") : L".")) + "\\LugaruEX-setup.zip";
+    const std::string tmpDir = tmpZip.substr(0, tmpZip.size() - 4);
+    std::string err;
+    if (ExtractPayload(selfW, tmpZip) && Setup_Unpack(tmpZip, tmpDir, err)) {
+        g_package = tmpDir; // LugaruEX-<ver>-Setup.exe
+    } else if (!Setup_IsGameFolder(narrow(g_exeDir)) && fsu::IsFile(narrow(g_exeDir) + "LugaruEX\\LugaruEX.exe")) {
+        g_package = narrow(g_exeDir); // the release zip unpacked somewhere else
+        g_package.pop_back();
+    } else {
+        return false; // the launcher of an installed LugaruEX
+    }
+    g_setupMode = true;
+    g_games = Setup_FindGames();
+    // the banner borrows the art of the first game found (nothing is written there)
+    const std::wstring keep = g_exeDir;
+    if (!g_games.empty() && !g_games[0].path.empty()) {
+        g_exeDir = widen(g_games[0].path) + L"\\";
+    }
+    DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_SETUP), NULL, SetupProc, 0);
+    g_exeDir = keep;
+    fsu::RemoveTree(tmpZip);
+    fsu::RemoveTree(tmpDir);
+    return true;
+}
+
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
+{
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES };
+    InitCommonControlsEx(&icc);
+    g_exeDir = ExeDir();
+    {
+        // installed as <game>\LugaruEX\LugaruEX Launcher.exe: the game folder is the parent
+        const std::wstring parent = g_exeDir.substr(0, g_exeDir.find_last_of(L'\\', g_exeDir.size() - 2) + 1);
+        if (!PathIsDirectoryW((g_exeDir + L"Data\\Maps").c_str()) && PathIsDirectoryW((parent + L"Data\\Maps").c_str())) {
+            g_exeDir = parent;
+        }
+    }
+    g_exDir = g_exeDir + L"LugaruEX\\";
+    Setup_CleanOld(Setup_SelfPath()); // left by an update
+    if (RunSetupIfNeeded(inst)) {     // LugaruEX-<ver>-Setup.exe, or an unpacked release
+        CoUninitialize();
+        return 0;
+    }
+    TidyOldInstall();
+    LoadIni(g_set);
+    if (g_set.autoUpdate && ApplyPendingUpdate()) { // downloaded last time: the new launcher takes over
+        CoUninitialize();
+        return 0;
+    }
+    EnumMonitors();
+    if (g_set.monitor < 0 || g_set.monitor >= (int)g_mons.size()) {
+        // first run: default to the monitor with the highest refresh rate
+        g_set.monitor = 0;
+        for (int i = 1; i < (int)g_mons.size(); i++) {
+            if (g_mons[i].curHz > g_mons[g_set.monitor].curHz) {
+                g_set.monitor = i;
+            }
+        }
+    }
+    Preview_Register(inst, g_exeDir);
+    Controls_Register(inst);
+    Local_Register(inst);
+    Pad_Init(); // controllers for the Controls / Local tabs and controller navigation
+    DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_MAIN), NULL, MainProc, 0);
+    if (g_banner) {
+        DeleteObject(g_banner);
+    }
+    if (g_engineProcess) {
+        // stay (without a window) until the game ends: Steam - and Proton on Linux - treat
+        // the program they started as the game, so it shows as running the whole time
+        WaitForSingleObject(g_engineProcess, INFINITE);
+        CloseHandle(g_engineProcess);
+    }
+    CoUninitialize();
+    return 0;
+}

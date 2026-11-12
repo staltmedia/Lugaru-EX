@@ -30,6 +30,7 @@ const Act kActs[] = {
     { "Back", L"Move back", "S", nullptr, nullptr, L"Left stick" },
     { "Left", L"Move left", "A", nullptr, nullptr, L"Left stick" },
     { "Right", L"Move right", "D", nullptr, nullptr, L"Left stick" },
+    { "Walk", L"Walk (hold)", nullptr, nullptr, L"Ctrl", L"Light push" },
     { "Jump", L"Jump", "Space", "a", nullptr, nullptr },
     { "Crouch", L"Crouch / roll / block", "Left Shift", "lefttrigger", nullptr, nullptr },
     { "Attack", L"Attack", "Mouse Left", "righttrigger", nullptr, nullptr },

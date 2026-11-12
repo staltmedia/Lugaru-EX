@@ -794,6 +794,7 @@ void LocalTickInput()
         p.crouchkeydown = in.crouch;
         p.drawkeydown = in.draw;
         p.throwkeydown = in.thrw;
+        p.exWalk = in.walk;
         if (!p.jumpkeydown) {
             p.jumpclimb = 0;
             p.jumptogglekeydown = 0;
@@ -1284,7 +1285,9 @@ int LocalAddRemote(unsigned long long token, const std::string& character)
     for (auto& s : g_slots) {
         remotes += s.remote ? 1 : 0;
     }
-    if (remotes >= 8) {
+    // no player cap: only the network's one-byte person index (255 characters with the
+    // level's own) limits how many can join
+    if (remotes >= 190 || Person::players.size() + 1 >= 250) {
         return -1;
     }
     Slot s;
@@ -1438,6 +1441,7 @@ void LocalInputOf(int k, PadInput& in, float& yaw, float& pitch)
             in.attack = Input::isKeyDown(Game::attackkey);
             in.draw = Input::isKeyDown(Game::drawkey);
             in.thrw = Input::isKeyDown(Game::throwkey);
+            in.walk = P1Walk();
         }
         return;
     }

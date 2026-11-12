@@ -41,8 +41,11 @@ struct PadInput
     bool fwd = false, back = false, left = false, right = false;
     bool jump = false, crouch = false, attack = false, draw = false, thrw = false;
     bool pause = false, lighting = false;
+    bool walk = false;          // walk instead of run (a light push of the left stick; Ctrl on a keyboard)
     float lookX = 0, lookY = 0; // right stick, shaped, -1..1
 };
+/** player 1 walks: Ctrl held, or player 1's controller stick pushed only lightly */
+bool P1Walk();
 int PadCount();
 std::string PadIdAt(int i);
 bool PadConnected(const std::string& id);

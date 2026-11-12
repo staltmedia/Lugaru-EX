@@ -31,6 +31,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExConfig.hpp"
 #include "EX/ExLocal.hpp"
 #include "EX/ExNet.hpp"
+#include "EX/ExPad.hpp"
 #include "Objects/PersonType.hpp"
 
 #include "Animation/Animation.hpp"
@@ -72,6 +73,25 @@ using namespace Game;
 // - it dropped the arguments, so challenge levels loaded "map<garbage>" and crashed.
 // MSVC 2015+ has a standard snprintf.
 #endif
+
+// test hook LUGARUEX_TEST_WALK: player 1 walks forward (the walk modifier, checked online too);
+// LUGARUEX_TEST_WALK=run: runs forward instead (to compare); =side: walks to the left
+// (the camera stays, so the head turns back toward it)
+static bool exTestWalk()
+{
+    static const bool on = getenv("LUGARUEX_TEST_WALK") != nullptr;
+    return on;
+}
+static bool exTestWalkRun()
+{
+    static const bool run = getenv("LUGARUEX_TEST_WALK") && strcmp(getenv("LUGARUEX_TEST_WALK"), "run") == 0;
+    return run;
+}
+static bool exTestWalkSide()
+{
+    static const bool side = getenv("LUGARUEX_TEST_WALK") && strcmp(getenv("LUGARUEX_TEST_WALK"), "side") == 0;
+    return side;
+}
 
 extern float multiplier;
 extern XYZ viewer;
@@ -3276,10 +3296,13 @@ void doPlayerCollisions()
                                                                               /*i!=0&&*/ Person::players[k]->skeleton.oldfree == 1 && Animation::animations[Person::players[i]->animCurrent].attack == neutral)) ||
                                                                             (Person::players[i]->animTarget == jumpupanim || Person::players[i]->animTarget == jumpdownanim || Person::players[i]->isFlip()) &&
                                                                                 (Person::players[k]->animTarget == jumpupanim || Person::players[k]->animTarget == jumpdownanim || Person::players[k]->isFlip()) &&
-                                                                                k == 0 && !Person::players[i]->skeleton.oldfree && !Person::players[k]->skeleton.oldfree) {
+                                                                                (k == 0 || Person::players[k]->isPlayerControlled() || Person::players[i]->isPlayerControlled()) && // LugaruEX: any player (was player 1 only)
+                                                                                !Person::players[i]->skeleton.oldfree && !Person::players[k]->skeleton.oldfree) {
                                                                             //If hit by body
-                                                                            if ((i != 0 || Person::players[i]->skeleton.free) &&
-                                                                                    (k != 0 || Person::players[k]->skeleton.free) ||
+                                                                            // (pairs without player 1: the player in it counts as player 1 did)
+                                                                            if ((k == 0 ? ((i != 0 || Person::players[i]->skeleton.free) && Person::players[k]->skeleton.free)
+                                                                                        : ((!Person::players[i]->isPlayerControlled() || Person::players[i]->skeleton.free) &&
+                                                                                           (!Person::players[k]->isPlayerControlled() || Person::players[k]->skeleton.free))) ||
                                                                                 Person::players[i]->skeleton.oldfree == 1 || Person::players[k]->skeleton.oldfree == 1 || // a flying body
                                                                                 (Animation::animations[Person::players[i]->animTarget].height == highheight &&
                                                                                  Animation::animations[Person::players[k]->animTarget].height == highheight)) {
@@ -3289,12 +3312,12 @@ void doPlayerCollisions()
 
                                                                                 Person::players[i]->RagDoll(0);
                                                                                 if (Person::players[i]->damage > Person::players[i]->damagetolerance - findLengthfast(&rotatetarget) / 4 && !Person::players[i]->dead) {
-                                                                                    award_bonus(0, aimbonus);
+                                                                                    award_bonus(k, aimbonus); // LugaruEX: the player who knocked them out (was always player 1)
                                                                                 }
                                                                                 Person::players[i]->DoDamage(findLengthfast(&rotatetarget) / 4);
                                                                                 Person::players[k]->RagDoll(0);
                                                                                 if (Person::players[k]->damage > Person::players[k]->damagetolerance - findLengthfast(&rotatetarget) / 4 && !Person::players[k]->dead) {
-                                                                                    award_bonus(0, aimbonus); // Huh, again?
+                                                                                    award_bonus(i, aimbonus); // (the other way round)
                                                                                 }
                                                                                 Person::players[k]->DoDamage(findLengthfast(&rotatetarget) / 4);
 
@@ -3700,7 +3723,12 @@ void Game::Tick()
                 Person::players[0]->crouchkeydown = Input::isKeyDown(crouchkey);
                 Person::players[0]->drawkeydown = Input::isKeyDown(drawkey);
                 Person::players[0]->throwkeydown = Input::isKeyDown(throwkey);
+                Person::players[0]->exWalk = EX::P1Walk() || (exTestWalk() && !exTestWalkRun());
+                if (exTestWalk() && !EX::NetIsGuest()) { // test hook: player 1 walks forward (or left)
+                    (exTestWalkSide() ? Person::players[0]->leftkeydown : Person::players[0]->forwardkeydown) = 1;
+                }
             } else {
+                Person::players[0]->exWalk = false;
                 Person::players[0]->forwardkeydown = 0;
                 Person::players[0]->leftkeydown = 0;
                 Person::players[0]->backkeydown = 0;
@@ -4732,6 +4760,15 @@ void Game::Tick()
                                 Person::players[i]->targetyaw += 180;
                             }
                             movekey = 1;
+                        }
+                        // LugaruEX: players can walk (Ctrl, or a light push of the stick), the walk
+                        // the game's characters use; rabbits only (wolves have no walk)
+                        if (movekey && Person::players[i]->isPlayerControlled() && Person::players[i]->creature == rabbittype) {
+                            if (Person::players[i]->exWalk && Person::players[i]->isRun()) {
+                                Person::players[i]->setTargetAnimation(walkanim);
+                            } else if (!Person::players[i]->exWalk && Person::players[i]->animTarget == walkanim) {
+                                Person::players[i]->setTargetAnimation(Person::players[i]->getRun());
+                            }
                         }
                         if ((Person::players[i]->jumpkeydown && !Person::players[i]->jumpclimb) || Person::players[i]->jumpstart) {
                             if ((((Person::players[i]->isLanding() && Person::players[i]->frameTarget >= 3) ||

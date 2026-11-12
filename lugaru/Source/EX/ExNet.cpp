@@ -673,15 +673,20 @@ static void hostSendLevel(Client& c)
     for (int s : c.slots) {
         w.i16(LocalSlotPerson(s));
     }
-    const int count = std::min((int)roster.size(), 40);
-    w.u8(count);
-    for (int i = 0; i < count && w.room(6 + (int)roster[i].skin.size() + (int)roster[i].outfit.size()); i++) {
+    // the looks that fit in one packet (any more play with the level's look there); the count
+    // is written after them so it always matches, and room is kept for the fingerprints
+    const int countAt = w.n;
+    w.u8(0);
+    int count = 0;
+    for (size_t i = 0; i < roster.size() && count < 255 && w.room(8 + 6 + (int)roster[i].skin.size() + (int)roster[i].outfit.size()); i++) {
         w.u8(roster[i].person);
         w.u8(roster[i].creature);
         w.u8(roster[i].whichskin);
         w.str(roster[i].skin);
         w.str(roster[i].outfit);
+        count++;
     }
+    w.b[countAt] = (uint8_t)count;
     w.u32(g_mapPrint); // fingerprints: the guest checks its own copies against these
     w.u32(g_terrainPrint);
     sendTo(w, c.addr);
@@ -1299,7 +1304,7 @@ static void guestModList(Reader& r)
     g_get.clear();
     if (!sharing || cfg.mpShareMods == 0) {
         // the host keeps its mods to itself, or this PC said no: play with this PC's own
-        printf("LugaruEX net: %s\n", !sharing ? "the host doesn't share mods" : "not downloading the host's mods (Share mods is off)");
+        printf("LugaruEX net: %s\n", !sharing ? "the host doesn't share mods" : "not downloading the host's mods (Mod share is off)");
         guestModsReady(false);
         return;
     }
@@ -1590,6 +1595,7 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
                 PadInput in;
                 in.fwd = btn & 1, in.back = btn & 2, in.left = btn & 4, in.right = btn & 8;
                 in.jump = btn & 16, in.crouch = btn & 32, in.attack = btn & 64, in.draw = btn & 128, in.thrw = btn & 256;
+                in.walk = btn & 512; // (older guests never set it: they run)
                 LocalRemoteInput(c->slots[k], in, yaw, pitch, c->connected);
             }
         }
@@ -2210,11 +2216,13 @@ void NetFrame(double dt)
                 in = PadInput();
             }
             if (k == 0 && testRun && g_inLevel) {
+                static const bool testWalk = getenv("LUGARUEX_TEST_GUESTRUN") && strcmp(getenv("LUGARUEX_TEST_GUESTRUN"), "walk") == 0;
                 in.fwd = true;
-                in.attack = ((int)(now() * 2)) % 5 == 0;
+                in.walk = testWalk; // LUGARUEX_TEST_GUESTRUN=walk: walk instead
+                in.attack = !testWalk && ((int)(now() * 2)) % 5 == 0;
             }
             const int btn = (in.fwd ? 1 : 0) | (in.back ? 2 : 0) | (in.left ? 4 : 0) | (in.right ? 8 : 0) | (in.jump ? 16 : 0) |
-                            (in.crouch ? 32 : 0) | (in.attack ? 64 : 0) | (in.draw ? 128 : 0) | (in.thrw ? 256 : 0);
+                            (in.crouch ? 32 : 0) | (in.attack ? 64 : 0) | (in.draw ? 128 : 0) | (in.thrw ? 256 : 0) | (in.walk ? 512 : 0);
             w.u16(btn);
             w.f32(yaw);
             w.f32(pitch);

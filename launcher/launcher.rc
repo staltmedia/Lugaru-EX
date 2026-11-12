@@ -8,8 +8,8 @@ IDI_APP ICON "../lugaru/Dist/Windows/Lugaru.ico"
 1 RT_MANIFEST "launcher.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,4,8,0
-PRODUCTVERSION 0,4,8,0
+FILEVERSION 0,4,9,0
+PRODUCTVERSION 0,4,9,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -19,7 +19,7 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "LugaruEX Launcher"
             VALUE "ProductName", "LugaruEX"
-            VALUE "FileVersion", "0.4.8"
+            VALUE "FileVersion", "0.4.9"
             VALUE "LegalCopyright", "GPLv2+ (based on OSS Lugaru)"
         END
     END
@@ -96,7 +96,7 @@ BEGIN
     LTEXT           "Host IP:", -1, 24, 74, 50, 9
     EDITTEXT        IDC_ADDR, 80, 72, 120, 12, ES_AUTOHSCROLL | WS_TABSTOP
     CONTROL         "LAN - host on this network / find the host automatically", IDC_LAN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 92, 260, 10
-    CONTROL         "Share mods (send yours when hosting, get the host's when joining)", IDC_SHAREMODS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 106, 268, 10
+    CONTROL         "Mod share", IDC_SHAREMODS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 106, 268, 10
     LTEXT           "", IDC_MPNOTE, 8, 122, 268, 76
 END
 

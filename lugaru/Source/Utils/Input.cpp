@@ -20,6 +20,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "Utils/Input.hpp"
 #include "EX/ExPad.hpp"
+#include <cstdlib>
 #include <cstring>
 
 bool keyDown[SDL_NUM_SCANCODES + 6];
@@ -42,6 +43,10 @@ void Input::Tick()
         now[SDL_NUM_SCANCODES + i] = (mb & SDL_BUTTON(i)) != 0;
     }
     EX::PadContribute(now, SDL_NUM_SCANCODES + 6);
+    static const bool noInput = getenv("LUGARUEX_TEST_NOINPUT") != nullptr; // test hook: ignore real keys/buttons
+    if (noInput) {
+        memset(now, 0, sizeof(now));
+    }
     for (int i = 0; i < SDL_NUM_SCANCODES + 6; i++) {
         keyPressed[i] = !keyDown[i] && now[i];
         keyDown[i] = now[i];

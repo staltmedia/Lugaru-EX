@@ -51,7 +51,7 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.4.8" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.4.9" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
@@ -86,6 +86,7 @@ struct Settings
     int shareMods = 1;  // online: send this PC's mods when hosting, take the host's when joining
     int autoUpdate = 1; // check GitHub for a new LugaruEX when the launcher starts
     std::string updateRepo; // [Launcher] UpdateRepo: another GitHub repository to update from
+    int tab = 0;            // [Launcher] Tab: the tab that was open last time
 };
 
 
@@ -241,6 +242,7 @@ static void LoadIni(Settings& s)
     gi("multiplayer.sharemods", s.shareMods);
     gi("launcher.autoupdate", s.autoUpdate);
     gs("launcher.updaterepo", s.updateRepo);
+    gi("launcher.tab", s.tab);
 }
 
 static bool SaveIni(const Settings& s)
@@ -301,6 +303,7 @@ static bool SaveIni(const Settings& s)
       << "\r\n[Launcher]\r\n"
       << "; 1 = look for a new LugaruEX on GitHub when the launcher starts, and install it\r\n"
       << "AutoUpdate=" << s.autoUpdate << "\r\n"
+      << "Tab=" << s.tab << "\r\n"
       << (s.updateRepo.empty() ? std::string() : "UpdateRepo=" + s.updateRepo + "\r\n");
     return o.good();
 }
@@ -536,6 +539,11 @@ struct ExMask
     float at(int x, int y) const { return (x < 0 || y < 0 || x >= w || y >= h) ? 0.f : a[(size_t)y * w + x]; }
 };
 
+// LUGARU is set in small capitals: the L (and the last U) tall, U-G-A-R shorter on the same
+// baseline (85 vs 101 pixels in the HD logo, like its own H and D). "EX" follows it: a
+// capital E and a small-capital X this much of the E's height.
+static const float g_exSmallCaps = 0.84f;
+
 static ExMask RenderExMask(HDC screen, float fontPx, int pad, float stemRatio)
 {
     const int SS = 4;
@@ -545,13 +553,23 @@ static ExMask RenderExMask(HDC screen, float fontPx, int pad, float stemRatio)
     HDC mdc = CreateCompatibleDC(screen);
     HGDIOBJ mo = SelectObject(mdc, mbmp);
     memset(mbits, 0, (size_t)MW * MH * 4);
-    HFONT ef = CreateFontW(-(int)(fontPx * SS), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, VARIABLE_PITCH, ExFontFace(screen).c_str());
+    auto font = [&](float px) {
+        return CreateFontW(-(int)(px * SS), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           ANTIALIASED_QUALITY, VARIABLE_PITCH, ExFontFace(screen).c_str());
+    };
+    HFONT ef = font(fontPx), xf = font(fontPx * g_exSmallCaps);
     HGDIOBJ eo = SelectObject(mdc, ef);
     SetBkMode(mdc, TRANSPARENT);
     SetTextColor(mdc, RGB(255, 255, 255));
-    RECT mr = { 8 * SS, 8, MW, MH };
-    DrawTextW(mdc, L"EX", -1, &mr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+    SetTextAlign(mdc, TA_BASELINE | TA_LEFT);
+    TEXTMETRICW tm = {};
+    GetTextMetricsW(mdc, &tm);
+    const int baseline = 8 + tm.tmAscent; // both letters stand on it
+    SIZE e = {};
+    GetTextExtentPoint32W(mdc, L"E", 1, &e);
+    TextOutW(mdc, 8 * SS, baseline, L"E", 1);
+    SelectObject(mdc, xf);
+    TextOutW(mdc, 8 * SS + e.cx, baseline, L"X", 1);
     GdiFlush();
     std::vector<BYTE> big((size_t)MW * MH);
     for (size_t i = 0; i < big.size(); i++) {
@@ -559,6 +577,7 @@ static ExMask RenderExMask(HDC screen, float fontPx, int pad, float stemRatio)
     }
     SelectObject(mdc, eo);
     DeleteObject(ef);
+    DeleteObject(xf);
     SelectObject(mdc, mo);
     DeleteObject(mbmp);
     DeleteDC(mdc);
@@ -1721,6 +1740,7 @@ static bool CollectSettings()
     s.lan = IsDlgButtonChecked(g_mp, IDC_LAN) == BST_CHECKED;
     s.shareMods = IsDlgButtonChecked(g_mp, IDC_SHAREMODS) == BST_CHECKED;
     s.autoUpdate = IsDlgButtonChecked(g_main, IDC_AUTOUPDATE) == BST_CHECKED;
+    s.tab = std::max(0, TabCtrl_GetCurSel(g_tabs));
     s.shaders = IsDlgButtonChecked(g_gfx, IDC_SHADERS) == BST_CHECKED;
 
     s.mpmode = IsDlgButtonChecked(g_mp, IDC_MP_HOST) == BST_CHECKED ? "host" : (IsDlgButtonChecked(g_mp, IDC_MP_JOIN) == BST_CHECKED ? "join" : "off");
@@ -1996,9 +2016,9 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                 SetWindowPos(pg, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, 0);
             }
             {
-                // test hook LUGARUEX_LAUNCHER_TAB=n: open on tab n (screenshots)
+                // the tab that was open last time; test hook LUGARUEX_LAUNCHER_TAB=n: open on tab n (screenshots)
                 const char* t = getenv("LUGARUEX_LAUNCHER_TAB");
-                const int first = t ? std::max(0, std::min(5, atoi(t))) : 0;
+                const int first = std::max(0, std::min(5, t ? atoi(t) : g_set.tab));
                 TabCtrl_SetCurSel(g_tabs, first);
                 ShowPage(first);
             }
@@ -2009,7 +2029,7 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
             if (g_set.autoUpdate) { // look for a new LugaruEX meanwhile (it installs on the next start)
                 std::thread(UpdateThread, d, narrow(g_exDir), g_set.updateRepo.empty() ? std::string(kUpdateRepo) : g_set.updateRepo).detach();
             }
-            std::wstring ver = L"LugaruEX 0.4.8";
+            std::wstring ver = L"LugaruEX 0.4.9";
             if (!PathFileExistsW((g_exeDir + L"Data").c_str())) {
                 ver = L"No game Data folder here!";
             }

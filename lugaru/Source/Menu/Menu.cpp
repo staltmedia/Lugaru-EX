@@ -386,7 +386,6 @@ void Menu::Load()
             addButtonImage(1, Mainmenuitems[mainmenu == 1 ? 1 : 5], 18, 480 - 152 - 32, 128, 32);
             addButtonImage(2, Mainmenuitems[2], 18, 480 - 228 - 32, 112, 32);
             addButtonImage(3, Mainmenuitems[mainmenu == 1 ? 3 : 6], 18, 480 - 306 - 32, mainmenu == 1 ? 68 : 132, 32);
-            addLabel(-1, VERSION_NUMBER + VERSION_SUFFIX, 640 - 100, 10);
             break;
         case 3:
             addButton(0, "", 10 + 20, 440);

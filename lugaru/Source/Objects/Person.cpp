@@ -78,6 +78,28 @@ extern XYZ windvector;
 
 std::vector<std::shared_ptr<Person>> Person::players;
 
+// LugaruEX: who earns a bonus for what happened to enemy p (a heavy impact, a knockout,
+// a wolf killed): the living player fighting it, else the nearest living player; -1 if none.
+// With one player that is always player 1, as in the original game.
+static int exBonusPlayer(const Person* p)
+{
+    int who = -1;
+    float best = 1e30f;
+    for (size_t i = 0; i < Person::players.size(); i++) {
+        Person& h = *Person::players[i];
+        if (!h.isPlayerControlled() || h.dead) {
+            continue;
+        }
+        XYZ hc = h.coords, pc = p->coords;
+        const float d = (h.victim.get() == p) ? -1.f : distsq(&hc, &pc);
+        if (d < best) {
+            best = d;
+            who = (int)i;
+        }
+    }
+    return who;
+}
+
 Person::Person()
     : whichpatchx(0)
     , whichpatchz(0)
@@ -1358,6 +1380,18 @@ void Person::Reverse()
         victim->targettilt2 = targettilt2;
         victim->frameCurrent = frameCurrent;
         victim->frameTarget = frameTarget;
+        // LugaruEX: a reversal can be shorter than the move it answers (the victim takes the
+        // attacker's frame number); keep both on a real frame instead of one past the end
+        for (Person* q : { this, victim.get() }) {
+            const int nc = (int)Animation::animations[q->animCurrent].frames.size();
+            const int nt = (int)Animation::animations[q->animTarget].frames.size();
+            if (nc > 0 && q->frameCurrent > nc - 1) {
+                q->frameCurrent = nc - 1;
+            }
+            if (nt > 0 && q->frameTarget > nt - 1) {
+                q->frameTarget = nt - 1;
+            }
+        }
         victim->target = target;
         victim->velocity = 0;
         victim->oldcoords = victim->coords;
@@ -1624,7 +1658,7 @@ void Person::DoDamage(float howmuch)
         DoDamage(10000);
         RagDoll(0);
         if (!dead && (creature == wolftype) && (aitype != playercontrolled)) {
-            award_bonus(0, Wolfbonus);
+            award_bonus(exBonusPlayer(this), Wolfbonus);
         }
         dead = 2;
         coords = 20;
@@ -1711,10 +1745,12 @@ void Person::DoHead()
             targetheadyaw = -120;
         }
 
-        if (!isIdle()) {
+        // LugaruEX: a walking player looks up and down with the camera too, like when idle
+        const bool exLookWalk = animTarget == walkanim && isPlayerControlled();
+        if (!isIdle() && !exLookWalk) {
             targetheadpitch = 0;
         }
-        if (isIdle()) {
+        if (isIdle() || exLookWalk) {
             if (targetheadyaw > 80) {
                 targetheadyaw = 80;
             }
@@ -4726,7 +4762,7 @@ void Person::DoStuff()
             }
 
             if (!dead && (creature == wolftype) && (aitype != playercontrolled)) {
-                award_bonus(0, Wolfbonus);
+                award_bonus(exBonusPlayer(this), Wolfbonus);
             }
             dead = 2;
             if (animTarget == knifefollowedanim && !skeleton.free) {
@@ -4823,7 +4859,7 @@ void Person::DoStuff()
         unconscioustime = 0;
 
         if ((creature == wolftype) && (aitype != playercontrolled)) {
-            award_bonus(0, Wolfbonus);
+            award_bonus(exBonusPlayer(this), Wolfbonus);
         }
 
         RagDoll(0);
@@ -4904,11 +4940,13 @@ void Person::DoStuff()
         bled = 0;
 
         if (!dead && (creature == wolftype) && (aitype != playercontrolled)) {
-            award_bonus(0, Wolfbonus);
+            award_bonus(exBonusPlayer(this), Wolfbonus);
         }
 
-        if (unconscioustime < .1 && (bonus != spinecrusher || bonustime > 1) && (bonus != FinishedBonus || bonustime > 1) && bloodloss < damagetolerance) {
-            award_bonus(id, touchofdeath);
+        // Touch of Death: an enemy knocked out at once. The 2005 game gave it only for enemies
+        // (id != 0); the open-source port passed the person's own id (only player 1 counted).
+        if (!isPlayerControlled() && unconscioustime < .1 && (bonus != spinecrusher || bonustime > 1) && (bonus != FinishedBonus || bonustime > 1) && bloodloss < damagetolerance) {
+            award_bonus(exBonusPlayer(this), touchofdeath);
         }
         if (id != 0 && unconscioustime > .1) {
             numafterkill++;
@@ -4952,8 +4990,12 @@ void Person::DoStuff()
         skeleton.DoGravity(&scale);
         float damageamount;
         damageamount = skeleton.DoConstraints(&coords, &scale) * 5;
-        if (damage > damagetolerance - damageamount && !dead && (bonus != spinecrusher || bonustime > 1) && (bonus != style || bonustime > 1) && (bonus != cannon || bonustime > 1)) {
-            award_bonus(id, deepimpact);
+        // Heavy Impact: an enemy knocked out by hitting something hard. The 2005 game gave it
+        // only for enemies (id != 0); the open-source port passed the ragdoll's own id, which
+        // awarded it for the player's own fatal falls instead. LugaruEX: for enemies again, to
+        // the player who is fighting this one (else the nearest player).
+        if (!isPlayerControlled() && damage > damagetolerance - damageamount && !dead && (bonus != spinecrusher || bonustime > 1) && (bonus != style || bonustime > 1) && (bonus != cannon || bonustime > 1)) {
+            award_bonus(exBonusPlayer(this), deepimpact);
         }
         DoDamage(damageamount / ((protectionhigh + protectionhead + protectionlow) / 3));
 

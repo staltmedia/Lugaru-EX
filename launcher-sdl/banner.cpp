@@ -124,6 +124,10 @@ struct ExMask
     float at(int x, int y) const { return (x < 0 || y < 0 || x >= w || y >= h) ? 0.f : a[(size_t)y * w + x]; }
 };
 
+// LUGARU is set in small capitals (85 vs 101 pixels in the HD logo, like its own H and D);
+// "EX" follows it: X is this much of the E's height
+static const float g_exSmallCaps = 0.84f;
+
 static ExMask RenderExMask(float fontPx, int pad, float stemRatio)
 {
     ExMask m;
@@ -141,14 +145,16 @@ static ExMask RenderExMask(float fontPx, int pad, float stemRatio)
     float x = 8.f * SS;
     const int text[2] = { 'E', 'X' };
     for (int i = 0; i < 2; i++) {
+        // a capital E and a small-capital X on the same baseline, like LUGARU's letters
+        const float sc = i == 0 ? scale : scale * g_exSmallCaps;
         int adv = 0, lsb = 0, x0, y0, x1, y1;
         stbtt_GetCodepointHMetrics(&font.info, text[i], &adv, &lsb);
-        stbtt_GetCodepointBitmapBox(&font.info, text[i], scale, scale, &x0, &y0, &x1, &y1);
+        stbtt_GetCodepointBitmapBox(&font.info, text[i], sc, sc, &x0, &y0, &x1, &y1);
         const int gx = (int)lroundf(x) + x0, gy = baseline + y0;
         const int gw = x1 - x0, gh = y1 - y0;
         if (gw > 0 && gh > 0 && gx >= 0 && gy >= 0 && gx + gw <= MW && gy + gh <= MH) {
             std::vector<BYTE> g((size_t)gw * gh);
-            stbtt_MakeCodepointBitmap(&font.info, g.data(), gw, gh, gw, scale, scale, text[i]);
+            stbtt_MakeCodepointBitmap(&font.info, g.data(), gw, gh, gw, sc, sc, text[i]);
             for (int yy = 0; yy < gh; yy++) {
                 for (int xx = 0; xx < gw; xx++) {
                     BYTE& d = big[(size_t)(gy + yy) * MW + gx + xx];
@@ -156,10 +162,7 @@ static ExMask RenderExMask(float fontPx, int pad, float stemRatio)
                 }
             }
         }
-        x += adv * scale;
-        if (i == 0) {
-            x += stbtt_GetCodepointKernAdvance(&font.info, text[0], text[1]) * scale;
-        }
+        x += adv * sc;
     }
 
     int x0 = MW, x1 = -1, y0 = MH, y1 = -1;

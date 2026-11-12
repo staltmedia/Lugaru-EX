@@ -187,11 +187,14 @@ SDL_bool sdlEventProc(const SDL_Event& e)
             EX::PadHandleEvent(e); // LugaruEX: plug / unplug controllers any time
             break;
 
-        case SDL_MOUSEMOTION:
+        case SDL_MOUSEMOTION: {
             // LugaruEX: accumulate until the next simulation step consumes it
-            pendingMouseH += e.motion.xrel;
-            pendingMouseV += e.motion.yrel;
-            break;
+            static const bool noInput = getenv("LUGARUEX_TEST_NOINPUT") != nullptr; // test hook: ignore the real mouse
+            if (!noInput) {
+                pendingMouseH += e.motion.xrel;
+                pendingMouseV += e.motion.yrel;
+            }
+        } break;
 
         case SDL_KEYDOWN:
             if ((e.key.keysym.scancode == SDL_SCANCODE_G) &&
@@ -908,6 +911,9 @@ int main(int argc, char** argv)
                             Account::add("");
                         }
                     }
+                    if (const char* c = getenv("LUGARUEX_TEST_CAMPAIGN")) { // test hook: which campaign (e.g. one from a mod)
+                        Account::active().setCurrentCampaign(c);
+                    }
                     Menu::startCampaignLevel(atoi(lvl + 9), false);
                 } else if (strncmp(lvl, "challenge:", 10) == 0) {
                     if (!Account::hasActive()) {
@@ -1135,7 +1141,7 @@ int main(int argc, char** argv)
                                         chasers++;
                                     }
                                 }
-                                printf(" human%d[dmg=%.0f dead=%d targetedBy=%d at %.1f,%.1f,%.1f anim=%d]", (int)i, h.damage + h.permanentdamage, (int)h.dead, chasers, h.coords.x, h.coords.y, h.coords.z, h.animTarget);
+                                printf(" human%d[dmg=%.0f dead=%d targetedBy=%d at %.1f,%.1f,%.1f anim=%d head=%.0f/%.0f]", (int)i, h.damage + h.permanentdamage, (int)h.dead, chasers, h.coords.x, h.coords.y, h.coords.z, h.animTarget, h.headyaw, h.headpitch);
                             }
                         }
                         {

@@ -58,7 +58,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.4.8"
+#define LUGARUEX_VERSION "0.4.9"
 
 namespace
 {
@@ -127,8 +127,10 @@ struct Settings
     std::string chClothes = "default";
     int shareMods = 1;
     int autoUpdate = 1;
+    int tab = 0; // [Launcher] Tab: the tab that was open last time
 };
 Settings g_set;
+int g_openTab = 0; // the tab open now (saved as [Launcher] Tab)
 Ini g_ini; // as read (other sections are written back unchanged)
 
 void LoadSettings()
@@ -163,6 +165,7 @@ void LoadSettings()
     s.chClothes = i.Get("Player", "Clothes", s.chClothes);
     s.shareMods = i.GetInt("Multiplayer", "ShareMods", s.shareMods);
     s.autoUpdate = i.GetInt("Launcher", "AutoUpdate", s.autoUpdate);
+    s.tab = i.GetInt("Launcher", "Tab", s.tab);
 }
 
 // ============================================================================ monitors
@@ -485,6 +488,7 @@ const Act kActs[] = {
     { "Back", "Move back", "S", nullptr, nullptr, "Left stick" },
     { "Left", "Move left", "A", nullptr, nullptr, "Left stick" },
     { "Right", "Move right", "D", nullptr, nullptr, "Left stick" },
+    { "Walk", "Walk (hold)", nullptr, nullptr, "Ctrl", "Light push" },
     { "Jump", "Jump", "Space", "a", nullptr, nullptr },
     { "Crouch", "Crouch / roll / block", "Left Shift", "lefttrigger", nullptr, nullptr },
     { "Attack", "Attack", "Mouse Left", "righttrigger", nullptr, nullptr },
@@ -895,6 +899,7 @@ bool CollectSettings()
     s.chClothes = g_clothes;
     s.shareMods = g_shareMods;
     s.autoUpdate = g_autoUpdate;
+    s.tab = g_openTab;
     if (s.mpmode == "join" && s.addr.empty() && !s.lan) {
         g_message = "Enter the host's address as IP:port (for example 100.64.0.2:27015).";
         return false;
@@ -965,6 +970,7 @@ bool SaveIni()
     line("[Launcher]");
     line("; 1 = look for a new LugaruEX on GitHub when the launcher starts, and install it");
     ki("AutoUpdate", s.autoUpdate);
+    ki("Tab", s.tab);
     if (!g_ini.Get("Launcher", "UpdateRepo").empty()) {
         kv("UpdateRepo", g_ini.Get("Launcher", "UpdateRepo"));
     }
@@ -1748,7 +1754,7 @@ void TabMultiplayer(float s)
     ImGui::BeginDisabled(g_mpSel == 0);
     ImGui::Checkbox("LAN - host on this network / find the host automatically", &g_lan);
     ImGui::EndDisabled();
-    ImGui::Checkbox("Share mods (send yours when hosting, get the host's when joining)", &g_shareMods);
+    ImGui::Checkbox("Mod share", &g_shareMods);
     ImGui::Spacing();
     ImGui::TextWrapped("Compatible with Radmin VPN, Hamachi, ZeroTier, Tailscale and other virtual LANs. "
                        "Windows and Linux players can play together.");
@@ -2282,7 +2288,7 @@ int main(int argc, char** argv)
         }
     }
 
-    int tab = 0, wantTab = shotTab;
+    int tab = 0, wantTab = shotTab >= 0 ? shotTab : std::max(0, std::min(5, g_set.tab)); // last time's tab
     bool running = true, play = false;
     Uint64 last = SDL_GetPerformanceCounter();
     while (running) {
@@ -2414,6 +2420,7 @@ int main(int argc, char** argv)
                 const ImGuiTabItemFlags f = (wantTab == i) ? ImGuiTabItemFlags_SetSelected : 0;
                 if (ImGui::BeginTabItem(names[i], nullptr, f)) {
                     tab = i;
+                    g_openTab = i;
                     ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground);
                     ImGui::Spacing();
                     switch (i) {

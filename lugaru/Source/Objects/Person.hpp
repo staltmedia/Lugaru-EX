@@ -416,6 +416,7 @@ public:
     // the game's globals) and, for AI, which human it is currently after
     bool exOldAttack = false;
     bool exRealAttack = false;
+    bool exWalk = false; // a player asks to walk instead of run (Ctrl / a light stick push)
     int exTarget = 0;
     // score pop-up in the middle of this player's own screen
     int exPopBonus = 0, exPopValue = 0;

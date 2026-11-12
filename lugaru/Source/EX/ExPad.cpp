@@ -365,6 +365,42 @@ static float axis(SDL_GameController* gc, SDL_GameControllerAxis a)
     return SDL_GameControllerGetAxis(gc, a) / 32767.f;
 }
 
+// left stick -> the game's 8 movement directions. Past a small dead zone the stick moves;
+// a light push walks, further out runs. The direction is the stick's 45-degree sector
+// (a full push gives about the same directions as the old per-axis 0.42 test).
+static void stickMove(SDL_GameController* gc, bool& fwd, bool& back, bool& left, bool& right, bool& walk)
+{
+    fwd = back = left = right = walk = false;
+    const float lx = axis(gc, SDL_CONTROLLER_AXIS_LEFTX), ly = axis(gc, SDL_CONTROLLER_AXIS_LEFTY);
+    const float m = sqrtf(lx * lx + ly * ly);
+    const float kDead = 0.3f, kWalk = 0.65f; // (a dead zone big enough for worn, drifting sticks)
+    if (m >= kDead) {
+        const float s = 0.3827f * m; // sin(22.5 degrees): a component this big counts
+        fwd = ly < -s;
+        back = ly > s;
+        left = lx < -s;
+        right = lx > s;
+        walk = m < kWalk;
+    }
+    // the D-pad always runs
+    const bool du = held(gc, SDL_CONTROLLER_BUTTON_DPAD_UP), dd = held(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+    const bool dl = held(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT), dr = held(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+    if (du || dd || dl || dr) {
+        walk = false;
+    }
+    fwd = fwd || du;
+    back = back || dd;
+    left = left || dl;
+    right = right || dr;
+}
+
+static bool g_p1PadWalk = false; // player 1's controller asks for a walk this frame
+
+bool P1Walk()
+{
+    return !mainmenu && (g_p1PadWalk || Input::isKeyDown(SDL_SCANCODE_LCTRL) || Input::isKeyDown(SDL_SCANCODE_RCTRL));
+}
+
 bool PadRead(const std::string& id, PadInput& o)
 {
     o = PadInput();
@@ -372,12 +408,7 @@ bool PadRead(const std::string& id, PadInput& o)
     if (!gc) {
         return false;
     }
-    const float lx = axis(gc, SDL_CONTROLLER_AXIS_LEFTX), ly = axis(gc, SDL_CONTROLLER_AXIS_LEFTY);
-    const float t = 0.42f;
-    o.fwd = ly < -t || held(gc, SDL_CONTROLLER_BUTTON_DPAD_UP);
-    o.back = ly > t || held(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
-    o.left = lx < -t || held(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
-    o.right = lx > t || held(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+    stickMove(gc, o.fwd, o.back, o.left, o.right, o.walk);
     o.jump = held(gc, g_binds.jump);
     o.crouch = held(gc, g_binds.crouch);
     o.attack = held(gc, g_binds.attack);
@@ -401,6 +432,7 @@ bool PadRead(const std::string& id, PadInput& o)
 
 void PadContribute(bool* down, int numKeys)
 {
+    g_p1PadWalk = false;
     auto set = [&](int k) {
         if (k > 0 && k < numKeys) {
             down[k] = true;
@@ -438,19 +470,19 @@ void PadContribute(bool* down, int numKeys)
     if (held(gc, g_binds.thrw)) {
         set(Game::throwkey);
     }
-    // left stick moves (the game's movement is digital; 8 directions)
-    const float lx = axis(gc, SDL_CONTROLLER_AXIS_LEFTX), ly = axis(gc, SDL_CONTROLLER_AXIS_LEFTY);
-    const float t = 0.42f;
-    if (ly < -t || held(gc, SDL_CONTROLLER_BUTTON_DPAD_UP)) {
+    // left stick moves (the game's movement is digital; 8 directions; a light push walks)
+    bool fwd, back, left, right;
+    stickMove(gc, fwd, back, left, right, g_p1PadWalk);
+    if (fwd) {
         set(Game::forwardkey);
     }
-    if (ly > t || held(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN)) {
+    if (back) {
         set(Game::backkey);
     }
-    if (lx < -t || held(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT)) {
+    if (left) {
         set(Game::leftkey);
     }
-    if (lx > t || held(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {
+    if (right) {
         set(Game::rightkey);
     }
 }

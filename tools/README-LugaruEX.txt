@@ -1,4 +1,4 @@
-LugaruEX 0.4.8 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.4.9 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -38,8 +38,9 @@ Mods
   Sounds, Models, Campaigns...); only game data is unpacked, never programs.
   Tick a mod to switch it on; the higher one in the list wins when two change
   the same file (Up / Down). Right-click a mod (X on a controller) to delete
-  it. New campaigns from mods appear in the game's campaign list.
-  Online: with "Share mods" on (Multiplayer tab), the host's mods download to
+  it. New campaigns from mods appear in the game's campaign list; a mod with
+  only maps gets one made for it, the maps in order.
+  Online: with "Mod share" ticked on the Multiplayer tab, the host's mods download to
   everyone who joins and they play with exactly the host's mods (yours come
   back afterwards). It happens before you join the level ("Downloading the
   host's mods").
@@ -100,6 +101,8 @@ Launcher
     touched: buttons sink when pressed, sticks tilt and click, triggers fill.
     "Shaders (next look)" is the key / button that switches the look.
     Vibration on/off and look speed.
+    Walking: hold Ctrl, or push the left stick only part way (push it all
+    the way to run).
   Local: one player per connected controller (plug one in to add a player).
     Each picks Default / Random / Rabbit - skin / Wolf - skin, or "New
     rabbit/wolf skin...". The screen picture shows who gets which part of

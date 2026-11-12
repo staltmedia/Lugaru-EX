@@ -21,6 +21,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Game.hpp"
 #include "EX/ExGraphics.hpp"
 #include "EX/ExLocal.hpp"
+#include "EX/ExMods.hpp"
 
 #include "Animation/Animation.hpp"
 #include "Audio/openal_wrapper.hpp"
@@ -583,9 +584,15 @@ void Game::InitGame()
     }
     {
         // LugaruEX: the launcher writes a "LUGARU EX" edit of the user's own logo
-        // (LugaruEX\Data\Textures\LugaruEX-Logo.png); fall back to the original
+        // (LugaruEX\Data\Textures\LugaruEX-Logo.png); fall back to the original.
+        // A mod with its own title logo (Textures/Lugaru.png) shows that one instead.
         const std::string exLogo = "Textures/LugaruEX-Logo.png";
-        FILE* f = fopen(Folders::getResourcePath(exLogo).c_str(), "rb");
+        bool modLogo = false;
+        const std::string logoPath = Folders::getResourcePath("Textures/Lugaru.png");
+        for (const std::string& root : EX::ModRoots()) {
+            modLogo = modLogo || logoPath.compare(0, root.size(), root) == 0;
+        }
+        FILE* f = modLogo ? nullptr : fopen(Folders::getResourcePath(exLogo).c_str(), "rb");
         if (f) {
             fclose(f);
         }

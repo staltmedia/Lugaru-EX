@@ -340,6 +340,86 @@ void listFiles(const std::string& base, const std::string& rel, std::vector<std:
 }
 } // namespace
 
+// natural order: map2 before map10
+static bool naturalLess(const std::string& a, const std::string& b)
+{
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (isdigit((unsigned char)a[i]) && isdigit((unsigned char)b[j])) {
+            size_t i2 = i, j2 = j;
+            while (i2 < a.size() && isdigit((unsigned char)a[i2])) {
+                i2++;
+            }
+            while (j2 < b.size() && isdigit((unsigned char)b[j2])) {
+                j2++;
+            }
+            const std::string na = a.substr(i, i2 - i), nb = b.substr(j, j2 - j);
+            if (na.size() != nb.size()) {
+                return na.size() < nb.size();
+            }
+            if (na != nb) {
+                return na < nb;
+            }
+            i = i2, j = j2;
+            continue;
+        }
+        const char ca = (char)tolower((unsigned char)a[i]), cb = (char)tolower((unsigned char)b[j]);
+        if (ca != cb) {
+            return ca < cb;
+        }
+        i++, j++;
+    }
+    return a.size() - i < b.size() - j;
+}
+
+// A level pack (maps, but no campaign file) is playable only from the developer console:
+// give it a campaign of its own, its levels in name order, each one opening the next.
+static void addLevelPackCampaign(const std::string& modDir, const std::string& modName)
+{
+    if (!fsu::List(fsu::Join(modDir, "Campaigns"), false).empty()) {
+        return;
+    }
+    std::vector<std::string> maps;
+    for (const std::string& f : fsu::List(fsu::Join(modDir, "Maps"), false)) {
+        std::string n = f;
+        if (n.size() > 5 && fsu::Lower(n.substr(n.size() - 5)) == ".json") {
+            n.resize(n.size() - 5); // (the game finds Maps/<name>.json by the name)
+        }
+        if (!n.empty() && n.find_first_of(" \t") == std::string::npos && n.find('.') == std::string::npos &&
+            std::find(maps.begin(), maps.end(), n) == maps.end()) {
+            maps.push_back(n); // (the campaign file can't hold a name with a space)
+        }
+    }
+    if (maps.empty()) {
+        return;
+    }
+    std::sort(maps.begin(), maps.end(), naturalLess);
+    if (maps.size() > 64) {
+        maps.resize(64);
+    }
+    std::string camp; // the campaign's name: the mod's, without spaces
+    for (char c : modName) {
+        if (c != ' ') {
+            camp += c;
+        }
+    }
+    if (camp.empty()) {
+        camp = "LevelPack";
+    }
+    const int n = (int)maps.size();
+    std::string t = "Campaign Levels: " + std::to_string(n) + "\n";
+    for (int i = 0; i < n; i++) {
+        // markers spread across the world map, going left to right in a gentle wave
+        const int x = n == 1 ? 320 : 110 + 420 * i / (n - 1), y = 250 + ((i % 2) ? 45 : -45);
+        t += "\nLevel " + std::to_string(i + 1) + ":\nName: " + maps[i] + "\nDescription: " + maps[i] + "\nChooseNext: 1\n";
+        t += i + 1 < n ? "NumNext: 1\nNextLevel: " + std::to_string(i + 2) + "\n" : std::string("NumNext: 0\n");
+        t += "LocationX: " + std::to_string(x) + "\nLocationY: " + std::to_string(y) + "\n";
+    }
+    t += "\nEndText:" + camp + " complete!\n\n\n";
+    fsu::MakeDirs(fsu::Join(modDir, "Campaigns"));
+    fsu::WriteAll(fsu::Join(modDir, "Campaigns/" + camp + ".txt"), t);
+}
+
 std::string Mod_SafeName(const std::string& name)
 {
     std::string r;
@@ -400,6 +480,7 @@ bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std:
         fsu::RemoveTree(tmp);
         return false;
     }
+    addLevelPackCampaign(tmp, folder);
     if (modTxtData.empty()) {
         modTxtData = "name=" + folder + "\n"; // (a second copy shows as "Name 2")
     }

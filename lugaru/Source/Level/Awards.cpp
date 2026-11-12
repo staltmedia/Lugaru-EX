@@ -61,6 +61,7 @@ void award_bonus(int playerid, int bonusid, int alt_value)
     bonustime = 0;
     bonusvalue = alt_value ? alt_value : bonus_values[bonusid];
     Person& p = *Person::players[playerid];
+    printf("LugaruEX: bonus %s +%d to person %d\n", bonus_names[bonusid], bonusvalue, playerid);
     p.exPopBonus = bonusid;
     p.exPopValue = bonusvalue;
     p.exPopTime = 0;

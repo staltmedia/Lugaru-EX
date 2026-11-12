@@ -44,6 +44,9 @@ void ModsLoad()
         if (e.on && fsu::IsDir(dir)) {
             g_local.push_back(dir);
             printf("LugaruEX: mod on: %s\n", e.folder.c_str());
+            for (const std::string& c : fsu::List(dir + "/Campaigns", false)) {
+                printf("LugaruEX: mod campaign: %s\n", c.c_str());
+            }
         }
     }
     rebuild();

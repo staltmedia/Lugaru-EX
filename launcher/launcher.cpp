@@ -51,11 +51,12 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.4.7" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.4.8" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
-    WM_UPDATE_STATE = WM_APP + 11   // the update download moved on
+    WM_UPDATE_STATE = WM_APP + 11,  // the update download moved on
+    WM_NOGAME = WM_APP + 12         // the installer found no game: ask what to do
 };
 static void UpdateThread(HWND notify, std::string exDir, std::string repo);
 
@@ -1092,6 +1093,18 @@ static void BuildBanner(HWND ctl)
                 d[0] = (BYTE)std::min(255.f, d[0] + 18.f * gl);
             }
         }
+    } else {
+        // no game art here yet (the installer before a game is picked): a plain title
+        HFONT f = CreateFontW(-(H * 2 / 5), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              ANTIALIASED_QUALITY, VARIABLE_PITCH, ExFontFace(screen).c_str());
+        HGDIOBJ of = SelectObject(dc, f);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(225, 60, 20));
+        RECT tr = { 0, 0, W, H };
+        DrawTextW(dc, L"LUGARU EX", -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, of);
+        DeleteObject(f);
+        GdiFlush();
     }
     // a gentle vignette draws the eye to the middle
     {
@@ -1996,7 +2009,7 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
             if (g_set.autoUpdate) { // look for a new LugaruEX meanwhile (it installs on the next start)
                 std::thread(UpdateThread, d, narrow(g_exDir), g_set.updateRepo.empty() ? std::string(kUpdateRepo) : g_set.updateRepo).detach();
             }
-            std::wstring ver = L"LugaruEX 0.4.7";
+            std::wstring ver = L"LugaruEX 0.4.8";
             if (!PathFileExistsW((g_exeDir + L"Data").c_str())) {
                 ver = L"No game Data folder here!";
             }
@@ -2137,7 +2150,7 @@ static void FillGames(int select)
     HWND l = GetDlgItem(g_setup, IDC_SU_LIST);
     SendMessageW(l, LB_RESETCONTENT, 0, 0);
     for (const GameFolder& g : g_games) {
-        std::wstring t = widen(g.kind) + L"   " + widen(g.path) + (g.hasLugaruEX ? L"   (has LugaruEX: update)" : L"");
+        std::wstring t = widen(g.kind) + L"   " + widen(g.path) + (g.hasLugaruEX ? L"   (update)" : L"");
         SendMessageW(l, LB_ADDSTRING, 0, (LPARAM)t.c_str());
     }
     if (!g_games.empty()) {
@@ -2146,9 +2159,7 @@ static void FillGames(int select)
     const int s = (int)SendMessageW(l, LB_GETCURSEL, 0, 0);
     const bool steam = s >= 0 && g_games[s].steam;
     EnableWindow(GetDlgItem(g_setup, IDC_SU_STEAM), steam);
-    SetDlgItemTextW(g_setup, IDC_SU_STATUS, g_games.empty() ? L"No copy of Lugaru found. Pick its folder with Browse..., or get the free "
-                                                              L"open-source game data (about 40 MB, CC-BY-SA)."
-                                                            : L"");
+    SetDlgItemTextW(g_setup, IDC_SU_STATUS, g_games.empty() ? L"No game found." : L"");
 }
 
 static std::wstring PickFolder(HWND owner)
@@ -2237,6 +2248,32 @@ static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
             CheckDlgButton(d, IDC_SU_STEAM, BST_CHECKED);
             CheckDlgButton(d, IDC_SU_SHORTCUT, BST_CHECKED);
             FillGames(0);
+            if (g_games.empty()) {
+                PostMessageW(d, WM_NOGAME, 0, 0); // ask once the window is up
+            }
+            return TRUE;
+        }
+        case WM_NOGAME: {
+            // nothing found: pick the folder, or get the free game
+            TASKDIALOG_BUTTON b[] = { { 1001, L"Pick game folder" }, { 1002, L"Download game free" } };
+            TASKDIALOGCONFIG c = { sizeof(c) };
+            c.hwndParent = d;
+            c.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+            c.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+            c.pszWindowTitle = L"LugaruEX Setup";
+            c.pszMainIcon = TD_INFORMATION_ICON;
+            c.pszMainInstruction = L"No game found";
+
+            c.cButtons = 2;
+            c.pButtons = b;
+            int pick = 0;
+            if (SUCCEEDED(TaskDialogIndirect(&c, &pick, NULL, NULL))) {
+                if (pick == 1001) {
+                    PostMessageW(d, WM_COMMAND, IDC_SU_BROWSE, 0);
+                } else if (pick == 1002) {
+                    PostMessageW(d, WM_COMMAND, IDC_SU_FREE, 0);
+                }
+            }
             return TRUE;
         }
         case WM_DRAWITEM: {
@@ -2254,7 +2291,7 @@ static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
         case WM_TIMER:
             if (g_dlBusy) {
                 wchar_t t[128];
-                swprintf(t, 128, L"Getting the free game data from the OSS Lugaru project... %.1f MB", g_dlBytes / 1048576.0);
+                swprintf(t, 128, L"Downloading game... %.1f MB", g_dlBytes / 1048576.0);
                 SetDlgItemTextW(d, IDC_SU_STATUS, t);
             }
             return TRUE;
@@ -2272,9 +2309,9 @@ static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                     }
                 }
                 FillGames(sel);
-                SetDlgItemTextW(d, IDC_SU_STATUS, L"The free game data is ready. Press Install.");
+                SetDlgItemTextW(d, IDC_SU_STATUS, L"Game downloaded. Press Install.");
             } else {
-                SetDlgItemTextW(d, IDC_SU_STATUS, (L"Could not get the free game data: " + widen(*err)).c_str());
+                SetDlgItemTextW(d, IDC_SU_STATUS, (L"Download failed: " + widen(*err)).c_str());
             }
             delete err;
             return TRUE;
@@ -2294,7 +2331,7 @@ static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                     }
                     GameFolder g = Setup_Describe(U8(p));
                     if (g.path.empty()) {
-                        MessageBoxW(d, L"That folder has no Lugaru game data in it (a Data folder with Maps inside).", L"LugaruEX Setup", MB_ICONWARNING);
+                        MessageBoxW(d, L"No game in that folder.", L"LugaruEX Setup", MB_ICONWARNING);
                         return TRUE;
                     }
                     g_games.insert(g_games.begin(), g);
@@ -2314,17 +2351,14 @@ static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                 case IDOK: {
                     const int s = (int)SendDlgItemMessageW(d, IDC_SU_LIST, LB_GETCURSEL, 0, 0);
                     if (s < 0 || s >= (int)g_games.size()) {
-                        MessageBoxW(d, L"Pick the game folder to install into (or get the free game data first).", L"LugaruEX Setup", MB_ICONINFORMATION);
+                        MessageBoxW(d, L"Pick a game folder first.", L"LugaruEX Setup", MB_ICONINFORMATION);
                         return TRUE;
                     }
                     const GameFolder g = g_games[s];
                     SetCursor(LoadCursor(NULL, IDC_WAIT));
                     if (InstallInto(g, IsDlgButtonChecked(d, IDC_SU_STEAM) == BST_CHECKED, IsDlgButtonChecked(d, IDC_SU_SHORTCUT) == BST_CHECKED, d, false)) {
                         const std::wstring launcher = widen(fsu::Join(fsu::Join(g.path, "LugaruEX"), Setup_LauncherName()));
-                        MessageBoxW(d, (L"LugaruEX is installed in\n" + widen(g.path) +
-                                        (g.steam && IsDlgButtonChecked(d, IDC_SU_STEAM) == BST_CHECKED ? L"\n\nSteam's Play button now opens it." : L"") +
-                                        L"\n\nThe launcher opens now.").c_str(),
-                                    L"LugaruEX Setup", MB_ICONINFORMATION);
+                        MessageBoxW(d, (L"Installed in " + widen(g.path) + L".").c_str(), L"LugaruEX Setup", MB_ICONINFORMATION);
                         ShellExecuteW(NULL, L"open", launcher.c_str(), NULL, widen(g.path).c_str(), SW_SHOWNORMAL);
                         EndDialog(d, IDOK);
                     }
@@ -2452,6 +2486,9 @@ static bool RunSetupIfNeeded(HINSTANCE inst)
     }
     g_setupMode = true;
     g_games = Setup_FindGames();
+    if (getenv("LUGARUEX_TEST_NOGAMES")) { // test hook: as on a PC without the game
+        g_games.clear();
+    }
     // the banner borrows the art of the first game found (nothing is written there)
     const std::wstring keep = g_exeDir;
     if (!g_games.empty() && !g_games[0].path.empty()) {

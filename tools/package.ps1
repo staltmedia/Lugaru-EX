@@ -1,7 +1,7 @@
 # Assemble dist\LugaruEX (exactly what goes into the game folder) and the release zip.
 # Layout: Lugaru.exe (the launcher, so Steam's Play button opens it) + one LugaruEX\ folder.
 $ErrorActionPreference = 'Stop'
-$version = '0.4.7'
+$version = '0.4.8'
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist\LugaruEX'
 $ex = Join-Path $dist 'LugaruEX'

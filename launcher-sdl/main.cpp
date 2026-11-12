@@ -58,7 +58,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.4.7"
+#define LUGARUEX_VERSION "0.4.8"
 
 namespace
 {
@@ -1882,6 +1882,9 @@ void DecideSetupMode(const std::string& exeDir)
     g_package = fsu::Parent(exeDir);
     g_setupMode = true;
     g_games = Setup_FindGames();
+    if (getenv("LUGARUEX_TEST_NOGAMES")) { // test hook: as on a computer without the game
+        g_games.clear();
+    }
 }
 
 void FreeDataThread()
@@ -1919,7 +1922,7 @@ std::string PickFolderDialog()
 void DoInstall()
 {
     if (g_gameSel < 0 || g_gameSel >= (int)g_games.size()) {
-        g_message = "Pick the game folder to install into (or get the free game data first).";
+        g_message = "Pick a game folder first.";
         return;
     }
     GameFolder g = g_games[g_gameSel];
@@ -1941,10 +1944,9 @@ void DoInstall()
         return;
     }
     g_installed = launcher;
-    g_installedNote = "LugaruEX is installed in " + g.path + ".";
+    g_installedNote = "Installed in " + g.path + ".";
     if (g.steam) {
-        g_installedNote += "\n\nSteam's Play button: in Steam, right-click Lugaru HD > Properties > General > Launch options, and paste:\n\n\"" +
-                           launcher + "\" %command%";
+        g_installedNote += "\n\nFor Steam's Play button, paste this into Lugaru HD > Properties > Launch options:\n\n\"" + launcher + "\" %command%";
     }
 }
 
@@ -1977,12 +1979,34 @@ bool SetupScreen(float s, float bannerH, float btnW)
         ImGui::EndChild();
         return !quit;
     }
-    ImGui::TextUnformatted("Install LugaruEX into this game folder:");
+    // nothing found: ask straight away - pick the folder, or get the free game
+    static bool asked = false;
+    bool pickNow = false, freeNow = false;
+    if (g_games.empty() && !asked && g_freeState == 0) {
+        asked = true;
+        ImGui::OpenPopup("No game found");
+    }
+    if (ImGui::BeginPopupModal("No game found", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Spacing();
+        if (ImGui::Button("Pick game folder", ImVec2(btnW * 2, 0))) {
+            pickNow = true;
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::Button("Download game free", ImVec2(btnW * 2, 0))) {
+            freeNow = true;
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::Button("Not now", ImVec2(btnW * 2, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::TextUnformatted("Install into:");
     const float listH = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 3.4f - ImGui::GetTextLineHeightWithSpacing() * 2;
     ImGui::BeginChild("##games", ImVec2(0, listH), ImGuiChildFlags_Borders);
     for (int i = 0; i < (int)g_games.size(); i++) {
         const GameFolder& g = g_games[i];
-        const std::string label = g.kind + "    " + g.path + (g.hasLugaruEX ? "    (has LugaruEX: update)" : "");
+        const std::string label = g.kind + "    " + g.path + (g.hasLugaruEX ? "    (update)" : "");
         ImGui::PushID(i);
         if (ImGui::Selectable(label.c_str(), g_gameSel == i)) {
             g_gameSel = i;
@@ -1990,17 +2014,17 @@ bool SetupScreen(float s, float bannerH, float btnW)
         ImGui::PopID();
     }
     if (g_games.empty()) {
-        ImGui::TextWrapped("No copy of Lugaru found. Pick its folder with Browse..., or get the free open-source game data (about 40 MB, CC-BY-SA).");
+        ImGui::TextWrapped("No game found.");
     }
     ImGui::EndChild();
-    if (ImGui::Button("Browse...")) {
+    if (ImGui::Button("Browse...") || pickNow) {
         const std::string p = PickFolderDialog();
         if (p == "?") {
-            g_message = "No folder picker on this desktop: put the LugaruEX folder into your Lugaru folder and run lugaruex-launcher from there.";
+            g_message = "No folder picker here. Put the LugaruEX folder in your game folder and run it from there.";
         } else if (!p.empty()) {
             GameFolder g = Setup_Describe(p);
             if (g.path.empty()) {
-                g_message = "That folder has no Lugaru game data in it (a Data folder with Maps inside).";
+                g_message = "No game in that folder.";
             } else {
                 g_games.insert(g_games.begin(), g);
                 g_gameSel = 0;
@@ -2010,7 +2034,7 @@ bool SetupScreen(float s, float bannerH, float btnW)
     ImGui::SameLine();
     const int fs = g_freeState;
     ImGui::BeginDisabled(fs == 1);
-    if (ImGui::Button(fs == 1 ? "Getting the free game data..." : "Get the free game data")) {
+    if (ImGui::Button(fs == 1 ? "Downloading game..." : "Download game free") || (freeNow && fs == 0)) {
         g_freeState = 1;
         std::thread(FreeDataThread).detach();
     }
@@ -2024,11 +2048,11 @@ bool SetupScreen(float s, float bannerH, float btnW)
                 }
             }
         } else {
-            g_message = "Could not get the free game data: " + g_freeError;
+            g_message = "Download failed: " + g_freeError;
         }
         g_freeState = 0;
     }
-    ImGui::Checkbox("Add LugaruEX to the application menu", &g_setupShortcut);
+    ImGui::Checkbox("Add to app menu", &g_setupShortcut);
     ImGui::Spacing();
     ImGui::BeginDisabled(fs == 1);
     if (ImGui::Button("Install", ImVec2(btnW, 0)) || (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) && fs != 1)) {
@@ -2367,6 +2391,12 @@ int main(int argc, char** argv)
         ImGui::PopStyleVar();
         const float bh = io.DisplaySize.x * bannerH / std::max(1, bannerW);
         ImGui::Image((ImTextureID)(intptr_t)bannerTex, ImVec2(io.DisplaySize.x, bh));
+        if (g_setupMode && g_games.empty()) { // no game art here yet: a plain title
+            const float size = bh * 0.38f;
+            const char* t = "LUGARU EX";
+            const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, t);
+            ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), size, ImVec2((io.DisplaySize.x - ts.x) / 2, (bh - ts.y) / 2), IM_COL32(225, 60, 20, 255), t);
+        }
         const float pad = 10 * s;
         const float btnW = 96 * s;
         if (g_setupMode) {

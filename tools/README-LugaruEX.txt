@@ -1,4 +1,4 @@
-LugaruEX 0.4.7 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.4.8 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is

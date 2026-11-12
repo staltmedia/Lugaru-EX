@@ -134,6 +134,96 @@ struct Item
     uint64_t size;
 };
 
+// the first bytes of an entry (to tell what a loose file is)
+std::string peek(Zip& zip, mz_uint index, size_t want)
+{
+    mz_zip_archive_file_stat st;
+    if (!mz_zip_reader_file_stat(&zip.z, index, &st) || st.m_uncomp_size > (64u << 20)) {
+        return "";
+    }
+    size_t n = 0;
+    void* p = mz_zip_reader_extract_to_heap(&zip.z, index, &n, 0);
+    if (!p) {
+        return "";
+    }
+    std::string s((const char*)p, std::min(n, want));
+    mz_free(p);
+    return s;
+}
+
+// Older Lugaru mods are loose files with a readme saying where each goes ("put TCT in
+// Maps, TempleChallenge.txt in Campaigns"): sort them by what they are. Extension-less
+// files that start like a Lugaru map (a big-endian version number) are maps; .txt files
+// that start with "Campaign Levels:" are campaigns, other .txt files are readmes;
+// images, sounds and models go to Textures, Sounds and Models.
+bool collectLoose(Zip& zip, const std::vector<std::pair<mz_uint, std::vector<std::string>>>& files, std::vector<Item>& items, int& modTxtIndex,
+                  std::string& error, int& skipped)
+{
+    // everything in one top folder (the zip of a folder): that folder is the mod
+    std::string top = files.empty() || files[0].second.size() < 2 ? "" : files[0].second[0];
+    for (auto& f : files) {
+        if (f.second.size() < 2 || f.second[0] != top) {
+            top.clear();
+        }
+    }
+    uint64_t total = 0;
+    for (auto& f : files) {
+        const std::vector<std::string>& parts = f.second;
+        if (parts.size() != (top.empty() ? 1u : 2u)) {
+            skipped++; // deeper folders that aren't game folders
+            continue;
+        }
+        const std::string name = parts.back(), low = fsu::Lower(name);
+        const size_t dot = low.rfind('.');
+        const std::string ext = dot == std::string::npos ? "" : low.substr(dot + 1);
+        std::string folder;
+        if (low == "mod.txt") {
+            modTxtIndex = (int)f.first;
+            continue;
+        }
+        if (ext.empty()) {
+            const std::string head = peek(zip, f.first, 4);
+            const uint32_t v = head.size() == 4 ? ((uint32_t)(uint8_t)head[0] << 24 | (uint32_t)(uint8_t)head[1] << 16 | (uint32_t)(uint8_t)head[2] << 8 |
+                                                   (uint8_t)head[3])
+                                                : 0;
+            if (v >= 1 && v <= 64) {
+                folder = "Maps";
+            }
+        } else if (ext == "txt") {
+            if (fsu::Lower(peek(zip, f.first, 256)).find("campaign levels:") != std::string::npos) {
+                folder = "Campaigns";
+            }
+        } else if (ext == "json") {
+            if (peek(zip, f.first, 4096).find("\"map\"") != std::string::npos) {
+                folder = "Maps"; // OSS Lugaru's json maps
+            }
+        } else if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "tga" || ext == "bmp") {
+            folder = "Textures";
+        } else if (ext == "ogg" || ext == "wav" || ext == "mp3") {
+            folder = "Sounds";
+        } else if (ext == "solid") {
+            folder = "Models";
+        }
+        if (folder.empty()) {
+            skipped++; // readmes, programs, anything unknown
+            continue;
+        }
+        mz_zip_archive_file_stat st;
+        mz_zip_reader_file_stat(&zip.z, f.first, &st);
+        total += st.m_uncomp_size;
+        items.push_back({ f.first, folder + "/" + name, st.m_uncomp_size });
+    }
+    if (items.empty()) {
+        error = "no game files in it (no maps, campaigns, textures, sounds or models)";
+        return false;
+    }
+    if (total > kMaxModBytes || (int)items.size() > kMaxModFiles) {
+        error = "it is too big (over 1 GB or 50000 files)";
+        return false;
+    }
+    return true;
+}
+
 // the entries that make up the mod: below the most common data root (a "Data" folder,
 // or the folder that holds Textures/, Maps/...), data files only
 bool collect(Zip& zip, std::vector<Item>& items, int& modTxtIndex, std::string& error, int& skipped)
@@ -170,8 +260,7 @@ bool collect(Zip& zip, std::vector<Item>& items, int& modTxtIndex, std::string& 
         }
     }
     if (votes.empty()) {
-        error = "no game files in it (a mod has folders like Textures, Maps or Sounds)";
-        return false;
+        return collectLoose(zip, files, items, modTxtIndex, error, skipped);
     }
     std::string root;
     int best = -1;

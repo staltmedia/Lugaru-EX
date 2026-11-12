@@ -8,8 +8,8 @@ IDI_APP ICON "../lugaru/Dist/Windows/Lugaru.ico"
 1 RT_MANIFEST "launcher.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,4,7,0
-PRODUCTVERSION 0,4,7,0
+FILEVERSION 0,4,8,0
+PRODUCTVERSION 0,4,8,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -19,7 +19,7 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "LugaruEX Launcher"
             VALUE "ProductName", "LugaruEX"
-            VALUE "FileVersion", "0.4.7"
+            VALUE "FileVersion", "0.4.8"
             VALUE "LegalCopyright", "GPLv2+ (based on OSS Lugaru)"
         END
     END
@@ -175,12 +175,12 @@ CAPTION "LugaruEX Setup"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
     CONTROL         "", IDC_BANNER, "Static", SS_OWNERDRAW, 0, 0, 300, 75
-    LTEXT           "Install LugaruEX into this game folder:", -1, 8, 82, 284, 10
+    LTEXT           "Install into:", -1, 8, 82, 284, 10
     LISTBOX         IDC_SU_LIST, 8, 94, 284, 66, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER | WS_TABSTOP
     PUSHBUTTON      "Browse...", IDC_SU_BROWSE, 8, 164, 60, 14
-    PUSHBUTTON      "Get the free game data", IDC_SU_FREE, 72, 164, 96, 14
-    CONTROL         "Steam's Play button opens LugaruEX", IDC_SU_STEAM, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 184, 284, 10
-    CONTROL         "Shortcut on the desktop and in the Start menu", IDC_SU_SHORTCUT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 197, 284, 10
+    PUSHBUTTON      "Download game free", IDC_SU_FREE, 72, 164, 96, 14
+    CONTROL         "Open from Steam's Play button", IDC_SU_STEAM, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 184, 284, 10
+    CONTROL         "Desktop shortcut", IDC_SU_SHORTCUT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 197, 284, 10
     LTEXT           "", IDC_SU_STATUS, 8, 211, 284, 26
     DEFPUSHBUTTON   "Install", IDOK, 184, 241, 52, 15
     PUSHBUTTON      "Quit", IDCANCEL, 242, 241, 52, 15

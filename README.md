@@ -1,6 +1,6 @@
 # Lugaru EX
 
-Lugaru engine update for Lugaru HD or the free open-source game.
+Lugaru engine update for Lugaru HD and the free open-source game.
 
 ## Features
 

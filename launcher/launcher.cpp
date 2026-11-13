@@ -51,7 +51,7 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.4.9" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.4.10" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
@@ -2029,7 +2029,7 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
             if (g_set.autoUpdate) { // look for a new LugaruEX meanwhile (it installs on the next start)
                 std::thread(UpdateThread, d, narrow(g_exDir), g_set.updateRepo.empty() ? std::string(kUpdateRepo) : g_set.updateRepo).detach();
             }
-            std::wstring ver = L"LugaruEX 0.4.9";
+            std::wstring ver = L"LugaruEX 0.4.10";
             if (!PathFileExistsW((g_exeDir + L"Data").c_str())) {
                 ver = L"No game Data folder here!";
             }

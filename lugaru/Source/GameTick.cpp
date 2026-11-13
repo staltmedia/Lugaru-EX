@@ -1744,6 +1744,39 @@ void Game::ProcessDevInput()
         }
         printf("EXTEST all enemies knocked out\n");
     }
+    // test hook LUGARUEX_TEST_HIDDENTHROW=seconds: the enemy farthest from player 1 (out of view,
+    // so never drawn holding it) gets a loose knife and throws it at player 1
+    static const float exTestHT = getenv("LUGARUEX_TEST_HIDDENTHROW") ? (float)atof(getenv("LUGARUEX_TEST_HIDDENTHROW")) : 0.f;
+    static bool exTestHTDone = false;
+    if (exTestHT > 0 && !exTestHTDone && leveltime > exTestHT && !EX::NetIsGuest() && !Person::players.empty()) {
+        exTestHTDone = true;
+        int e = -1, k = -1;
+        float best = 0;
+        for (unsigned j = 1; j < Person::players.size(); j++) {
+            Person& p = *Person::players[j];
+            const float d = distsq(&p.coords, &Person::players[0]->coords);
+            if (!p.isPlayerControlled() && !p.dead && !p.skeleton.free && !p.hasWeapon() && p.num_weapons == 0 && d > best) {
+                best = d;
+                e = (int)j;
+            }
+        }
+        for (unsigned j = 0; j < weapons.size() && k < 0; j++) {
+            if (weapons[j].owner == -1 && weapons[j].getType() == knife) {
+                k = (int)j;
+            }
+        }
+        if (e >= 0 && k >= 0) {
+            Person& p = *Person::players[e];
+            p.takeWeapon(k);
+            p.victim = Person::players[0];
+            p.hasvictim = 1;
+            p.targetyaw = p.yaw = roughDirectionTo(p.coords, Person::players[0]->coords);
+            p.setTargetAnimation(knifethrowanim);
+            printf("EXTEST hidden throw: person %d, %.0f away, throws knife %d at player 1\n", e, sqrtf(best), k);
+        } else {
+            printf("EXTEST hidden throw: no free enemy or no loose knife\n");
+        }
+    }
     // test hook LUGARUEX_TEST_DROPKNIFE=seconds: a bloody knife lands 12 units ahead of player 1
     // (weapon glint and blood drips, also on online guests)
     static const float exTestKnife = getenv("LUGARUEX_TEST_DROPKNIFE") ? (float)atof(getenv("LUGARUEX_TEST_DROPKNIFE")) : 0.f;
@@ -1787,6 +1820,15 @@ void Game::ProcessDevInput()
         }
         yaw = bestYaw;
         pitch = *exSunView ? -(float)atof(exSunView) : -8.f;
+    }
+    // test hook LUGARUEX_TEST_CAM=degrees per second[,pitch]: the camera turns round on its own
+    // (positive pitch looks down) - for checking the lighting from every side
+    static const char* exTestCam = getenv("LUGARUEX_TEST_CAM");
+    if (exTestCam && !Person::players.empty()) {
+        yaw += (float)atof(exTestCam) * multiplier;
+        if (const char* c = strchr(exTestCam, ',')) {
+            pitch = (float)atof(c + 1);
+        }
     }
     // test hook LUGARUEX_TEST_DIALOG=seconds[,person]: play the level's first dialogue once,
     // clicked through by that person (default: the last human player, e.g. an online guest)
@@ -4390,6 +4432,7 @@ void Game::Tick()
 
                                                                     aim = DoRotation(aim, (float)abs(Random() % 30) - 15, (float)abs(Random() % 30) - 15, 0);
 
+                                                                    Person::players[i]->exHeldToHand(Person::players[i]->weaponids[0], aim);
                                                                     weapons[Person::players[i]->weaponids[0]].thrown(aim * 50, false);
                                                                     Person::players[i]->num_weapons--;
                                                                     if (Person::players[i]->num_weapons) {
@@ -4432,14 +4475,17 @@ void Game::Tick()
                     }
 
                     //draw weapon
-                    if (i == 0 || !Person::players[0]->dead || (Person::players[i]->hasWeapon())) {
+                    // (the game's characters put their weapons away once the player is dead; LugaruEX:
+                    // once every player is - a co-op player's own weapon is never put away for them)
+                    const bool exPlayersDown = EX::AllHumansDead();
+                    if (i == 0 || Person::players[i]->isPlayerControlled() || !exPlayersDown || (Person::players[i]->hasWeapon())) {
                         if (Person::players[i]->drawkeydown && !Person::players[i]->drawtogglekeydown ||
                             (Person::players[i]->num_weapons == 2) &&
                                 (!Person::players[i]->hasWeapon()) &&
                                 Person::players[i]->isIdle() ||
-                            Person::players[0]->dead &&
+                            exPlayersDown &&
                                 (Person::players[i]->hasWeapon()) &&
-                                i != 0) {
+                                !Person::players[i]->isPlayerControlled()) {
                             bool isgood = true;
                             if (Person::players[i]->hasWeapon()) {
                                 if (weapons[Person::players[i]->weaponids[Person::players[i]->weaponactive]].getType() == staff) {

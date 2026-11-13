@@ -1223,6 +1223,13 @@ Weapons::Weapons()
 
 // LugaruEX online guest: where the tip of a weapon lying on the ground is (the host's
 // physics keeps it; guests get the position and rotations) - drips and the glint use it
+void Weapon::exPlaceAt(const XYZ& grip, const XYZ& dir)
+{
+    XYZ g = grip, d = dir; // (XYZ's operators are not const)
+    position = oldposition = lastdrawnposition = g;
+    tippoint = oldtippoint = lastdrawntippoint = g + d * length;
+}
+
 void Weapon::exGuestTip()
 {
     EX::Mat4 wm;

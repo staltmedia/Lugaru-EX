@@ -39,6 +39,8 @@ const Act kActs[] = {
     { "Lighting", L"Shaders (next look)", "R", "back", nullptr, nullptr },
     { "Pause", L"Pause menu", nullptr, "start", L"Esc", nullptr },
     { "Console", L"Console", "`", nullptr, nullptr, L"-" },
+    { "Screenshot", L"Screenshot", nullptr, nullptr, L"F12", L"-" },
+    { "Record", L"Record video (start / stop)", nullptr, nullptr, L"F11", L"-" },
     { "Look", L"Look around", nullptr, nullptr, L"Mouse", L"Right stick" },
 };
 const int kNumActs = sizeof(kActs) / sizeof(kActs[0]);

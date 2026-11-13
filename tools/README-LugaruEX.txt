@@ -1,4 +1,4 @@
-LugaruEX 0.4.9 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.4.10 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -103,6 +103,10 @@ Launcher
     Vibration on/off and look speed.
     Walking: hold Ctrl, or push the left stick only part way (push it all
     the way to run).
+    F12 takes a screenshot, F11 starts and stops recording a video. Both
+    go to LugaruEX\Screenshots & Recording. Videos are MP4 with the game's
+    sound (Windows 10 2004 or newer; older Windows records without sound).
+    On Linux, recording needs ffmpeg installed and has no sound yet.
   Local: one player per connected controller (plug one in to add a player).
     Each picks Default / Random / Rabbit - skin / Wolf - skin, or "New
     rabbit/wolf skin...". The screen picture shows who gets which part of

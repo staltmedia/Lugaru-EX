@@ -47,6 +47,7 @@ public:
     void doStuff(int);
     void exEffects();   // LugaruEX: blood drips, flames, the glint on the ground (doStuff's visual end; guests run only this)
     void exGuestTip();  // LugaruEX online guest: tip of a weapon lying on the ground, from its position and rotations
+    void exPlaceAt(const XYZ& grip, const XYZ& dir); // LugaruEX: put a held weapon at a hand, tip along dir (before a throw)
     bool exOnFire() const { return onfire; }
     void exSetOnFire(bool f) { onfire = f; }
 
@@ -63,6 +64,7 @@ public:
     int owner;
     XYZ position;
     XYZ tippoint;
+    unsigned exHeldAt = 0; // LugaruEX: SDL ticks when its holder was last drawn (that is when a held weapon's position is set)
     XYZ velocity;
     XYZ tipvelocity;
     bool missed;

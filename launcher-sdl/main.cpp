@@ -58,7 +58,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.4.9"
+#define LUGARUEX_VERSION "0.4.10"
 
 namespace
 {
@@ -497,6 +497,8 @@ const Act kActs[] = {
     { "Lighting", "Shaders (next look)", "R", "back", nullptr, nullptr },
     { "Pause", "Pause menu", nullptr, "start", "Esc", nullptr },
     { "Console", "Console", "`", nullptr, nullptr, "-" },
+    { "Screenshot", "Screenshot", nullptr, nullptr, "F12", "-" },
+    { "Record", "Record video (start / stop)", nullptr, nullptr, "F11", "-" },
     { "Look", "Look around", nullptr, nullptr, "Mouse", "Right stick" },
 };
 const int kNumActs = sizeof(kActs) / sizeof(kActs[0]);

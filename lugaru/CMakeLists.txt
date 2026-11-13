@@ -169,6 +169,7 @@ set(LUGARU_SRCS
     ${SRCDIR}/EX/ExGraphics.cpp
     ${SRCDIR}/EX/ExInterp.cpp
     ${SRCDIR}/EX/ExLighting.cpp
+    ${SRCDIR}/EX/ExCapture.cpp
     ${SRCDIR}/EX/ExPad.cpp
     ${SRCDIR}/EX/ExLocal.cpp
     ${SRCDIR}/EX/ExNet.cpp

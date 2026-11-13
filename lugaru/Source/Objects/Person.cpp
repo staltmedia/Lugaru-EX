@@ -78,6 +78,27 @@ extern XYZ windvector;
 
 std::vector<std::shared_ptr<Person>> Person::players;
 
+// LugaruEX: a held weapon's position is only set when its holder is drawn, so a character this
+// PC's camera hasn't shown lately (an online guest off the host's screen, an enemy behind a
+// wall) threw from wherever its knife was last seen - online guests saw it fly in from the side.
+// Before such a throw the weapon goes to the hand, its tip along the throw. Drawn ones keep
+// the exact grip point they had.
+void Person::exHeldToHand(int weapon, const XYZ& aim)
+{
+    if (weapon < 0 || weapon >= (int)weapons.size()) {
+        return;
+    }
+    Weapon& w = weapons[weapon];
+    if (SDL_GetTicks() - w.exHeldAt < 100) {
+        return;
+    }
+    XYZ hand = coords + DoRotation(jointPos(righthand), 0, yaw, 0) * scale;
+    XYZ was = w.position;
+    printf("LugaruEX: person %d throws a weapon it was not drawn holding (%u ms): it starts at the hand, not %.1f away\n",
+           id, SDL_GetTicks() - w.exHeldAt, findDistance(&was, &hand));
+    w.exPlaceAt(hand, aim);
+}
+
 // LugaruEX: who earns a bonus for what happened to enemy p (a heavy impact, a knockout,
 // a wolf killed): the living player fighting it, else the nearest living player; -1 if none.
 // With one player that is always player 1, as in the original game.
@@ -3105,6 +3126,7 @@ void Person::DoAnimations()
                         XYZ aim;
                         aim = victim->coords + DoRotation(victim->jointPos(abdomen), 0, victim->yaw, 0) * victim->scale + victim->velocity * findDistance(&victim->coords, &coords) / 50 - (coords + DoRotation(jointPos(righthand), 0, yaw, 0) * scale);
                         Normalise(&aim);
+                        exHeldToHand(weaponids[0], aim);
                         weapons[weaponids[0]].thrown(aim * 50);
                         num_weapons--;
                         if (num_weapons) {
@@ -6456,6 +6478,7 @@ int Person::DrawSkeleton()
                         }
                     }
                 }
+                weapons[i].exHeldAt = SDL_GetTicks();
                 if (skeleton.free) {
                     weapons[i].position = weaponpoint * scale + coords;
                     weapons[i].bigrotation = 0;

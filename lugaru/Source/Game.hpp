@@ -184,11 +184,13 @@ namespace EX
 {
 void AfterSwap();
 void ColorblindApply();
+void CaptureFrame();
 }
 static __forceinline void swap_gl_buffers(void)
 {
     extern SDL_Window* sdlwindow;
     EX::ColorblindApply(); // LugaruEX: red-green filter (does nothing when off)
+    EX::CaptureFrame();    // LugaruEX: F12 screenshot / F11 recording, then their notice
     SDL_GL_SwapWindow(sdlwindow);
     EX::AfterSwap();
 

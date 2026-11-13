@@ -380,6 +380,7 @@ public:
     void Reverse();
     void DoDamage(float howmuch);
     void exMorphs();     // LugaruEX: face / hand / tail morphs of DoStuff (online guests run them too)
+    void exHeldToHand(int weapon, const XYZ& aim); // LugaruEX: before a throw, a weapon not drawn lately goes to the hand
     void exAnimMorphs(); // LugaruEX: hands and mouth that follow the animation
     void exFireVisual(float mult); // LugaruEX online guest: flames and burning, shown only
     void exFireStart();            // LugaruEX online guest: CatchFire's burst of flames and the fire loop, shown only

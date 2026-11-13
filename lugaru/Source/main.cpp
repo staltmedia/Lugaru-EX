@@ -34,6 +34,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExInterp.hpp"
 #include "EX/ExLocal.hpp"
 #include "EX/ExNet.hpp"
+#include "EX/ExCapture.hpp"
 #include "EX/ExLighting.hpp"
 #include "EX/ExPad.hpp"
 #include "Utils/Folders.hpp"
@@ -638,7 +639,8 @@ void DoUpdate()
 
 void CleanUp(void)
 {
-    EX::NetShutdown(); // LugaruEX: tell the other side we left
+    EX::CaptureShutdown(); // LugaruEX: finish a recording so its file is complete
+    EX::NetShutdown();     // LugaruEX: tell the other side we left
     LOGFUNC;
 
     delete[] commandLineOptionsBuffer;
@@ -955,7 +957,7 @@ int main(int argc, char** argv)
                 if (exEnv("LUGARUEX_TEST_CYCLE")) {
                     EX::LightingCycle(); // test hook: same as pressing R
                 }
-                printf("EXTEST level=%s load=%s players=%d\n", lvl, ok ? "ok" : "FAILED", (int)Person::players.size());
+                printf("EXTEST level=%s load=%s players=%d at %.2fs\n", lvl, ok ? "ok" : "FAILED", (int)Person::players.size(), SDL_GetTicks() / 1000.f);
                 if (exQuitAt) {
                     exQuitAt = SDL_GetTicks() + (exQuitAt - SDL_GetTicks()); // count from after loading
                 }

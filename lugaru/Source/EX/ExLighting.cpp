@@ -1264,16 +1264,27 @@ void LightingApply()
     // 1. copy (and MSAA-resolve) the rendered world: colour + depth
     ex_glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     ex_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_fboScene);
-    while (glGetError() != GL_NO_ERROR) {
-    }
     const int vx = ViewX(), vy = ViewY(); // split screen: this view's corner on the window
-    ex_glBlitFramebuffer(vx, vy, vx + w, vy + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, GL_NEAREST);
-    if (glGetError() != GL_NO_ERROR) {
-        // depth formats differ on this driver: copy colour only, depth effects off
+    if (g_warnedBlit) {
         ex_glBlitFramebuffer(vx, vy, vx + w, vy + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        if (!g_warnedBlit) {
-            fprintf(stderr, "LugaruEX lighting: depth copy unsupported, depth effects disabled\n");
-            g_warnedBlit = true;
+    } else {
+        // whether the depth copy works depends on the window's formats, so it is only checked
+        // on the first frames (glGetError makes a multi-threaded driver wait for the GPU)
+        static int checks = 0;
+        const bool check = checks < 3;
+        if (check) {
+            while (glGetError() != GL_NO_ERROR) {
+            }
+        }
+        ex_glBlitFramebuffer(vx, vy, vx + w, vy + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, GL_NEAREST);
+        if (check) {
+            checks++;
+            if (glGetError() != GL_NO_ERROR) {
+                // depth formats differ on this driver: copy colour only, depth effects off
+                ex_glBlitFramebuffer(vx, vy, vx + w, vy + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                fprintf(stderr, "LugaruEX lighting: depth copy unsupported, depth effects disabled\n");
+                g_warnedBlit = true;
+            }
         }
     }
 

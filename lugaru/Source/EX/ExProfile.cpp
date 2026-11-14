@@ -304,11 +304,125 @@ void SamplerReport()
     }
     fflush(stdout);
 }
+
+// Test-only hang report (LUGARUEX_TEST_HANG=<folder with the PDB>): when the main thread
+// finishes no frame for 3 seconds, print where it is (the call stack, twice), then quit.
+static std::atomic<unsigned> g_beat(0);
+void HangBeat()
+{
+    g_beat++;
+}
+void HangWatchStart()
+{
+    const char* pdb = getenv("LUGARUEX_TEST_HANG");
+    static bool started = false;
+    if (!pdb || started) {
+        return;
+    }
+    started = true;
+    HANDLE main = nullptr;
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &main, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    const std::string path = pdb;
+    std::thread([main, path] {
+        unsigned last = g_beat;
+        DWORD since = GetTickCount();
+        for (;;) {
+            Sleep(200);
+            if (g_beat != last) {
+                last = g_beat;
+                since = GetTickCount();
+                continue;
+            }
+            if (GetTickCount() - since < 3000) {
+                continue;
+            }
+            HANDLE proc = GetCurrentProcess();
+            SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+            SymInitialize(proc, path.c_str(), TRUE);
+            for (int shot = 0; shot < 2; shot++) {
+                SuspendThread(main);
+                CONTEXT c;
+                memset(&c, 0, sizeof(c));
+                c.ContextFlags = CONTEXT_FULL;
+                GetThreadContext(main, &c);
+                STACKFRAME64 f;
+                memset(&f, 0, sizeof(f));
+                f.AddrPC.Offset = c.Rip, f.AddrPC.Mode = AddrModeFlat;
+                f.AddrFrame.Offset = c.Rbp, f.AddrFrame.Mode = AddrModeFlat;
+                f.AddrStack.Offset = c.Rsp, f.AddrStack.Mode = AddrModeFlat;
+                printf("EXTEST hang: the main thread finished no frame for 3 s; it is in:\n");
+                for (int depth = 0; depth < 32; depth++) {
+                    if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, main, &f, &c, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr) || !f.AddrPC.Offset) {
+                        break;
+                    }
+                    char buf[sizeof(SYMBOL_INFO) + 256];
+                    SYMBOL_INFO* si = (SYMBOL_INFO*)buf;
+                    memset(buf, 0, sizeof(buf));
+                    si->SizeOfStruct = sizeof(SYMBOL_INFO);
+                    si->MaxNameLen = 255;
+                    DWORD64 disp = 0;
+                    IMAGEHLP_LINE64 line;
+                    memset(&line, 0, sizeof(line));
+                    line.SizeOfStruct = sizeof(line);
+                    DWORD ld = 0;
+                    const bool hasLine = SymGetLineFromAddr64(proc, f.AddrPC.Offset, &ld, &line) != 0;
+                    printf("EXTEST hang:   %s%s%s:%lu\n", SymFromAddr(proc, f.AddrPC.Offset, &disp, si) ? si->Name : "?", hasLine ? "  " : "",
+                           hasLine ? line.FileName : "", hasLine ? line.LineNumber : 0);
+                }
+                ResumeThread(main);
+                fflush(stdout);
+                Sleep(500);
+            }
+            fflush(stdout);
+            TerminateProcess(GetCurrentProcess(), 3);
+        }
+    }).detach();
+}
+
+// test runs (LUGARUEX_TEST_HANG=<pdb folder>): the crash handler prints the crashing call stack
+void CrashStack(void* contextRecord)
+{
+    const char* pdb = getenv("LUGARUEX_TEST_HANG");
+    if (!pdb || !contextRecord) {
+        return;
+    }
+    HANDLE proc = GetCurrentProcess();
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    SymInitialize(proc, pdb, TRUE);
+    CONTEXT c = *(CONTEXT*)contextRecord;
+    STACKFRAME64 f;
+    memset(&f, 0, sizeof(f));
+    f.AddrPC.Offset = c.Rip, f.AddrPC.Mode = AddrModeFlat;
+    f.AddrFrame.Offset = c.Rbp, f.AddrFrame.Mode = AddrModeFlat;
+    f.AddrStack.Offset = c.Rsp, f.AddrStack.Mode = AddrModeFlat;
+    for (int depth = 0; depth < 32; depth++) {
+        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, GetCurrentThread(), &f, &c, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr) || !f.AddrPC.Offset) {
+            break;
+        }
+        char buf[sizeof(SYMBOL_INFO) + 256];
+        SYMBOL_INFO* si = (SYMBOL_INFO*)buf;
+        memset(buf, 0, sizeof(buf));
+        si->SizeOfStruct = sizeof(SYMBOL_INFO);
+        si->MaxNameLen = 255;
+        DWORD64 disp = 0;
+        IMAGEHLP_LINE64 line;
+        memset(&line, 0, sizeof(line));
+        line.SizeOfStruct = sizeof(line);
+        DWORD ld = 0;
+        const bool hasLine = SymGetLineFromAddr64(proc, f.AddrPC.Offset, &ld, &line) != 0;
+        fprintf(stderr, "EXTEST crash:   %s%s%s:%lu\n", SymFromAddr(proc, f.AddrPC.Offset, &disp, si) ? si->Name : "?", hasLine ? "  " : "",
+                hasLine ? line.FileName : "", hasLine ? line.LineNumber : 0);
+    }
+    fflush(stderr);
+}
 }
 #else
 namespace EX
 {
 void SamplerStart() {}
 void SamplerReport() {}
+void HangBeat() {}
+void HangWatchStart() {}
+void CrashStack(void*) {}
 }
 #endif

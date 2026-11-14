@@ -877,7 +877,7 @@ float Terrain::getHeight(float pointx, float pointz)
     pointx /= scale;
     pointz /= scale;
 
-    if (pointx >= size - 1 || pointz >= size - 1 || pointx <= 0 || pointz <= 0) {
+    if (!(pointx < size - 1 && pointz < size - 1 && pointx > 0 && pointz > 0)) { // (LugaruEX: written so NaN is outside too)
         return 0;
     }
 
@@ -928,7 +928,7 @@ float Terrain::getOpacity(float pointx, float pointz)
     pointx /= scale;
     pointz /= scale;
 
-    if (pointx >= size - 1 || pointz >= size - 1 || pointx <= 0 || pointz <= 0) {
+    if (!(pointx < size - 1 && pointz < size - 1 && pointx > 0 && pointz > 0)) { // (LugaruEX: written so NaN is outside too)
         return 0;
     }
 
@@ -950,7 +950,7 @@ XYZ Terrain::getNormal(float pointx, float pointz)
     pointz /= scale;
 
     height1 = 0;
-    if (pointx >= size - 1 || pointz >= size - 1 || pointx <= 0 || pointz <= 0) {
+    if (!(pointx < size - 1 && pointz < size - 1 && pointx > 0 && pointz > 0)) { // (LugaruEX: written so NaN is outside too)
         return height1;
     }
     tilex = pointx;
@@ -972,7 +972,7 @@ XYZ Terrain::getLighting(float pointx, float pointz)
     pointz /= scale;
 
     height1 = 0;
-    if (pointx >= size - 1 || pointz >= size - 1 || pointx <= 0 || pointz <= 0) {
+    if (!(pointx < size - 1 && pointz < size - 1 && pointx > 0 && pointz > 0)) { // (LugaruEX: written so NaN is outside too)
         return height1;
     }
     tilex = pointx;
@@ -1333,6 +1333,11 @@ void Terrain::MakeDecal(decal_type type, XYZ where, float size, float opacity, f
 
 void Terrain::MakeDecalLock(decal_type type, XYZ where, int whichx, int whichy, float size, float opacity, float rotation)
 {
+    // LugaruEX: a decal's cell must be on the map (the decal reads the corners' heights; a
+    // position off the map or not a number - from the network - read far outside the arrays)
+    if (whichx < 0 || whichy < 0 || whichx + 1 >= this->size || whichy + 1 >= this->size) {
+        return;
+    }
     if (decalstoggle) {
         XYZ rot = getLighting(where.x, where.z);
         float decalbright = (rot.x + rot.y + rot.z) / 3;

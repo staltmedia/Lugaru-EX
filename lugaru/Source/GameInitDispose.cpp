@@ -265,7 +265,8 @@ static void exLoadingPicture(float howmuch)
     // test hook LUGARUEX_TEST_LOADSHOT=1: the first loading picture of each load as a screenshot
     static const bool shots = getenv("LUGARUEX_TEST_LOADSHOT") != nullptr;
     static int loads = 0;
-    if (shots && (g_loadShotNew || getenv("LUGARUEX_TEST_LOADSHOT")[0] == 'a') && loads < 12) {
+    static const bool shotAll = shots && getenv("LUGARUEX_TEST_LOADSHOT")[0] == 'a';
+    if (shots && (g_loadShotNew || shotAll) && loads < 12) {
         g_loadShotNew = false;
         extern bool save_screenshot(const char* fname);
         char f[64];

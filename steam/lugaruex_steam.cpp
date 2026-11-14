@@ -163,7 +163,23 @@ public:
         CSteamID id;
         SOCKET s = INVALID_SOCKET;
         double heard = 0;
+        double windowStart = 0; // packets this second (a flood is cut off)
+        int count = 0;
     };
+    static constexpr int kMaxPeers = 64;
+    static constexpr int kMaxPerSecond = 4000;  // (a guest downloading mods sends a few hundred)
+    static constexpr double kPeerIdle = 180;    // quiet this long: its slot is freed
+    void dropIdlePeers(double t, double idle)
+    {
+        for (size_t i = 0; i < peers.size();) {
+            if (mode == HOST && t - peers[i].heard > idle) {
+                closesocket(peers[i].s);
+                peers.erase(peers.begin() + i);
+            } else {
+                i++;
+            }
+        }
+    }
     std::vector<Peer> peers;
     SOCKET ctl = INVALID_SOCKET;
     CSteamID lobby, host;
@@ -204,8 +220,14 @@ public:
                 return &p;
             }
         }
-        if (!make || peers.size() >= 64) {
+        if (!make) {
             return nullptr;
+        }
+        if ((int)peers.size() >= kMaxPeers) {
+            dropIdlePeers(now(), 30); // full: make room from players gone quiet
+            if ((int)peers.size() >= kMaxPeers) {
+                return nullptr;
+            }
         }
         Peer p;
         p.id = id;
@@ -216,13 +238,26 @@ public:
         p.heard = now();
         peers.push_back(p);
         if (mode == HOST) {
-            // tell the game which Steam account this port carries (only for its ban list)
-            sockaddr_in a = {};
-            socklen_t l = sizeof(a);
-            getsockname(p.s, (sockaddr*)&a, &l);
-            ctlSend('P', std::to_string(ntohs(a.sin_port)) + " " + std::to_string((unsigned long long)id.ConvertToUint64()));
+            tellPort(peers.back());
         }
         return &peers.back();
+    }
+    // tell the game which Steam account a port carries (its ban list; it lets nobody in
+    // through a port it can't name)
+    void tellPort(const Peer& p)
+    {
+        sockaddr_in a = {};
+        socklen_t l = sizeof(a);
+        getsockname(p.s, (sockaddr*)&a, &l);
+        ctlSend('P', std::to_string(ntohs(a.sin_port)) + " " + std::to_string((unsigned long long)p.id.ConvertToUint64()));
+    }
+    void tellPorts()
+    {
+        if (mode == HOST) {
+            for (const Peer& p : peers) {
+                tellPort(p);
+            }
+        }
     }
 
     // ---- host
@@ -358,8 +393,15 @@ public:
                 const bool allowed = mode == HOST || from == host; // (a guest only hears its host)
                 Peer* p = allowed ? peerOf(from, mode == HOST) : nullptr;
                 if (p && msgs[i]->m_cbSize > 0 && msgs[i]->m_cbSize <= 2048) {
-                    p->heard = now();
-                    sendto(p->s, (const char*)msgs[i]->m_pData, (int)msgs[i]->m_cbSize, 0, (sockaddr*)&game, sizeof(game));
+                    const double t = now();
+                    p->heard = t;
+                    if (t - p->windowStart >= 1) {
+                        p->windowStart = t;
+                        p->count = 0;
+                    }
+                    if (++p->count <= kMaxPerSecond) {
+                        sendto(p->s, (const char*)msgs[i]->m_pData, (int)msgs[i]->m_cbSize, 0, (sockaddr*)&game, sizeof(game));
+                    }
                 }
                 msgs[i]->Release();
             }
@@ -525,6 +567,8 @@ int main(int argc, char** argv)
             if (h.mode == Helper::HOST && now() - h.lastInfoAsk > 3) {
                 h.lastInfoAsk = now();
                 h.askInfo();
+                h.dropIdlePeers(now(), Helper::kPeerIdle);
+                h.tellPorts(); // (again: the game waits for it before letting a player in)
             }
             // wait for traffic (at most a millisecond: packets go on quickly)
             fd_set rs;

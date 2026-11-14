@@ -26,6 +26,9 @@ void ProfFrameEnd();              // after the swap
 void ProfAuto(const char* why);
 void SamplerStart();  // test hook LUGARUEX_TEST_SAMPLE (Windows): sampling profiler
 void SamplerReport();
+void HangWatchStart(); // test hook LUGARUEX_TEST_HANG=<pdb folder> (Windows): call stack when frames stop
+void HangBeat();       // a frame was finished
+void CrashStack(void* contextRecord); // (Windows, LUGARUEX_TEST_HANG) the crashing call stack
 }
 
 #define EX_PROF(name)          \

@@ -119,6 +119,9 @@ static inline XYZ lerpv(const XYZ& a, const XYZ& b, float t)
 static inline float lerpAngle(float a, float b, float t)
 {
     float d = b - a;
+    if (!(fabsf(d) < 1e6f)) {
+        return b; // (not a real angle: the loops below would never end)
+    }
     while (d > 180) {
         d -= 360;
     }

@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "EX/ExGraphics.hpp"
 
 #include "EX/ExConfig.hpp"
+#include "EX/ExProfile.hpp"
 #include "Graphic/gamegl.hpp"
 
 #include <cmath>
@@ -257,6 +258,7 @@ void ApplyAnisotropy()
 
 void AfterSwap()
 {
+    HangBeat(); // (test hook LUGARUEX_TEST_HANG)
     // With vsync, wait for the GPU to finish the frame right after the swap:
     // frame times then follow the display exactly instead of jittering with
     // the driver's queue depth (smoother motion, less input lag).

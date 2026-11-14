@@ -193,6 +193,10 @@ void ChatReceived(int person, const std::string& name, const std::string& text)
 
 void ChatCapture3D()
 {
+    if (g_bubbles.empty()) {
+        g_have3D = false; // (nothing over anyone's head: no need to read the matrices back)
+        return;
+    }
     glGetDoublev(GL_MODELVIEW_MATRIX, g_mv);
     glGetDoublev(GL_PROJECTION_MATRIX, g_pj);
     glGetIntegerv(GL_VIEWPORT, g_vp);

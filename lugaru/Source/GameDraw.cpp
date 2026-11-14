@@ -396,6 +396,14 @@ int Game::DrawGLScene(StereoSide side)
         glTranslatef(-viewer.x, -viewer.y, -viewer.z);
         EX::LightingCaptureCamera(); // LugaruEX: camera matrices for the lighting pass
         frustum.GetFrustum();
+        {
+            // test hook LUGARUEX_TEST_EXTRASYNC=n: n extra matrix reads a frame (what one costs)
+            static const int extra = getenv("LUGARUEX_TEST_EXTRASYNC") ? atoi(getenv("LUGARUEX_TEST_EXTRASYNC")) : 0;
+            float m[16];
+            for (int k = 0; k < extra; k++) {
+                glGetFloatv(GL_MODELVIEW_MATRIX, m);
+            }
+        }
 
         //make shadow decals on terrain and Object::objects
         static XYZ point;

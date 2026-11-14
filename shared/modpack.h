@@ -31,7 +31,8 @@ struct ModEntry // one item of the [Mods] List
 // files that are not game data (programs, scripts). folderOut = the new folder's name.
 bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std::string& folderOut, std::string& error);
 // unpack a zip made by Mod_PackFolder (online sharing) into destDir, with the same checks
-bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::string& error);
+// (maxBytes: a smaller limit on the unpacked size than a mod's, e.g. for players' looks; 0 = the mod limit)
+bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::string& error, uint64_t maxBytes = 0);
 // zip a mod folder for sending (files in name order, no dates: same folder = same bytes)
 bool Mod_PackFolder(const std::string& folder, const std::string& zipPath);
 uint64_t Mod_HashFile(const std::string& path); // FNV-1a 64 of the bytes, 0 if unreadable

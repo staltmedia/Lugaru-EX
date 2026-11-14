@@ -374,6 +374,7 @@ struct Client
     uint32_t id = 0;           // for the launcher's kick / ban
     std::string ident;         // who it is for bans: "steam:<id>" (through Steam) or "ip:<address>"
     double blockedUntil = 0;   // kicked: refused until then
+    uint64_t lookOffered = 0;  // the look pack this player offered (one each)
 };
 static std::vector<Client> g_clients;
 static uint32_t g_levelSeq = 0, g_rosterVer = 0, g_snapSeq = 0;
@@ -779,6 +780,21 @@ static bool helperPacket(const uint8_t* d, int n, const sockaddr_in& from)
     }
     if (magic != kSteamCtl) {
         return false;
+    }
+    // Only the helper's own control socket may talk like the helper: other players' packets
+    // also reach this game from 127.0.0.1 (the helper's per-player sockets), and one dressed
+    // up as a control packet must not move the keep-alives away (the helper would quit),
+    // change who a port belongs to (bans) or put text on the screen. The helper's first
+    // hello comes before any player can reach this game; it fixes the address. ('A' comes
+    // from the host's socket by design, and only counts before the host is known.)
+    const bool fromHelper = g_helperUp && from.sin_port == g_helperAddr.sin_port;
+    if (d[4] != 'A' && !fromHelper && !(d[4] == 'H' && !g_helperUp)) {
+        static double lastLog = -10;
+        if (now() - lastLog > 5) {
+            lastLog = now();
+            printf("LugaruEX net: ignored a control packet that didn't come from the Steam helper\n");
+        }
+        return true; // (not a game packet either)
     }
     const std::string text = netinfo::CleanText(std::string((const char*)d + 5, n - 5), 160, false);
     switch (d[4]) {
@@ -2202,8 +2218,10 @@ static void guestModsForget()
 // Mods/.net/look-<hash>/ (only files under Textures/Custom/ and Models/Custom/ are
 // accepted) and searched after the mods, then the characters are dressed again.
 static const uint32_t kLookMaxSize = 24u * 1024 * 1024;
+static const uint64_t kLookMaxUnpacked = 64ull * 1024 * 1024; // (a zip bomb can't fill the disk)
 static const int kLookMax = 32;    // packs in one game
 static const int kLookWindow = 64; // pieces in flight per pack
+static const uint64_t kLookSessionMax = 96ull * 1024 * 1024; // host: players' packs in one session
 
 struct LookServe
 {
@@ -2400,7 +2418,7 @@ static void lookFinished(LookFetch& m)
     std::string err;
     const std::string zip = m.dir + ".zip";
     const bool hashOk = Mod_HashFile(m.part) == m.hash;
-    if (hashOk && Mod_ExtractTo(m.part, m.dir, err) && lookDirOk(m.dir)) {
+    if (hashOk && Mod_ExtractTo(m.part, m.dir, err, kLookMaxUnpacked) && lookDirOk(m.dir)) {
         fsu::WriteAll(m.dir + "/.done", "look pack\n");
         fsu::Rename(m.part, zip);
         m.done = true;
@@ -2554,6 +2572,19 @@ static void hostLookOffer(Client& c, Reader& r)
         if (l.first == hash) {
             return; // (have it: the next list tells them)
         }
+    }
+    // one pack per player, and not more than kLookSessionMax in all: a made-up client
+    // offering pack after pack would otherwise fill this PC's disk
+    if (c.lookOffered && c.lookOffered != hash) {
+        return;
+    }
+    static uint64_t taken = 0;
+    if (!c.lookOffered) {
+        if (taken + size > kLookSessionMax) {
+            return;
+        }
+        taken += size;
+        c.lookOffered = hash;
     }
     lookFetchStart(hash, size, c.addr);
 }
@@ -2851,7 +2882,10 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
         std::string ident;
         if (g_steam && from.sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
             auto it = g_steamIdents.find(ntohs(from.sin_port));
-            ident = it != g_steamIdents.end() ? it->second : "steam:?";
+            if (it == g_steamIdents.end()) {
+                return; // (the helper hasn't said whose this port is yet: bans need it; they ask again)
+            }
+            ident = it->second;
         } else {
             char ip[64];
             inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
@@ -3015,9 +3049,17 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
         c->ackRoster = ros;
         for (int k = 0; k < count && k < 4; k++) {
             const int btn = r.u16();
-            const float yaw = r.f32(), pitch = r.f32();
+            float yaw = r.f32(), pitch = r.f32();
             if (!r.ok) {
                 return;
+            }
+            // the camera angles from the other PC: a broken or made-up value (infinite, NaN,
+            // enormous) must not reach the game (angle loops never finished with it)
+            if (!std::isfinite(yaw) || !std::isfinite(pitch)) {
+                yaw = pitch = 0;
+            }
+            if (fabsf(yaw) > 3600) {
+                yaw = fmodf(yaw, 360.f); // (the same direction)
             }
             if (k < (int)c->slots.size()) {
                 PadInput in;
@@ -3182,6 +3224,32 @@ static bool seenEvent(uint32_t id)
     return false;
 }
 
+// positions from the host: finite and on a sane scale (a damaged or made-up packet must not
+// put NaN or a number like 1e30 into the world: array indices are worked out from them)
+static bool saneXYZ(const XYZ& v)
+{
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && fabsf(v.x) < 1e6f && fabsf(v.y) < 1e6f && fabsf(v.z) < 1e6f;
+}
+
+// a person's weapon slots must name weapons that exist (a snapshot can shrink the list
+// between two steps; drawing writes the held weapons' positions)
+static void fixWeaponRefs(Person& p)
+{
+    p.num_weapons = std::max(0, std::min(4, p.num_weapons));
+    for (int k = 0; k < p.num_weapons; k++) {
+        if (p.weaponids[k] < 0 || p.weaponids[k] >= (int)weapons.size()) {
+            p.num_weapons = k; // (the slots after a bad one go too: the game keeps them packed)
+            break;
+        }
+    }
+    if (p.weaponactive < 0 || p.weaponactive >= p.num_weapons) {
+        p.weaponactive = -1;
+    }
+    if (p.weaponstuck < 0 || p.weaponstuck >= p.num_weapons) {
+        p.weaponstuck = -1;
+    }
+}
+
 static void guestSnap(Reader& r)
 {
     const uint32_t lvl = r.u32();
@@ -3251,6 +3319,14 @@ static void guestSnap(Reader& r)
                 weapons.erase(weapons.begin() + weaponCount, weapons.end());
             }
             g_whist.resize(weapons.size());
+            for (auto& pp : Person::players) {
+                fixWeaponRefs(*pp); // (now: they may be drawn before the next step)
+            }
+            for (Weapon& w : weapons) {
+                if (w.owner >= (int)Person::players.size()) {
+                    w.owner = -1;
+                }
+            }
         }
         if (tut && Tutorial::active) {
             Tutorial::stage = tStage;
@@ -3270,7 +3346,7 @@ static void guestSnap(Reader& r)
             pos.x = r.f32();
             pos.y = r.f32();
             pos.z = r.f32();
-            if (!r.ok || seenEvent(id)) {
+            if (!r.ok || !saneXYZ(pos) || seenEvent(id)) {
                 continue;
             }
             if (kind == 'S' && a >= 0 && a < sounds_count) {
@@ -3319,7 +3395,7 @@ static void guestSnap(Reader& r)
             vel.y = r.i16() / 50.f;
             vel.z = r.i16() / 50.f;
             const int cr = r.u8(), cg = r.u8(), cb = r.u8(), special = r.u8(), speed = r.u8(), alive = r.u8();
-            if (!r.ok || seenEvent(id)) {
+            if (!r.ok || !saneXYZ(pos) || seenEvent(id)) {
                 continue;
             }
             g_fxPlayed++;
@@ -3388,6 +3464,9 @@ static void guestSnap(Reader& r)
             if (!r.ok) {
                 break;
             }
+            if (!saneXYZ(s.coords)) {
+                continue; // (a broken record: keep the last good one)
+            }
             if (idx >= (int)g_hist.size()) {
                 g_hist.resize(idx + 1);
             }
@@ -3432,6 +3511,9 @@ static void guestSnap(Reader& r)
             }
             if (!r.ok) {
                 break;
+            }
+            if (s.owner == -1 && !saneXYZ(s.pos)) {
+                continue;
             }
             if (idx < (int)g_whist.size()) {
                 auto& h = g_whist[idx];
@@ -4200,12 +4282,7 @@ void NetGuestStep()
         for (int k = 0; k < 4; k++) {
             p.weaponids[k] = (s.w[k] >= 0 && s.w[k] < (int)weapons.size()) ? s.w[k] : -1;
         }
-        if (p.weaponactive >= 0 && p.weaponids[p.weaponactive] < 0) {
-            p.weaponactive = -1;
-        }
-        if (p.weaponstuck >= 0 && p.weaponids[p.weaponstuck] < 0) {
-            p.weaponstuck = -1;
-        }
+        fixWeaponRefs(p); // (a slot naming no weapon would be drawn as weapons[-1])
         const int prevFree = p.skeleton.free;
         p.skeleton.free = std::min(3, s.free);
         if (s.free) {

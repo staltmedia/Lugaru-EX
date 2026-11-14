@@ -60,7 +60,7 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.5.1" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.5.2" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)

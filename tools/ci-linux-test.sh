@@ -63,7 +63,7 @@ done
 Xvfb :91 -screen 0 1024x600x24 >/dev/null 2>&1 &
 XV=$!
 sleep 2
-(DISPLAY=:91 XDG_DATA_HOME=/tmp/xdg-engine ALSOFT_DRIVERS=null LIBGL_ALWAYS_SOFTWARE=1 LUGARUEX_STDOUT=1 \
+(DISPLAY=:91 XDG_DATA_HOME=/tmp/xdg-engine ALSOFT_DRIVERS=null LIBGL_ALWAYS_SOFTWARE=1 LUGARUEX_STDOUT=1 LUGARUEX_TEST_ROTCHECK=1 \
     timeout 300 /tmp/game/LugaruEX/lugaruex --exlevel=$LEVEL --exquit=60 > "$OUT/engine.log" 2>&1; echo "engine: exit $?") &
 GP=$!
 sleep 50
@@ -71,6 +71,9 @@ DISPLAY=:91 import -window root "$OUT/engine.png" 2>/dev/null || echo "FAIL: no 
 wait $GP
 kill $XV 2>/dev/null
 grep -q "EXTEST done" "$OUT/engine.log" || { echo "FAIL: game test did not finish"; fail=1; }
+# the fast main-axis rotation must give the general formula's numbers exactly (GCC too)
+grep "rotcheck" "$OUT/engine.log" || echo "FAIL: no rotation check"
+grep -q "rotcheck: [0-9]* cases, 0 differ" "$OUT/engine.log" || { echo "FAIL: the fast rotation differs"; fail=1; }
 grep -n "lighting:\|GL \|CRASH\|error" "$OUT/engine.log" | head -20
 
 # 3. online: a host and a guest on this machine

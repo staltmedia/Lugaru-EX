@@ -1973,7 +1973,8 @@ void Game::ProcessDevInput()
     }
     // (LUGARUEX_TEST_GIVE: where player 1's weapons are, 3 s in)
     static int exGiveLogged = 0; // (every 1.5 s from 1.5 s on, 4 times)
-    if (exGiveLogged < 4 && getenv("LUGARUEX_TEST_GIVE") && leveltime > 1.5f * (exGiveLogged + 1) && !Person::players.empty()) {
+    static const bool exGive = getenv("LUGARUEX_TEST_GIVE") != nullptr;
+    if (exGiveLogged < 4 && exGive && leveltime > 1.5f * (exGiveLogged + 1) && !Person::players.empty()) {
         exGiveLogged++;
         const Person& p = *Person::players[0];
         printf("EXTEST give: %s at %.2f,%.2f,%.2f active %d\n", p.creature == wolftype ? "wolf" : "rabbit", p.coords.x, p.coords.y, p.coords.z, p.weaponactive);

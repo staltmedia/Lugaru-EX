@@ -494,7 +494,7 @@ bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std:
     return true;
 }
 
-bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::string& error)
+bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::string& error, uint64_t maxBytes)
 {
     Zip zip(zipPath);
     if (!zip.ok) {
@@ -506,6 +506,16 @@ bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::
     int skipped = 0;
     if (!collect(zip, items, modTxt, error, skipped)) {
         return false;
+    }
+    if (maxBytes) {
+        uint64_t total = 0;
+        for (const Item& it : items) {
+            total += it.size;
+        }
+        if (total > maxBytes) {
+            error = "it unpacks to more than it should";
+            return false;
+        }
     }
     fsu::MakeDirs(destDir);
     return extractItems(zip, items, destDir, error);

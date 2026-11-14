@@ -60,6 +60,43 @@ struct Mat4
 
     void rotate(float angleDeg, float x, float y, float z)
     {
+        // about a main axis (nearly every call): the same numbers as the general case below
+        // (its zero terms add nothing; t + c is kept, it isn't always exactly 1 in floats),
+        // with 3/4 of the multiplications left out
+        if ((x == 1 || y == 1 || z == 1) && x + y + z == 1 && (x == 0 || y == 0) && (y == 0 || z == 0) && (x == 0 || z == 0)) {
+            const float a = angleDeg * 3.14159265358979f / 180.f;
+            const float c = cosf(a), s = sinf(a), t = 1 - c, one = t + c;
+            // columns i, j of this matrix mix as (cos, sin) pairs; the axis column scales by one
+            auto mix = [&](int i, int j, float cii, float cij, float cji, float cjj) {
+                for (int rr = 0; rr < 4; rr++) {
+                    const float mi = m[i * 4 + rr], mj = m[j * 4 + rr];
+                    m[i * 4 + rr] = mi * cii + mj * cij;
+                    m[j * 4 + rr] = mi * cji + mj * cjj;
+                }
+            };
+            auto scale = [&](int k) {
+                for (int rr = 0; rr < 4; rr++) {
+                    m[k * 4 + rr] = m[k * 4 + rr] * one;
+                }
+            };
+            if (x == 1) { // r = [one 0 0; 0 c s; 0 -s c] (columns)
+                scale(0);
+                mix(1, 2, c, s, -s, c);
+            } else if (y == 1) { // columns (c,0,-s), (0,one,0), (s,0,c)
+                scale(1);
+                mix(0, 2, c, -s, s, c);
+            } else { // columns (c,s,0), (-s,c,0), (0,0,one)
+                scale(2);
+                mix(0, 1, c, s, -s, c);
+            }
+            return;
+        }
+        rotateGeneral(angleDeg, x, y, z);
+    }
+
+    // any axis (the original glRotatef formula); also the reference for the main-axis case
+    void rotateGeneral(float angleDeg, float x, float y, float z)
+    {
         float len = sqrtf(x * x + y * y + z * z);
         if (len <= 0) {
             return;

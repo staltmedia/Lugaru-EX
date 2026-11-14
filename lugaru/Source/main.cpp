@@ -39,6 +39,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExLighting.hpp"
 #include "EX/ExPad.hpp"
 #include "EX/ExProfile.hpp"
+#include "EX/ExMath.hpp"
 #include "Utils/Folders.hpp"
 #include "Objects/Object.hpp"
 #include "Objects/Person.hpp"
@@ -753,6 +754,7 @@ static LONG WINAPI exCrashHandler(EXCEPTION_POINTERS* ep)
     fprintf(stderr, "\nLugaruEX CRASH: exception 0x%08lX at LugaruEX.exe+0x%llX\n",
             (unsigned long)ep->ExceptionRecord->ExceptionCode, (unsigned long long)(addr - (uintptr_t)self));
     fflush(stderr);
+    EX::CrashStack(ep->ContextRecord); // (test runs only)
     HMODULE dbg = LoadLibraryA("dbghelp.dll");
     if (dbg) {
         typedef BOOL(WINAPI * MiniDumpFn)(HANDLE, DWORD, HANDLE, int, void*, void*, void*);
@@ -938,6 +940,28 @@ int main(int argc, char** argv)
             bool gameFocused = true;
 
             srand(getenv("LUGARUEX_TEST_SEED") ? (unsigned)atoi(getenv("LUGARUEX_TEST_SEED")) : (unsigned)time(nullptr)); // (test hook: same random numbers every run)
+            if (getenv("LUGARUEX_TEST_ROTCHECK")) {
+                // test hook: Mat4::rotate's main-axis shortcut against the general formula, bit for bit
+                long cases = 0, wrong = 0;
+                for (int k = 0; k < 2000000; k++) {
+                    EX::Mat4 a, b;
+                    for (int e = 0; e < 16; e++) {
+                        a.m[e] = b.m[e] = (float)((rand() % 20001) - 10000) / (float)(1 + rand() % 997);
+                    }
+                    const float ang = (float)((rand() % 72001) - 36000) / (float)(1 + rand() % 97);
+                    const int ax = k % 3;
+                    a.rotate(ang, ax == 0, ax == 1, ax == 2);
+                    b.rotateGeneral(ang, ax == 0, ax == 1, ax == 2);
+                    cases++;
+                    for (int e = 0; e < 16; e++) {
+                        if (a.m[e] != b.m[e]) { // (+0 and -0 count as the same)
+                            wrong++;
+                            break;
+                        }
+                    }
+                }
+                printf("EXTEST rotcheck: %ld cases, %ld differ\n", cases, wrong);
+            }
 
             if (commandLineOptions[CMD].count() > 0) {
                 devtools = true;
@@ -957,6 +981,7 @@ int main(int argc, char** argv)
             }
             if (commandLineOptions[EXLEVEL].count() > 0 && commandLineOptions[EXLEVEL].last()->arg) {
                 EX::SamplerStart(); // (test hook LUGARUEX_TEST_SAMPLE: from the level load on)
+                EX::HangWatchStart();
                 const char* lvl = commandLineOptions[EXLEVEL].last()->arg;
                 bool ok = true;
                 if (strncmp(lvl, "campaign:", 9) == 0) {

@@ -27,6 +27,10 @@ const std::vector<std::string>& ModRoots();
 void ModsSetSession(const std::vector<std::string>& roots, bool active); // guest: the host's mods
 std::vector<std::string> ModsLocalEnabled(); // this PC's mod folders that are on, in order
 std::string ModsFolder();                   // LugaruEX/Mods/
+// online guest: a folder of the host's own copies of levels (and terrain) that differ from
+// this PC's, searched before everything else; "" when not playing as a guest
+void ModsSetSyncRoot(const std::string& dir);
+void ModsRescan(); // files were added to a root: look again
 }
 
 #endif

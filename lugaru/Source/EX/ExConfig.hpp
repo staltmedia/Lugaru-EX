@@ -14,7 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <string>
 
-#define EX_VERSION_STRING "0.4.10" // also tools/package.ps1, launcher.rc, the launcher label and launcher-sdl/main.cpp
+#define EX_VERSION_STRING "0.4.11" // also tools/package.ps1, launcher.rc, the launcher label and launcher-sdl/main.cpp
 
 namespace EX
 {
@@ -54,7 +54,7 @@ struct Config
     // [Multiplayer] (used by pass C)
     std::string mpMode = "off"; // off | host | join
     int mpPort = 27015;
-    std::string mpAddress = "127.0.0.1:27015";
+    std::string mpAddress; // host IP:port to join (empty = none given)
     int mpLan = 0;       // 1 = LAN: the host announces itself, join finds it
     int mpShareMods = 1; // 1 = online: the host sends its mods, guests download and use them
 

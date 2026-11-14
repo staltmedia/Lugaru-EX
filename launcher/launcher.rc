@@ -8,8 +8,8 @@ IDI_APP ICON "../lugaru/Dist/Windows/Lugaru.ico"
 1 RT_MANIFEST "launcher.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,4,10,0
-PRODUCTVERSION 0,4,10,0
+FILEVERSION 0,4,11,0
+PRODUCTVERSION 0,4,11,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -19,7 +19,7 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "LugaruEX Launcher"
             VALUE "ProductName", "LugaruEX"
-            VALUE "FileVersion", "0.4.10"
+            VALUE "FileVersion", "0.4.11"
             VALUE "LegalCopyright", "GPLv2+ (based on OSS Lugaru)"
         END
     END
@@ -110,7 +110,7 @@ BEGIN
     LTEXT           "Skin:", -1, 8, 46, 40, 9
     COMBOBOX        IDC_CH_SKIN, 50, 44, 100, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Clothes:", -1, 8, 64, 40, 9
-    COMBOBOX        IDC_CH_CLOTHES, 50, 62, 100, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        IDC_CH_CLOTHES, 50, 62, 100, 220, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "", IDC_CH_NOTE, 8, 82, 145, 74, NOT WS_VISIBLE
     CONTROL         "", IDC_CH_PREVIEW, "LugaruEXPreview", WS_CHILD | WS_VISIBLE, 158, 4, 120, 196
 END

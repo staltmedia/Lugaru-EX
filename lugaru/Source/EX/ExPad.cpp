@@ -398,7 +398,19 @@ static bool g_p1PadWalk = false; // player 1's controller asks for a walk this f
 
 bool P1Walk()
 {
-    return !mainmenu && (g_p1PadWalk || Input::isKeyDown(SDL_SCANCODE_LCTRL) || Input::isKeyDown(SDL_SCANCODE_RCTRL));
+    // a Ctrl key bound to a game action is that action, not walk (someone crouching on Ctrl
+    // would otherwise walk instead of run, and lose the running moves)
+    auto ctrlWalks = [](int sc) {
+        using namespace Game;
+        const unsigned short bound[] = { forwardkey, backkey, leftkey, rightkey, jumpkey, crouchkey, attackkey, drawkey, throwkey };
+        for (unsigned short b : bound) {
+            if (b == sc) {
+                return false;
+            }
+        }
+        return Input::isKeyDown(sc);
+    };
+    return !mainmenu && (g_p1PadWalk || ctrlWalks(SDL_SCANCODE_LCTRL) || ctrlWalks(SDL_SCANCODE_RCTRL));
 }
 
 bool PadRead(const std::string& id, PadInput& o)

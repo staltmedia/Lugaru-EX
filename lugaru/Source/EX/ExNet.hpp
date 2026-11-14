@@ -44,6 +44,8 @@ void NetGuestStep();
 void NetAfterSimStep(double dt);
 /** host: a level was loaded (guests follow) */
 void NetLevelLoaded(const std::string& name, bool tutorial);
+/** online guest: the host's copy of this level was fetched (it differs here): 1 = .json, 2 = binary, 0 = none */
+int NetSyncedMap(const std::string& name);
 /** host: record a sound for the guests (pos null = not positional) */
 void NetSoundEvent(int sound, const XYZ* pos, float volume);
 /** host: a player earned a bonus (the pop-up shows on their own screen) */

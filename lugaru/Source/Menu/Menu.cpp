@@ -20,6 +20,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "Menu/Menu.hpp"
 #include "EX/ExConfig.hpp"
+#include "EX/ExGraphics.hpp"
 
 #include "Audio/openal_wrapper.hpp"
 #include "Graphic/gamegl.hpp"
@@ -330,7 +331,7 @@ void Menu::updateSettingsMenu()
     setText(10, std::string("Mouse Speed: ") + to_string(int(usermousesensitivity * 5)));
     setText(11, std::string("Volume: ") + to_string(int(volume * 100)) + "%");
     setText(13, showdamagebar ? "Damage Bar: On" : "Damage Bar: Off");
-    if ((newdetail == detail) && (newscreenheight == (int)screenheight) && (newscreenwidth == (int)screenwidth)) {
+    if ((newdetail == detail) && (newscreenheight == (int)screenheight - EX::BorderlessExtraRows()) && (newscreenwidth == (int)screenwidth)) {
         setText(8, "Back");
     } else {
         setText(8, "Back (some changes take effect next time Lugaru is opened)");

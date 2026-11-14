@@ -118,7 +118,13 @@ static int exBonusPlayer(const Person* p)
             who = (int)i;
         }
     }
-    return who;
+    // nobody alive (player 1 died too): the original still gave player 1 the bonus
+    return who >= 0 ? who : (Person::players.empty() ? -1 : 0);
+}
+
+int Person::exBonusPlayerFor(const Person* p)
+{
+    return exBonusPlayer(p);
 }
 
 Person::Person()
@@ -821,7 +827,10 @@ void Person::DoBlood(float howmuch, int which)
             bleeding = howmuch + (float)abs(Random() % 100) / 200 - .25;
             bleedxint = 0;
             bleedyint = 0;
-            while (PersonType::types[creature].bloodText[bleedxint * 512 * 3 + bleedyint * 3 + 0] > which + 4 || PersonType::types[creature].bloodText[bleedxint * 512 * 3 + bleedyint * 3 + 0] < which - 4 || bleedxint < 10 || bleedyint < 10 || bleedxint > 500 || bleedyint > 500) {
+            // LugaruEX: a random spot of this body part on the blood map - at most 20000 tries (a
+            // map where that shade is rare or missing spun here on every hit)
+            int exTries = 0;
+            while (exTries++ < 20000 && (PersonType::types[creature].bloodText[bleedxint * 512 * 3 + bleedyint * 3 + 0] > which + 4 || PersonType::types[creature].bloodText[bleedxint * 512 * 3 + bleedyint * 3 + 0] < which - 4 || bleedxint < 10 || bleedyint < 10 || bleedxint > 500 || bleedyint > 500)) {
                 bleedxint = abs(Random() % 512);
                 bleedyint = abs(Random() % 512);
             }
@@ -1005,7 +1014,10 @@ void Person::DoBloodBig(float howmuch, int which)
 
         bleedxint = 0;
         bleedyint = 0;
-        while (PersonType::types[creature].bloodText[bleedxint * 512 * 3 + bleedyint * 3 + 0] > which + 4 || PersonType::types[creature].bloodText[bleedxint * 512 * 3 + bleedyint * 3 + 0] < which - 4 || bleedxint < 10 || bleedyint < 10 || bleedxint > 500 || bleedyint > 500) {
+        // LugaruEX: a random spot of this body part on the blood map - at most 20000 tries (a
+        // map where that shade is rare or missing spun here on every hit)
+        int exTries = 0;
+        while (exTries++ < 20000 && (PersonType::types[creature].bloodText[bleedxint * 512 * 3 + bleedyint * 3 + 0] > which + 4 || PersonType::types[creature].bloodText[bleedxint * 512 * 3 + bleedyint * 3 + 0] < which - 4 || bleedxint < 10 || bleedyint < 10 || bleedxint > 500 || bleedyint > 500)) {
             bleedxint = abs(Random() % 512);
             bleedyint = abs(Random() % 512);
         }

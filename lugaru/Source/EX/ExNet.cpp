@@ -101,10 +101,13 @@ enum : uint8_t
     T_MODGET,   // guest -> host: a piece of a mod it is downloading
     T_MODDATA,  // host -> guest: that piece
     T_MODREADY, // guest -> host: has every mod (or plays without them)
+    T_FILEGET,  // guest -> host: a piece of the host's copy of the level (or terrain) - 0.4.11
+    T_FILEDATA, // host -> guest: that piece
 };
 static const int kMaxPacket = 1200;    // stays under every MTU, no IP fragmentation
 static const double kSendRate = 60;    // snapshots and inputs per second
 static const double kTimeout = 6;      // seconds of silence = gone
+static const double kHostTimeout = 20; // a guest waits longer: a slow host is silent while it loads a level
 
 struct Writer
 {
@@ -420,6 +423,47 @@ static uint32_t filePrint(const std::string& rel)
     return h ? h : 1;
 }
 
+static uint32_t bytesPrint(const std::vector<uint8_t>& d)
+{
+    uint32_t h = 2166136261u; // same as filePrint
+    for (uint8_t c : d) {
+        h = (h ^ c) * 16777619u;
+    }
+    return h ? h : 1;
+}
+
+// online guest: the host's own copies of levels / terrain that differ from this PC's
+static std::string g_syncDir;
+
+int NetSyncedMap(const std::string& name)
+{
+    if (g_syncDir.empty()) {
+        return 0;
+    }
+    if (fsu::IsFile(g_syncDir + "/Maps/" + name)) {
+        return 2;
+    }
+    return fsu::IsFile(g_syncDir + "/Maps/" + name + ".json") ? 1 : 0;
+}
+
+// the map file this PC loads for a level, as LoadLevelImpl picks it: the host's copy when
+// one was fetched, else Maps/<name>.json (open source data) before Maps/<name> (the
+// original's binary maps). The fingerprint was of Maps/<name> alone, which an open source
+// copy doesn't have: HD and open source players were always told their levels differ.
+static std::string mapRel(const std::string& name)
+{
+    if (NetSyncedMap(name) == 2) {
+        return "Maps/" + name;
+    }
+    const std::string json = "Maps/" + name + ".json";
+    return Folders::file_exists(Folders::getResourcePath(json)) ? json : "Maps/" + name;
+}
+
+static uint32_t levelPrint(const std::string& name)
+{
+    return filePrint(mapRel(name));
+}
+
 
 // fingerprint of the ground as built (heights after the environment's own changes)
 static uint32_t groundPrint()
@@ -559,6 +603,14 @@ void NetInit()
         if (openSocket(0, true)) {
             g_role = R_GUEST;
             guestModsForget(); // with sharing on, wait for the host's mod list
+            // the host's copies of levels that differ here (fresh for every session)
+            g_syncDir = ModsFolder() + ".net/sync";
+            fsu::RemoveTree(g_syncDir);
+            if (fsu::MakeDirs(g_syncDir + "/Maps")) {
+                ModsSetSyncRoot(g_syncDir);
+            } else {
+                g_syncDir.clear();
+            }
             std::random_device rd;
             g_token = ((uint64_t)rd() << 32) ^ rd() ^ (uint64_t)SDL_GetPerformanceCounter();
             if (!g_lan) {
@@ -572,7 +624,10 @@ void NetInit()
                 addrinfo hints = {}, *res = nullptr;
                 hints.ai_family = AF_INET;
                 hints.ai_socktype = SOCK_DGRAM;
-                if (getaddrinfo(a.c_str(), nullptr, &hints, &res) == 0 && res) {
+                if (a.empty()) {
+                    // no address given (the default): "" would resolve to this PC
+                    fprintf(stderr, "LugaruEX net: no host address set (launcher: Multiplayer tab)\n");
+                } else if (getaddrinfo(a.c_str(), nullptr, &hints, &res) == 0 && res) {
                     g_hostAddr = *(sockaddr_in*)res->ai_addr;
                     g_hostAddr.sin_port = htons((uint16_t)port);
                     g_haveHost = true;
@@ -621,6 +676,10 @@ void NetShutdown()
     }
     closesocket(g_sock);
     g_sock = INVALID_SOCKET;
+    if (!g_syncDir.empty()) { // single player again uses this PC's own levels
+        ModsSetSyncRoot(std::string());
+        g_syncDir.clear();
+    }
 #ifdef _WIN32
     WSACleanup();
 #endif
@@ -942,7 +1001,7 @@ void NetLevelLoaded(const std::string& name, bool tutorial)
     g_rosterSig.clear();
     g_levelName = name;
     g_levelTutorial = tutorial;
-    g_mapPrint = filePrint("Maps/" + name);
+    g_mapPrint = levelPrint(name); // the file this PC really loads (.json or binary)
     {
         g_terrainPrint = groundPrint(); // the ground as built (snow / desert change it)
     }
@@ -1249,6 +1308,256 @@ static void hostModGet(Client& c, Reader& r)
     }
 }
 
+// ------------------------------------------------------------------ level sync
+// A guest whose copy of the level differs from the host's (the original HD game and
+// the open source one, older or modded copies) downloads the host's: kind 1 = the
+// running level's map file, 2 = the terrain heightmap. It is kept in a folder searched
+// before everything else for the rest of the session (Mods/.net/sync).
+static const uint32_t kSyncMaxFile = 32u * 1024 * 1024;
+static std::map<std::string, std::vector<uint8_t>> g_fileCache; // host: path -> contents
+
+static std::string syncRel(int kind, std::string& path)
+{
+    std::string rel;
+    if (kind == 1 && !g_levelName.empty()) {
+        rel = mapRel(g_levelName);
+    } else if (kind == 2) {
+        rel = "Textures/HeightMap.png";
+    } else {
+        return std::string();
+    }
+    path = Folders::getResourcePath(rel);
+    if (kind == 2) { // keep the host's own image type
+        const size_t dot = path.rfind('.'), slash = path.find_last_of("/\\");
+        if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+            rel = "Textures/HeightMap" + path.substr(dot);
+        }
+    }
+    return rel;
+}
+
+static void hostFileGet(Client& c, Reader& r)
+{
+    const int kind = r.u8();
+    const uint32_t offset = r.u32();
+    if (!r.ok || offset % kModChunk) {
+        return;
+    }
+    std::string path;
+    const std::string rel = syncRel(kind, path);
+    if (rel.empty()) {
+        return;
+    }
+    auto it = g_fileCache.find(path);
+    if (it == g_fileCache.end()) {
+        std::vector<uint8_t> data;
+        if (FILE* f = fopen(path.c_str(), "rb")) {
+            uint8_t buf[65536];
+            size_t got;
+            while ((got = fread(buf, 1, sizeof(buf), f)) > 0 && data.size() <= kSyncMaxFile) {
+                data.insert(data.end(), buf, buf + got);
+            }
+            fclose(f);
+        }
+        if (data.empty() || data.size() > kSyncMaxFile) {
+            return;
+        }
+        it = g_fileCache.emplace(path, std::move(data)).first;
+        printf("LugaruEX net: a guest is getting this PC's %s (%.0f KB)\n", rel.c_str(), it->second.size() / 1024.0);
+    }
+    const std::vector<uint8_t>& d = it->second;
+    if (offset >= d.size()) {
+        return;
+    }
+    const int len = (int)std::min<size_t>(kModChunk, d.size() - offset);
+    Writer w;
+    w.head(T_FILEDATA);
+    w.u8(kind);
+    w.str(rel);
+    w.u32((uint32_t)d.size());
+    w.u32(offset);
+    w.u16(len);
+    w.bytes(&d[offset], len);
+    sendTo(w, c.addr);
+}
+
+struct SyncGet
+{
+    int kind = 0;          // what is coming: 1 the level's map, 2 the heightmap, 0 nothing
+    std::string level;     // the level it is for
+    uint32_t want = 0;     // the host's fingerprint of it (map only)
+    std::string rel;       // as the host names it
+    uint32_t size = 0;     // 0 = not known yet
+    std::vector<uint8_t> data, have;
+    std::map<uint32_t, double> pending;
+    double lastData = 0, lastAsk = 0;
+};
+static SyncGet g_sync;
+static std::set<std::string> g_syncGaveUp; // "<kind>:<level>": the host can't send it, or it still differs
+static std::vector<uint8_t> g_lastLevelPkt;  // the newest LEVEL packet: loaded again once the terrain is here
+static bool g_heightSynced = false;
+static void guestLevel(Reader& r);
+
+static bool syncableName(const std::string& n)
+{
+    return !n.empty() && n.size() < 128 && n.find("..") == std::string::npos && n.find_first_of("/\\:") == std::string::npos;
+}
+
+static void syncStart(int kind, const std::string& level, uint32_t want)
+{
+    g_sync = SyncGet();
+    g_sync.kind = kind;
+    g_sync.level = level;
+    g_sync.want = want;
+    g_sync.lastData = now();
+    printf("LugaruEX net: this PC's %s differs from the host's - getting the host's copy\n", kind == 1 ? ("level '" + level + "'").c_str() : "terrain");
+}
+
+static void syncGiveUp(const char* why)
+{
+    printf("LugaruEX net: can't use the host's %s (%s)\n", g_sync.kind == 1 ? "level" : "terrain", why);
+    g_syncGaveUp.insert(g_sync.kind == 2 ? std::string("2:") : "1:" + g_sync.level); // (one heightmap for every level)
+    g_sync.kind = 0;
+}
+
+static void guestSyncFinished()
+{
+    const std::string path = g_syncDir + "/" + g_sync.rel;
+    if (g_sync.kind == 1 && g_sync.want && bytesPrint(g_sync.data) != g_sync.want) {
+        syncGiveUp("it arrived different from what the host has");
+        return;
+    }
+    fsu::MakeDirs(path.substr(0, path.find_last_of('/')));
+    if (g_sync.kind == 1) { // one copy of a level: the other format would win or lose by accident
+        fsu::RemoveTree(g_syncDir + "/Maps/" + g_sync.level);
+        fsu::RemoveTree(g_syncDir + "/Maps/" + g_sync.level + ".json");
+    }
+    if (!fsu::WriteAll(path, std::string(g_sync.data.begin(), g_sync.data.end()))) {
+        syncGiveUp("can't save it");
+        return;
+    }
+    ModsRescan();
+    printf("LugaruEX net: got the host's %s (%.0f KB)\n", g_sync.rel.c_str(), g_sync.data.size() / 1024.0);
+    const int kind = g_sync.kind;
+    g_sync.kind = 0;
+    if (kind == 2) {
+        // the level is running on this PC's own ground: build it again on the host's
+        // (the terrain is only rebuilt when the environment changes: make it think it did)
+        Game::oldenvironment = -4;
+        g_heightSynced = true;
+        g_gLevel = 0;
+        g_gRoster = 0;
+        if (!g_lastLevelPkt.empty()) {
+            const std::vector<uint8_t> pkt = g_lastLevelPkt;
+            Reader rr(pkt.data(), (int)pkt.size());
+            rr.u32();
+            rr.u8();
+            guestLevel(rr);
+        }
+    }
+    // (a level's map: the host sends LEVEL again until this PC is in it, and it loads then)
+}
+
+static void guestFileData(Reader& r)
+{
+    const int kind = r.u8();
+    const std::string rel = r.str();
+    const uint32_t size = r.u32(), offset = r.u32();
+    const int len = r.u16();
+    uint8_t buf[kModChunk];
+    if (!r.ok || kind != g_sync.kind || len <= 0 || len > kModChunk || !r.bytes(buf, len) || size == 0 || size > kSyncMaxFile ||
+        offset % kModChunk || offset + len > size) {
+        return;
+    }
+    // only what was asked for, under a name that stays in the sync folder
+    const bool okName = kind == 1 ? (rel == "Maps/" + g_sync.level || rel == "Maps/" + g_sync.level + ".json")
+                                  : (rel.compare(0, 19, "Textures/HeightMap.") == 0 && rel.size() <= 24 && rel.find_first_of("/\\:", 9) == std::string::npos);
+    if (!okName) {
+        return;
+    }
+    if (g_sync.size == 0) {
+        g_sync.size = size;
+        g_sync.rel = rel;
+        g_sync.data.assign(size, 0);
+        g_sync.have.assign((size + kModChunk - 1) / kModChunk, 0);
+    }
+    if (size != g_sync.size || rel != g_sync.rel) {
+        return;
+    }
+    const uint32_t idx = offset / kModChunk;
+    const int want = (int)std::min<uint32_t>(kModChunk, size - offset);
+    g_sync.pending.erase(idx);
+    g_sync.lastData = now();
+    if (g_sync.have[idx] || len != want) {
+        return;
+    }
+    memcpy(&g_sync.data[offset], buf, len);
+    g_sync.have[idx] = 1;
+    for (uint8_t h : g_sync.have) {
+        if (!h) {
+            return;
+        }
+    }
+    guestSyncFinished();
+}
+
+// guest, every frame: ask for the pieces still missing (a few at a time; again when lost)
+static void guestSyncPump(double t)
+{
+    if (!g_sync.kind) {
+        return;
+    }
+    if (t - g_sync.lastData > 5) {
+        syncGiveUp("the host doesn't send it - an older LugaruEX?");
+        if (g_inLevel) { // (the terrain: the level runs on this PC's own ground)
+            g_warn = "Your ground differs from the host's - characters may float or sink";
+            g_warnUntil = now() + 12;
+        }
+        return;
+    }
+    if (g_sync.size == 0) {
+        if (t - g_sync.lastAsk > 0.5) { // the first piece tells the size
+            g_sync.lastAsk = t;
+            Writer w;
+            w.head(T_FILEGET);
+            w.u8(g_sync.kind);
+            w.u32(0);
+            sendTo(w, g_hostAddr);
+        }
+    } else {
+        int inFlight = 0;
+        for (auto it = g_sync.pending.begin(); it != g_sync.pending.end();) {
+            if (t - it->second > 0.8) {
+                it = g_sync.pending.erase(it);
+            } else {
+                ++it;
+                inFlight++;
+            }
+        }
+        for (uint32_t i = 0; i < g_sync.have.size() && inFlight < 64; i++) {
+            if (g_sync.have[i] || g_sync.pending.count(i)) {
+                continue;
+            }
+            Writer w;
+            w.head(T_FILEGET);
+            w.u8(g_sync.kind);
+            w.u32(i * (uint32_t)kModChunk);
+            sendTo(w, g_hostAddr);
+            g_sync.pending[i] = t;
+            inFlight++;
+        }
+    }
+    if (!g_inLevel || g_sync.kind == 1) {
+        uint32_t got = 0;
+        for (size_t i = 0; i < g_sync.have.size(); i++) {
+            got += g_sync.have[i] ? std::min<uint32_t>(kModChunk, g_sync.size - (uint32_t)i * kModChunk) : 0;
+        }
+        char b[128];
+        snprintf(b, sizeof(b), "Getting the host's copy of this level: %u / %u KB", got / 1024, g_sync.size / 1024);
+        g_status = b;
+    }
+}
+
 static void guestSendModReady()
 {
     Writer w;
@@ -1522,11 +1831,14 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
             }
         }
         c->connected = !c->slots.empty() && c->slots[0] >= 0;
+        // a guest saying hello again is starting over (it lost us, or has new players):
+        // the mod list, the level and who is who go out again in every case (a guest
+        // that timed out while this PC loaded a level otherwise stayed on "Waiting")
+        c->ackLevel = c->ackRoster = 0;
+        c->lastLevelSent = -10;
+        c->modsReady = false;
+        c->lastModList = -10;
         if (!wasConnected || c->slots.size() != before) {
-            c->ackLevel = c->ackRoster = 0;
-            c->lastLevelSent = -10;
-            c->modsReady = false;
-            c->lastModList = -10;
             char ip[64];
             inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
             printf("LugaruEX net: %s joined with %d player%s (%s)\n", ip, (int)c->slots.size(), c->slots.size() == 1 ? "" : "s",
@@ -1545,6 +1857,10 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
     c->lastHeard = t;
     if (type == T_MODGET) {
         hostModGet(*c, r);
+        return;
+    }
+    if (type == T_FILEGET) {
+        hostFileGet(*c, r);
         return;
     }
     if (type == T_MODREADY) {
@@ -1654,14 +1970,29 @@ static void guestLevel(Reader& r)
         hostTerrain = r.u32();
     }
     if (lvl != g_gLevel) {
+        // a level that differs from the host's: get the host's copy first (the host sends
+        // LEVEL again until this PC is in it); warn only when that can't be done
+        const bool canSync = !g_syncDir.empty() && syncableName(name);
+        if (hostMap && levelPrint(name) != hostMap && canSync && !g_syncGaveUp.count("1:" + name)) {
+            if (g_sync.kind != 1 || g_sync.level != name) {
+                syncStart(1, name, hostMap);
+            }
+            return;
+        }
+        if (g_sync.kind == 2 && g_sync.level != name) {
+            g_sync.kind = 0; // (the host moved on before the terrain came)
+        }
         printf("LugaruEX net: host loaded '%s'\n", name.c_str());
-        Menu::startLevelByName(name, tutorial); // the same map from this PC's own Data folder
-        const uint32_t myMap = filePrint("Maps/" + name), myTerrain = groundPrint();
-        if ((hostMap && myMap != hostMap) || (hostTerrain && myTerrain != hostTerrain)) {
+        Menu::startLevelByName(name, tutorial); // the same map from this PC's own Data folder (or the host's copy)
+        const uint32_t myMap = levelPrint(name), myTerrain = groundPrint();
+        const bool mapDiffers = hostMap && myMap != hostMap, groundDiffers = hostTerrain && myTerrain != hostTerrain;
+        if (!mapDiffers && groundDiffers && canSync && !g_heightSynced && !g_syncGaveUp.count("2:")) {
+            syncStart(2, name, 0); // the ground: the host's heightmap, then this level again
+        } else if (mapDiffers || groundDiffers) {
             printf("LugaruEX net: WARNING - this PC's %s differs from the host's (map %08x vs %08x, terrain %08x vs %08x)\n",
-                   (hostMap && myMap != hostMap) ? "level file" : "terrain", myMap, hostMap, myTerrain, hostTerrain);
-            g_warn = (hostMap && myMap != hostMap) ? "Your copy of this level differs from the host's - characters may float or sink"
-                                                     : "Your ground differs from the host's - characters may float or sink";
+                   mapDiffers ? "level file" : "terrain", myMap, hostMap, myTerrain, hostTerrain);
+            g_warn = mapDiffers ? "Couldn't get the host's copy of this level - characters may float or sink"
+                                : "Your ground differs from the host's - characters may float or sink";
             g_warnUntil = now() + 12;
         }
         Game::loading = 0;
@@ -2004,11 +2335,15 @@ static void guestReceive(const uint8_t* d, int n, const sockaddr_in& from)
         case T_LEVEL:
             g_welcomed = true;
             if (g_modsReady) { // (not before the host's mods are here: the host sends it again)
+                g_lastLevelPkt.assign(d, d + n);
                 guestLevel(r);
             }
             break;
         case T_MODLIST:
             guestModList(r);
+            break;
+        case T_FILEDATA:
+            guestFileData(r);
             break;
         case T_MODDATA:
             guestModData(r);
@@ -2162,10 +2497,11 @@ void NetFrame(double dt)
         }
         return;
     }
-    if (g_welcomed && t - g_lastHeard > kTimeout) {
+    if (g_welcomed && t - g_lastHeard > kHostTimeout) {
         g_welcomed = false;
         guestLeaveLevel("lost the host");
-        guestModsForget();
+        // (the host's mods stay: forgetting them left this PC ignoring every level after
+        // it came back, as the host never sends the list to a guest it still has)
     }
     // every player on this PC (split screen here) and how each looks; sent again
     // when a controller drops in, so the host adds that player too
@@ -2195,6 +2531,7 @@ void NetFrame(double dt)
     }
     g_status = g_inLevel ? "" : "Waiting for host...";
     guestModPump(t);
+    guestSyncPump(t);
     g_inputAcc += dt;
     if (g_inputAcc >= 1.0 / kSendRate) {
         g_inputAcc = fmod(g_inputAcc, 1.0 / kSendRate);

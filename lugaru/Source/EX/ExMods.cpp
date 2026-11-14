@@ -23,6 +23,7 @@ namespace EX
 {
 static std::vector<std::string> g_local, g_session, g_roots;
 static bool g_sessionActive = false;
+static std::string g_sync; // online guest: the host's copies of levels that differ here
 
 std::string ModsFolder()
 {
@@ -31,7 +32,26 @@ std::string ModsFolder()
 
 static void rebuild()
 {
-    g_roots = g_sessionActive ? g_session : g_local;
+    g_roots.clear();
+    if (!g_sync.empty()) {
+        g_roots.push_back(g_sync);
+    }
+    for (const std::string& r : g_sessionActive ? g_session : g_local) {
+        g_roots.push_back(r);
+    }
+    ResourceCacheClear();
+}
+
+void ModsSetSyncRoot(const std::string& dir)
+{
+    if (dir != g_sync) {
+        g_sync = dir;
+        rebuild();
+    }
+}
+
+void ModsRescan()
+{
     ResourceCacheClear();
 }
 

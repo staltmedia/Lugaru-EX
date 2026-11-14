@@ -21,6 +21,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Environment/Terrain.hpp"
 
 #include "EX/ExNet.hpp"
+#include "EX/ExGraphics.hpp"
 #include "EX/ExLighting.hpp"
 #include "Game.hpp"
 #include "Objects/Object.hpp"
@@ -1050,9 +1051,9 @@ void Terrain::draw(int layer)
                 glPushMatrix();
                 if (frustum.CubeInFrustum(i * patch_size + patch_size * .5, avgypatch[i][j], j * patch_size + patch_size * .5, heightypatch[i][j] / 2)) {
                     if (environment == desertenvironment && distance[i][j] > viewdistsquared / 4) {
-                        glTexEnvf(GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, blurness);
+                        EX::SetLodBias(blurness);
                     } else if (environment == desertenvironment) {
-                        glTexEnvf(GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, 0);
+                        EX::SetLodBias(0);
                     }
                     if (!layer && textureness[i][j] != allsecond) {
                         drawpatch(i, j, opacity);
@@ -1069,7 +1070,7 @@ void Terrain::draw(int layer)
         }
     }
     if (environment == desertenvironment) {
-        glTexEnvf(GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, 0);
+        EX::SetLodBias(0);
     }
 }
 

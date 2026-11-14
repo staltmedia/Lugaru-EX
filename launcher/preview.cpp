@@ -44,18 +44,17 @@ static std::string narrowUtf8(const std::wstring& w)
     return s;
 }
 
-static void loadTexture(const std::wstring& path)
+static bool readImage(const std::wstring& path, std::vector<BYTE>& px, UINT& w, UINT& h)
 {
+    px.clear();
+    w = h = 0;
     IWICImagingFactory* fac = NULL;
     if (path.empty() || FAILED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&fac)))) {
-        PreviewCore_SetTexture(nullptr, 0, 0);
-        return;
+        return false;
     }
     IWICBitmapDecoder* dec = NULL;
     IWICBitmapFrameDecode* fr = NULL;
     IWICFormatConverter* conv = NULL;
-    std::vector<BYTE> px;
-    UINT w = 0, h = 0;
     if (SUCCEEDED(fac->CreateDecoderFromFilename(path.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec)) &&
         SUCCEEDED(dec->GetFrame(0, &fr)) && SUCCEEDED(fac->CreateFormatConverter(&conv)) &&
         SUCCEEDED(conv->Initialize(fr, GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, NULL, 0, WICBitmapPaletteTypeCustom))) {
@@ -70,7 +69,24 @@ static void loadTexture(const std::wstring& path)
             u->Release();
         }
     }
-    PreviewCore_SetTexture(px.empty() ? nullptr : px.data(), (int)w, (int)h);
+    return !px.empty();
+}
+
+// the skin with the chosen clothes painted on, as the game does it
+static void loadTexture(const std::wstring& path, const std::vector<PreviewClothFile>& clothes)
+{
+    std::vector<BYTE> px, c;
+    UINT w = 0, h = 0, cw = 0, chh = 0;
+    if (!readImage(path, px, w, h)) {
+        PreviewCore_SetTexture(nullptr, 0, 0);
+        return;
+    }
+    for (const PreviewClothFile& f : clothes) {
+        if (readImage(f.file, c, cw, chh)) {
+            PreviewCore_PaintCloth(px, (int)w, (int)h, c.data(), (int)cw, (int)chh, f.r, f.g, f.b);
+        }
+    }
+    PreviewCore_SetTexture(px.data(), (int)w, (int)h);
 }
 
 static void render(HWND wnd)
@@ -166,16 +182,20 @@ void Preview_Register(HINSTANCE inst, const std::wstring& gameDir)
     RegisterClassW(&wc);
 }
 
-void Preview_Set(HWND wnd, const std::string& model, const std::wstring& skinFile, bool dimmed)
+void Preview_Set(HWND wnd, const std::string& model, const std::wstring& skinFile, const std::vector<PreviewClothFile>& clothes, bool dimmed)
 {
     if (!g.rc) {
         return;
     }
     wglMakeCurrent(g.dc, g.rc);
     PreviewCore_SetModel(model);
-    if (skinFile != g.skin) {
-        g.skin = skinFile;
-        loadTexture(skinFile);
+    std::wstring key = skinFile; // the skin and its clothes
+    for (const PreviewClothFile& f : clothes) {
+        key += L"|" + f.file;
+    }
+    if (key != g.skin) {
+        g.skin = key;
+        loadTexture(skinFile, clothes);
     }
     PreviewCore_SetDimmed(dimmed);
     InvalidateRect(wnd, NULL, FALSE);

@@ -26,6 +26,13 @@ void PreWindowGLAttributes(int msaa);
  */
 SDL_Window* CreateGameWindow(int& width, int& height, bool grabInput, SDL_GLContext* outCtx);
 
+/**
+ * Rows the borderless window reaches past the bottom of its monitor (0 or 1): an
+ * OpenGL window covering a monitor exactly is treated as exclusive fullscreen by
+ * the graphics drivers. The size the player chose is the drawable minus these.
+ */
+int BorderlessExtraRows();
+
 /** Called once the GL context is current: vsync, multisample, aniso query. */
 void InitGLExtras();
 
@@ -40,6 +47,9 @@ void LimitFrameRate();
 
 /** Scale a vertical FOV so the user FOV setting applies but zoom ratios stay. */
 float AdjustFov(float fov);
+
+/** texture LOD bias (the desert heat haze): in steps, and only sent when it changes */
+void SetLodBias(float bias);
 }
 
 #endif

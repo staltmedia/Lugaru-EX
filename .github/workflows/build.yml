@@ -134,7 +134,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT }}-v1
+          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT }}-v2
 
       - name: vcpkg libraries
         shell: cmd
@@ -142,7 +142,7 @@ jobs:
           git clone https://github.com/microsoft/vcpkg vcpkg || exit /b 1
           git -C vcpkg checkout -q %VCPKG_COMMIT% || exit /b 1
           call vcpkg\bootstrap-vcpkg.bat -disableMetrics || exit /b 1
-          vcpkg\vcpkg install --triplet x64-windows-static sdl2 openal-soft libpng libjpeg-turbo libogg libvorbis zlib jsoncpp fmt dirent opengl-registry || exit /b 1
+          vcpkg\vcpkg install --overlay-triplets=tools\triplets --triplet x64-windows-static sdl2 openal-soft libpng libjpeg-turbo libogg libvorbis zlib jsoncpp fmt dirent opengl-registry || exit /b 1
           vcpkg\vcpkg install --triplet x64-windows pkgconf || exit /b 1
 
       - name: Save vcpkg packages
@@ -150,7 +150,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT }}-v1
+          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT }}-v2
 
       - name: Build
         shell: cmd

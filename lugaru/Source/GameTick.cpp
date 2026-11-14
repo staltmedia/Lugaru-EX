@@ -639,7 +639,8 @@ bool Game::LoadLevel(const std::string& name, bool tutorial)
 
 bool Game::LoadLevelImpl(const std::string& name, bool tutorial)
 {
-    if (LoadJsonLevel(name, tutorial)) {
+    // LugaruEX: an online guest that fetched the host's binary map uses it, not its own .json
+    if (EX::NetSyncedMap(name) != 2 && LoadJsonLevel(name, tutorial)) {
         // Try JSON loading first, binary is fallback
         return true;
     }
@@ -1744,6 +1745,90 @@ void Game::ProcessDevInput()
         }
         printf("EXTEST all enemies knocked out\n");
     }
+    // test hook LUGARUEX_TEST_FOE=distance[,calm]: at 0.5 s the nearest enemy stands that far in
+    // front of player 1, facing them (",calm": it doesn't fight back), every other enemy is
+    // sent far away; then the combat log: every animation player 1 and that enemy start,
+    // ragdolls, damage - for checking attacks with LUGARUEX_TEST_PRESS
+    {
+        static const char* foeEnv = getenv("LUGARUEX_TEST_FOE");
+        static int foe = -2;
+        if (foeEnv && foe == -2 && leveltime > 0.5f && !Person::players.empty() && !EX::NetIsGuest()) {
+            foe = -1;
+            Person& p1 = *Person::players[0];
+            float best = 1e30f;
+            for (unsigned j = 1; j < Person::players.size(); j++) {
+                Person& p = *Person::players[j];
+                const float d = distsq(&p.coords, &p1.coords);
+                if (!p.isPlayerControlled() && !p.dead && !p.skeleton.free && d < best) {
+                    best = d;
+                    foe = (int)j;
+                }
+            }
+            if (foe > 0) {
+                const float dist = (float)atof(foeEnv);
+                XYZ fwd; // the camera's forward, where the forward key runs
+                fwd = 0;
+                fwd.z = -1;
+                fwd = DoRotation(fwd, 0, -yaw, 0);
+                Person& f = *Person::players[foe];
+                f.coords = p1.coords + fwd * dist;
+                f.coords.y = std::max(p1.coords.y, terrain.getHeight(f.coords.x, f.coords.z));
+                f.oldcoords = f.realoldcoords = f.coords;
+                f.yaw = f.targetyaw = roughDirectionTo(f.coords, p1.coords);
+                if (strstr(foeEnv, "calm")) {
+                    f.aitype = passivetype;
+                    f.howactive = typeactive;
+                }
+                for (unsigned j = 1; j < Person::players.size(); j++) {
+                    if ((int)j != foe && !Person::players[j]->isPlayerControlled()) {
+                        Person::players[j]->coords.x += 400; // out of the way
+                        Person::players[j]->oldcoords = Person::players[j]->realoldcoords = Person::players[j]->coords;
+                    }
+                }
+                // ",knife" / ",sword" / ",staff": player 1 starts holding one
+                const int give = strstr(foeEnv, "knife") ? knife : strstr(foeEnv, "sword") ? sword : strstr(foeEnv, "staff") ? staff : 0;
+                if (give && p1.creature != wolftype) {
+                    weapons.push_back(Weapon(give, -1));
+                    p1.takeWeapon((int)weapons.size() - 1);
+                    p1.weaponactive = 0;
+                }
+                printf("EXTEST foe: person %d (%s) %.1f in front of player 1 (%s%s)\n", foe, f.creature == wolftype ? "wolf" : "rabbit", dist,
+                       Person::players[0]->creature == wolftype ? "wolf" : "rabbit",
+                       give == knife ? ", knife" : give == sword ? ", sword" : give == staff ? ", staff" : "");
+            }
+        }
+        if (foe > 0 && foe < (int)Person::players.size()) {
+            if (strstr(foeEnv, "calm") && !Person::players[foe]->dead) {
+                Person::players[foe]->aitype = passivetype; // (it turns hostile once it sees player 1)
+            }
+            static const char* names[] = {
+#define DECLARE_ANIM(id, ...) #id,
+#include "Animation/Animation.def"
+#undef DECLARE_ANIM
+            };
+            static int last[2] = { -1, -1 }, lastFree[2] = { 0, 0 };
+            static float lastDmg[2] = { 0, 0 };
+            const int who[2] = { 0, foe };
+            for (int w = 0; w < 2; w++) {
+                Person& p = *Person::players[who[w]];
+                const char* label = w ? "foe" : "p1";
+                if (p.animTarget != last[w]) {
+                    last[w] = p.animTarget;
+                    const int n = (int)(sizeof(names) / sizeof(names[0]));
+                    printf("EXTEST %.2f %s anim %s\n", leveltime, label, p.animTarget >= 0 && p.animTarget < n ? names[p.animTarget] : "?");
+                }
+                if (p.skeleton.free != lastFree[w]) {
+                    lastFree[w] = p.skeleton.free;
+                    printf("EXTEST %.2f %s ragdoll %d\n", leveltime, label, p.skeleton.free);
+                }
+                const float dmg = p.damage + p.permanentdamage;
+                if (dmg > lastDmg[w] + 0.5f) {
+                    printf("EXTEST %.2f %s damage +%.0f (total %.0f, %s)\n", leveltime, label, dmg - lastDmg[w], dmg, p.dead ? "dead" : "alive");
+                }
+                lastDmg[w] = dmg;
+            }
+        }
+    }
     // test hook LUGARUEX_TEST_HIDDENTHROW=seconds: the enemy farthest from player 1 (out of view,
     // so never drawn holding it) gets a loose knife and throws it at player 1
     static const float exTestHT = getenv("LUGARUEX_TEST_HIDDENTHROW") ? (float)atof(getenv("LUGARUEX_TEST_HIDDENTHROW")) : 0.f;
@@ -2682,8 +2767,10 @@ void doAttacks()
                      Person::players[k]->animTarget == staffspinhitanim) &&
                     P.animCurrent != dodgebackanim &&
                     !Person::players[k]->skeleton.free &&
-                    !Person::players[k]->isPlayerControlled() &&
-                    Person::players[k]->victim.get() == &P) {
+                    // an enemy swinging at this player (pressing attack counters it), or this
+                    // player's own swing: as in the original, mashing attack mid-swing lets an
+                    // armed enemy parry it (or disarm you). Never a partner's swing (co-op).
+                    (k == h || (!Person::players[k]->isPlayerControlled() && Person::players[k]->victim.get() == &P))) {
                     Person::players[k]->Reverse();
                 }
             }
@@ -3328,24 +3415,26 @@ void doPlayerCollisions()
                                                                          Person::players[i]->skeleton.free) &&
                                                                         (Person::players[k]->animTarget != getupfrombackanim && Person::players[k]->animTarget != getupfromfrontanim ||
                                                                          Person::players[k]->skeleton.free)) {
-                                                                        // LugaruEX: a flying body knocks player 1 over too (like everyone
-                                                                        // else; not while they are attacking, e.g. their own drop kick)
-                                                                        if (((((k != 0 || Person::players[i]->skeleton.oldfree == 1) && findLengthfast(&rotatetarget) > 150 ||
-                                                                               k == 0 && findLengthfast(&rotatetarget) > 50 && Person::players[0]->rabbitkickragdoll) &&
+                                                                        // LugaruEX: the original rule with "player 1" read as "a human player"
+                                                                        // (k < i, so a human is k when one is in the pair). A standing player is
+                                                                        // never bowled over by a flying body: only while ragdolling from their own
+                                                                        // jump kick (rabbitkickragdoll). 0.4.0 let flying bodies knock over any
+                                                                        // player not mid-attack, so the enemy a jump kick sent flying knocked
+                                                                        // the kicker down (and hurt them) as soon as the kick ended.
+                                                                        const bool hk = k == 0 || Person::players[k]->isPlayerControlled();
+                                                                        const bool hi = i == 0 || Person::players[i]->isPlayerControlled();
+                                                                        if ((((!hk && findLengthfast(&rotatetarget) > 150 ||
+                                                                               hk && findLengthfast(&rotatetarget) > 50 && Person::players[k]->rabbitkickragdoll) &&
                                                                               normaldotproduct(rotatetarget, Person::players[k]->coords - Person::players[i]->coords) > 0) &&
-                                                                             (k == 0 && (Person::players[0]->rabbitkickragdoll || Animation::animations[Person::players[0]->animCurrent].attack == neutral) ||
-                                                                              k != 0 && Person::players[i]->skeleton.oldfree == 1 && Animation::animations[Person::players[k]->animCurrent].attack == neutral ||
+                                                                             (hk ||
+                                                                              Person::players[i]->skeleton.oldfree == 1 && Animation::animations[Person::players[k]->animCurrent].attack == neutral ||
                                                                               /*i!=0&&*/ Person::players[k]->skeleton.oldfree == 1 && Animation::animations[Person::players[i]->animCurrent].attack == neutral)) ||
                                                                             (Person::players[i]->animTarget == jumpupanim || Person::players[i]->animTarget == jumpdownanim || Person::players[i]->isFlip()) &&
                                                                                 (Person::players[k]->animTarget == jumpupanim || Person::players[k]->animTarget == jumpdownanim || Person::players[k]->isFlip()) &&
-                                                                                (k == 0 || Person::players[k]->isPlayerControlled() || Person::players[i]->isPlayerControlled()) && // LugaruEX: any player (was player 1 only)
+                                                                                (hk || hi) && // (the original: player 1 only)
                                                                                 !Person::players[i]->skeleton.oldfree && !Person::players[k]->skeleton.oldfree) {
                                                                             //If hit by body
-                                                                            // (pairs without player 1: the player in it counts as player 1 did)
-                                                                            if ((k == 0 ? ((i != 0 || Person::players[i]->skeleton.free) && Person::players[k]->skeleton.free)
-                                                                                        : ((!Person::players[i]->isPlayerControlled() || Person::players[i]->skeleton.free) &&
-                                                                                           (!Person::players[k]->isPlayerControlled() || Person::players[k]->skeleton.free))) ||
-                                                                                Person::players[i]->skeleton.oldfree == 1 || Person::players[k]->skeleton.oldfree == 1 || // a flying body
+                                                                            if (((!hi || Person::players[i]->skeleton.free) && (!hk || Person::players[k]->skeleton.free)) ||
                                                                                 (Animation::animations[Person::players[i]->animTarget].height == highheight &&
                                                                                  Animation::animations[Person::players[k]->animTarget].height == highheight)) {
                                                                                 if (!Tutorial::active) {
@@ -3354,12 +3443,12 @@ void doPlayerCollisions()
 
                                                                                 Person::players[i]->RagDoll(0);
                                                                                 if (Person::players[i]->damage > Person::players[i]->damagetolerance - findLengthfast(&rotatetarget) / 4 && !Person::players[i]->dead) {
-                                                                                    award_bonus(k, aimbonus); // LugaruEX: the player who knocked them out (was always player 1)
+                                                                                    award_bonus(hk ? (int)k : Person::exBonusPlayerFor(Person::players[i].get()), aimbonus); // LugaruEX: the player who knocked them out, else the one this is for (single player: player 1, as the original)
                                                                                 }
                                                                                 Person::players[i]->DoDamage(findLengthfast(&rotatetarget) / 4);
                                                                                 Person::players[k]->RagDoll(0);
                                                                                 if (Person::players[k]->damage > Person::players[k]->damagetolerance - findLengthfast(&rotatetarget) / 4 && !Person::players[k]->dead) {
-                                                                                    award_bonus(i, aimbonus); // (the other way round)
+                                                                                    award_bonus(hi ? (int)i : Person::exBonusPlayerFor(Person::players[k].get()), aimbonus); // (the other way round)
                                                                                 }
                                                                                 Person::players[k]->DoDamage(findLengthfast(&rotatetarget) / 4);
 

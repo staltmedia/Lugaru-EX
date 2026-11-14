@@ -89,6 +89,7 @@ static const std::map<std::string, std::string>& renames()
         { "textures/furbrownwhite.jpg", "Textures/WB2.jpg" },
         { "textures/furchocolate.jpg", "Textures/Chocolate.jpg" },
         { "textures/furdavid.jpg", "Textures/David.jpg" },
+        { "textures/furdarko.jpg", "Textures/Darko.jpg" },
         { "textures/furlynx.jpg", "Textures/Lynx.jpg" },
         { "textures/furopal.jpg", "Textures/Opal.jpg" },
         { "textures/furotter.jpg", "Textures/Otter.jpg" },

@@ -46,6 +46,7 @@ public:
     TextureRes(const string& filename, bool hasMipmap, GLubyte* array, int* skinsize);
     ~TextureRes();
     void bind();
+    GLuint exId() const { return id; }
 
     /* Make sure TextureRes never gets copied */
     TextureRes(TextureRes const& other) = delete;
@@ -65,6 +66,7 @@ public:
     void load(const string& filename, bool hasMipmap);
     void load(const string& filename, bool hasMipmap, GLubyte* array, int* skinsizep);
     void bind();
+    GLuint exId() const; // LugaruEX: the GL texture bind() uses (0 = none)
 };
 
 #endif

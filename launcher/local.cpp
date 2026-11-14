@@ -111,6 +111,24 @@ void refreshRows()
         SetDlgItemTextW(g_page, IDC_LC_LABEL1 + i, t.c_str());
         EnableWindow(GetDlgItem(g_page, IDC_LC_REMOVE1 + i), !conn);
         HWND c = GetDlgItem(g_page, IDC_LC_CHAR1 + i);
+        // player 1's character is the Character tab's (model, skin and clothes)
+        const bool p1 = (i == 0);
+        const int want = p1 ? 1 : (int)g_chars.size();
+        if ((int)SendMessageW(c, CB_GETCOUNT, 0, 0) != want || (p1 != !IsWindowEnabled(c))) {
+            SendMessageW(c, CB_RESETCONTENT, 0, 0);
+            if (p1) {
+                SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)L"As on the Character tab");
+            } else {
+                for (auto& ch : g_chars) {
+                    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)ch.second.c_str());
+                }
+            }
+            EnableWindow(c, !p1);
+        }
+        SendMessageW(c, CB_SETCURSEL, 0, 0);
+        if (p1) {
+            continue;
+        }
         for (size_t k = 0; k < g_chars.size(); k++) {
             if (g_chars[k].first == p.ch) {
                 SendMessageW(c, CB_SETCURSEL, k, 0);
@@ -484,7 +502,7 @@ void Local_Save(const std::wstring& iniPath)
         snprintf(key, sizeof(key), "P%dName", (int)i + 1);
         WritePrivateProfileStringA("Local", key, narrow(p.name).c_str(), f.c_str());
         snprintf(key, sizeof(key), "P%dChar", (int)i + 1);
-        WritePrivateProfileStringA("Local", key, p.ch.c_str(), f.c_str());
+        WritePrivateProfileStringA("Local", key, i == 0 ? "default" : p.ch.c_str(), f.c_str()); // P1 = Character tab
         snprintf(key, sizeof(key), "P%dSeat", (int)i + 1);
         WritePrivateProfileStringA("Local", key, std::to_string(p.seat).c_str(), f.c_str());
         snprintf(key, sizeof(key), "P%dRect", (int)i + 1);

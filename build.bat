@@ -2,7 +2,7 @@
 rem LugaruEX build script: engine (CMake/Ninja/MSVC) + launcher, both statically linked.
 rem Needs Visual Studio 2022 or its Build Tools (C++ workload, includes CMake and Ninja)
 rem and vcpkg in .\vcpkg with these libraries:
-rem   vcpkg\vcpkg install --triplet x64-windows-static sdl2 openal-soft libpng libjpeg-turbo libogg libvorbis zlib jsoncpp fmt dirent opengl-registry
+rem   vcpkg\vcpkg install --overlay-triplets=tools\triplets --triplet x64-windows-static sdl2 openal-soft libpng libjpeg-turbo libogg libvorbis zlib jsoncpp fmt dirent opengl-registry
 rem   vcpkg\vcpkg install --triplet x64-windows pkgconf
 rem Usage: build.bat [clean]. Then tools\package.ps1 makes dist\ (the zip and Setup.exe).
 setlocal

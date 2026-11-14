@@ -27,6 +27,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include "fsutil.h"
 #include "modpack.h"
 #include "setup.h"
+#include "outfits.h"
 #include "update.h"
 
 #include <algorithm>
@@ -58,7 +59,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.4.10"
+#define LUGARUEX_VERSION "0.4.11"
 
 namespace
 {
@@ -120,7 +121,7 @@ struct Settings
     std::string mpmode = "off";
     int lan = 0;
     int port = 27015;
-    std::string addr = "127.0.0.1:27015";
+    std::string addr; // join address: empty until the player types the host's
     int chDefault = 0;
     std::string chModel = "rabbit";
     std::string chSkin = "random";
@@ -253,7 +254,7 @@ int g_custW = 1920, g_custH = 1080, g_fov = 90;
 bool g_overrides = true, g_shaders = true;
 // Multiplayer
 int g_mpSel = 0, g_port = 27015;
-char g_addr[128] = "127.0.0.1:27015";
+char g_addr[128] = "";
 bool g_lan = false, g_shareMods = true;
 bool g_autoUpdate = true;
 // Character
@@ -715,7 +716,8 @@ std::string LocalText()
         for (unsigned char c : p.name) {
             name += (c > 0 && c < 128) ? (char)c : '_';
         }
-        t += k + "=" + p.id + "\r\n" + k + "Name=" + name + "\r\n" + k + "Char=" + p.ch + "\r\n" + k + "Seat=" + std::to_string(p.seat) +
+        const std::string ch = i == 0 ? std::string("default") : p.ch; // player 1 = the Character tab
+        t += k + "=" + p.id + "\r\n" + k + "Name=" + name + "\r\n" + k + "Char=" + ch + "\r\n" + k + "Seat=" + std::to_string(p.seat) +
              "\r\n" + k + "Rect=" + rect + "\r\n";
     }
     return t;
@@ -903,7 +905,7 @@ bool CollectSettings()
     s.autoUpdate = g_autoUpdate;
     s.tab = g_openTab;
     if (s.mpmode == "join" && s.addr.empty() && !s.lan) {
-        g_message = "Enter the host's address as IP:port (for example 100.64.0.2:27015).";
+        g_message = "Enter the host's address as IP:port.";
         return false;
     }
     return true;
@@ -940,7 +942,7 @@ bool SaveIni()
     ki("HUDAspect", 1);
     line("; colour blind filter: 0 off, 1 deuteranopia, 2 protanopia, 3 tritanopia");
     ki("Colorblind", s.colorblind);
-    line("; lighting look, cycled in game with R (0 = Original, 1 = Enhanced)");
+    line("; (old) the game now starts in the Enhanced look when Shaders=1; R switches looks for that game only");
     ki("Lighting", s.lighting);
     line("; 0 = shaders off (Original look only)");
     ki("Shaders", s.shaders);
@@ -1197,13 +1199,50 @@ void UpdatePreview()
             }
         }
     }
-    const std::string key = model + "|" + file;
+    // the Clothes choice painted over the skin, as the game does it (wolves wear none)
+    std::vector<PreviewCloth> clothes;
+    if (!g_chDefault && model != "wolf") {
+        if (g_clothes.compare(0, 7, "custom:") == 0) {
+            for (const CustomSkin& c : CustomSkins_List()) {
+                if (c.model == "clothes" && Lower(c.enginePath) == Lower(g_clothes.substr(7))) {
+                    clothes.push_back({ c.file, 1, 1, 1 });
+                }
+            }
+        } else {
+            for (PreviewCloth c : PreviewCore_Outfit(g_clothes)) {
+                const size_t slash = c.tex.rfind('/');
+                const std::string name = c.tex.substr(slash + 1), base = name.substr(0, name.rfind('.'));
+                std::string p;
+                for (const char* e : { ".png", ".jpg" }) {
+                    if (p.empty()) {
+                        p = FindFileCI(g_exDir + "Overrides/Textures", base + e);
+                    }
+                }
+                if (p.empty()) {
+                    p = FindFileCI(g_gameDir + "Data/Textures", name);
+                }
+                if (!p.empty()) {
+                    c.tex = p;
+                    clothes.push_back(c);
+                }
+            }
+        }
+    }
+    std::string key = model + "|" + file;
+    for (const PreviewCloth& c : clothes) {
+        key += "|" + c.tex;
+    }
     PreviewCore_SetModel(model);
     PreviewCore_SetDimmed(g_chDefault);
     if (key != g_previewKey) {
         g_previewKey = key;
-        Image img;
+        Image img, cl;
         if (!file.empty() && ReadImage(file, img)) {
+            for (const PreviewCloth& c : clothes) {
+                if (ReadImage(c.tex, cl)) {
+                    PreviewCore_PaintCloth(img.px, img.w, img.h, cl.px.data(), cl.w, cl.h, c.r, c.g, c.b);
+                }
+            }
             PreviewCore_SetTexture(img.px.data(), img.w, img.h);
         } else {
             PreviewCore_SetTexture(nullptr, 0, 0);
@@ -1314,14 +1353,14 @@ std::vector<Choice> SkinChoices(const std::string& model)
     return v;
 }
 
-const char* kClothesKeys[] = { "default", "random", "none", "shirt", "camo", "snowcamo", "desertcamo", "leather", "gi" };
-const char* kClothesLabels[] = { "Default", "Random", "None", "Shirt and pants", "Camo", "Snow camo", "Desert camo", "Leather armor", "Gi" };
 
 std::vector<Choice> ClothesChoices()
 {
     std::vector<Choice> v;
-    for (int i = 0; i < 9; i++) {
-        v.push_back({ kClothesKeys[i], kClothesLabels[i] });
+    v.push_back({ "default", "Default" });
+    v.push_back({ "random", "Random" });
+    for (const OutfitDef& o : Outfits()) { // the game's own list (shared/outfits.h)
+        v.push_back({ o.key, o.label });
     }
     for (const CustomSkin& c : CustomSkins_List()) {
         if (c.model == "clothes") {
@@ -1626,7 +1665,12 @@ void TabLocal(float s)
                 sel = k;
             }
         }
-        if (Combo("##ch", &sel, labels, leftW - 40 * s)) {
+        if (i == 0) { // player 1's character is the Character tab's
+            int one = 0;
+            ImGui::BeginDisabled();
+            Combo("##ch", &one, { "As on the Character tab" }, leftW - 40 * s);
+            ImGui::EndDisabled();
+        } else if (Combo("##ch", &sel, labels, leftW - 40 * s)) {
             const std::string key = g_chars[sel].first;
             if (key.rfind("new:", 0) == 0) {
                 StartImport(key.substr(4), "local:" + std::to_string(i));
@@ -1895,9 +1939,11 @@ void DecideSetupMode(const std::string& exeDir)
     }
 }
 
+std::string g_freeDir; // where "Download game free" puts the game (the player can change it)
+
 void FreeDataThread()
 {
-    const std::string dir = Setup_FreeGameFolder(), zip = dir + "/lugaru-data.zip";
+    const std::string dir = g_freeDir, zip = dir + "/lugaru-data.zip";
     fsu::MakeDirs(dir);
     std::string err;
     const bool ok = Http_GetFile(Setup_FreeDataUrl(), zip, nullptr, err) && Setup_UnpackFreeData(zip, dir, err);
@@ -1906,11 +1952,12 @@ void FreeDataThread()
     g_freeState = ok ? 2 : 3;
 }
 
-std::string PickFolderDialog()
+std::string PickFolderDialog(const std::string& title = "Choose your Lugaru folder")
 {
 #ifndef _WIN32
-    const char* cmds[] = { "zenity --file-selection --directory --title='Choose your Lugaru folder' 2>/dev/null",
-                           "kdialog --getexistingdirectory \"$HOME\" --title 'Choose your Lugaru folder' 2>/dev/null" };
+    const std::string z = "zenity --file-selection --directory --title='" + title + "' 2>/dev/null",
+                      k = "kdialog --getexistingdirectory \"$HOME\" --title '" + title + "' 2>/dev/null";
+    const char* cmds[] = { z.c_str(), k.c_str() };
     for (const char* c : cmds) {
         const std::string tool = std::string(c).substr(0, std::string(c).find(' '));
         if (system(("command -v " + tool + " >/dev/null 2>&1").c_str()) != 0) {
@@ -2010,7 +2057,7 @@ bool SetupScreen(float s, float bannerH, float btnW)
         ImGui::EndPopup();
     }
     ImGui::TextUnformatted("Install into:");
-    const float listH = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 3.4f - ImGui::GetTextLineHeightWithSpacing() * 2;
+    const float listH = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 4.4f - ImGui::GetTextLineHeightWithSpacing() * 2;
     ImGui::BeginChild("##games", ImVec2(0, listH), ImGuiChildFlags_Borders);
     for (int i = 0; i < (int)g_games.size(); i++) {
         const GameFolder& g = g_games[i];
@@ -2041,19 +2088,61 @@ bool SetupScreen(float s, float bannerH, float btnW)
     }
     ImGui::SameLine();
     const int fs = g_freeState;
+    // where the free game goes: the player's choice (an empty or new folder as it is,
+    // else a "Lugaru" folder in it)
+    static char freeDir[1024] = "";
+    if (!freeDir[0]) {
+        snprintf(freeDir, sizeof(freeDir), "%s", Setup_FreeGameFolder().c_str());
+    }
     ImGui::BeginDisabled(fs == 1);
     if (ImGui::Button(fs == 1 ? "Downloading game..." : "Download game free") || (freeNow && fs == 0)) {
-        g_freeState = 1;
-        std::thread(FreeDataThread).detach();
+        std::string dir = Trim(freeDir);
+        while (dir.size() > 1 && dir.back() == '/') {
+            dir.pop_back();
+        }
+        if (dir.empty()) {
+            dir = Setup_FreeGameFolder();
+        }
+        if (dir != Setup_FreeGameFolder() && fsu::IsDir(dir) && (!fsu::List(dir, true).empty() || !fsu::List(dir, false).empty())) {
+            dir = fsu::Join(dir, "Lugaru");
+        }
+        const std::string probe = fsu::Join(dir, ".lugaruex-write-test");
+        if (!fsu::MakeDirs(dir) || !fsu::WriteAll(probe, "x")) {
+            g_message = "Can't write to " + dir + ". Pick a folder of your own.";
+        } else {
+            fsu::RemoveTree(probe);
+            g_freeDir = dir;
+            g_freeState = 1;
+            std::thread(FreeDataThread).detach();
+        }
+    }
+    ImGui::TextUnformatted("Download to:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - btnW * 0.6f - ImGui::GetStyle().ItemSpacing.x);
+    ImGui::InputText("##freedir", freeDir, sizeof(freeDir));
+    ImGui::SameLine();
+    if (ImGui::Button("Change...", ImVec2(btnW * 0.6f, 0))) {
+        const std::string p = PickFolderDialog("Choose where to put the game");
+        if (!p.empty() && p != "?") {
+            snprintf(freeDir, sizeof(freeDir), "%s", p.c_str());
+        }
     }
     ImGui::EndDisabled();
     if (fs >= 2) {
         if (fs == 2) {
             g_games = Setup_FindGames();
+            g_gameSel = -1;
             for (int i = 0; i < (int)g_games.size(); i++) {
-                if (g_games[i].path == Setup_FreeGameFolder()) {
+                if (g_games[i].path == g_freeDir) {
                     g_gameSel = i;
                 }
+            }
+            if (g_gameSel < 0) { // a folder of the player's choosing: not one setup looks in by itself
+                const GameFolder g = Setup_Describe(g_freeDir);
+                if (!g.path.empty()) {
+                    g_games.insert(g_games.begin(), g);
+                }
+                g_gameSel = 0;
             }
         } else {
             g_message = "Download failed: " + g_freeError;

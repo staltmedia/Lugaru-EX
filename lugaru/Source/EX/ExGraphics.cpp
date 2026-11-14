@@ -34,6 +34,12 @@ namespace EX
 {
 static float maxAniso = 0;
 static int g_refresh = 0;
+static int g_extraRows = 0; // borderless: rows past the monitor's bottom edge
+
+int BorderlessExtraRows()
+{
+    return g_extraRows;
+}
 
 void PreWindowGLAttributes(int msaa)
 {
@@ -71,6 +77,9 @@ static SDL_Window* tryCreate(int& width, int& height, bool grabInput, SDL_GLCont
     if (grabInput) {
         flags |= SDL_WINDOW_INPUT_GRABBED;
     }
+    // only exclusive fullscreen may minimize when another window is clicked or alt-tabbed to
+    SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, cfg.displayMode == DISPLAY_FULLSCREEN ? "1" : "0");
+    g_extraRows = 0;
     int x = SDL_WINDOWPOS_CENTERED_DISPLAY(display), y = SDL_WINDOWPOS_CENTERED_DISPLAY(display);
     switch (cfg.displayMode) {
         case DISPLAY_BORDERLESS:
@@ -84,6 +93,14 @@ static SDL_Window* tryCreate(int& width, int& height, bool grabInput, SDL_GLCont
             }
             x = bounds.x + (bounds.w - width) / 2;
             y = bounds.y + (bounds.h - height) / 2;
+            if (width == bounds.w && height == bounds.h) {
+                // An OpenGL window that covers its monitor exactly is taken over by the
+                // graphics driver as exclusive fullscreen: clicking another window or
+                // alt-tabbing blacked out the screen and minimized it like real fullscreen.
+                // One row past the bottom edge keeps it an ordinary (composited) window.
+                height += 1;
+                g_extraRows = 1;
+            }
             break;
         case DISPLAY_FULLSCREEN:
             // entered below, after the display mode (incl. refresh rate) is set
@@ -91,6 +108,7 @@ static SDL_Window* tryCreate(int& width, int& height, bool grabInput, SDL_GLCont
             y = bounds.y;
             break;
         default:
+            flags |= SDL_WINDOW_RESIZABLE; // windowed: drag the edges or maximize
             break;
     }
 
@@ -242,7 +260,30 @@ void AfterSwap()
     // With vsync, wait for the GPU to finish the frame right after the swap:
     // frame times then follow the display exactly instead of jittering with
     // the driver's queue depth (smoother motion, less input lag).
-    if (cfg.vsync == 1) {
+    // A PC that keeps missing the refresh skips it: there the wait made the CPU and the GPU
+    // take turns (each frame's game work, then its drawing, then the next) where they could
+    // work side by side - with vsync that could turn 60 fps into 30. PCs that keep up are
+    // paced as before. Once switched it stays for the session (switching back and forth
+    // would make the pacing itself uneven); it is logged.
+    if (cfg.vsync != 1) {
+        return;
+    }
+    static Uint64 last = 0;
+    static float missed = 0; // running share of frames that took longer than 1.5 refreshes
+    static bool overlap = false;
+    const Uint64 now = SDL_GetPerformanceCounter();
+    if (last && g_refresh > 0) {
+        const double dt = (double)(now - last) / (double)SDL_GetPerformanceFrequency();
+        if (dt < 0.25) { // (not a loading hitch)
+            missed = missed * 0.99f + (dt > 1.5 / g_refresh ? 0.01f : 0.f);
+            if (!overlap && missed > 0.5f) { // (most frames, for over a hundred of them)
+                overlap = true;
+                printf("LugaruEX: frames keep missing the %d Hz refresh - the CPU and GPU now work side by side\n", g_refresh);
+            }
+        }
+    }
+    last = now; // (swap to swap: the whole frame, the wait included)
+    if (!overlap) {
         glFinish();
     }
 }
@@ -296,6 +337,21 @@ void LimitFrameRate()
             SDL_Delay((Uint32)(remainMs - 0.3));
 #endif
         }
+    }
+}
+
+void SetLodBias(float bias)
+{
+    // The desert's heat haze moves the texture LOD bias to a new random value every frame,
+    // switching it per terrain patch, per object and for the sky. Some OpenGL drivers build
+    // a new shader for each new value of that fixed-function state, so the desert levels
+    // stuttered badly there. Steps of a quarter (a dozen values the driver keeps), and
+    // nothing sent when it doesn't change.
+    static float current = -1000;
+    const float q = floorf(bias * 4 + 0.5f) / 4;
+    if (q != current) {
+        current = q;
+        glTexEnvf(0x8500 /* GL_TEXTURE_FILTER_CONTROL */, 0x8501 /* GL_TEXTURE_LOD_BIAS */, q);
     }
 }
 

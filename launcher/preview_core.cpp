@@ -15,6 +15,7 @@ and the OSS Lugaru contributors. GPLv2 or later.
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include "preview_core.h"
+#include "../shared/outfits.h"
 
 #include "../lugaru/Source/EX/ExMath.hpp"
 
@@ -164,6 +165,15 @@ struct BE
         memcpy(&r, &i, 4);
         return r;
     }
+    // x, y, z in file order (V3(f32(), f32(), f32()) leaves the order to the compiler:
+    // MSVC read z first, which mirrored every model, skeleton and animation)
+    V3 v3()
+    {
+        const float x = f32();
+        const float y = f32();
+        const float z = f32();
+        return V3(x, y, z);
+    }
 };
 
 // joint labels (Animation/Joint.hpp bodypart)
@@ -218,7 +228,8 @@ struct Rig
     std::vector<Joint> joints;
     std::vector<Muscle> muscles;
     int fwd[3] = { 0, 0, 0 }, lowfwd[3] = { 0, 0, 0 };
-    int byLabel[numlabels];
+    int byLabel[numlabels];     // jointlabels while Skeleton::Load builds the rest pose
+    int byLabelPose[numlabels]; // the filled table every drawn frame uses
     std::vector<std::vector<V3>> frames;
     std::vector<float> speeds;
     float prop[4] = { 1, 1, 1, 1 };
@@ -232,10 +243,11 @@ struct Forwards
     V3 forward, lowforward, special[5];
 };
 
-static Forwards findForwards(const Rig& r, const std::vector<V3>& J)
+static Forwards findForwards(const Rig& r, const std::vector<V3>& J, bool rest = false)
 {
     Forwards f;
-    auto jp = [&](int label) { return J[r.byLabel[label]]; };
+    const int* tab = rest ? r.byLabel : r.byLabelPose;
+    auto jp = [&](int label) { return J[tab[label]]; };
     f.forward = cross(J[r.fwd[1]] - J[r.fwd[0]], J[r.fwd[2]] - J[r.fwd[0]]);
     normalise(f.forward);
     f.lowforward = cross(J[r.lowfwd[1]] - J[r.lowfwd[0]], J[r.lowfwd[2]] - J[r.lowfwd[0]]);
@@ -366,6 +378,35 @@ static std::string firstExisting(const std::string& dir, std::initializer_list<c
     return "";
 }
 
+// the joint label of every joint in a skeleton file (Joint::load)
+static std::vector<int> skeletonLabels(const std::string& path)
+{
+    std::vector<int> out;
+    BE b(path);
+    const int nj = b.i32();
+    if (!b.ok || nj <= 0 || nj > 100) {
+        return out;
+    }
+    for (int i = 0; i < nj && b.ok; i++) {
+        for (int k = 0; k < 5; k++) {
+            b.f32(); // position, length, mass
+        }
+        b.u8();
+        b.u8();
+        b.i32();
+        b.u8();
+        b.u8();
+        out.push_back(b.i32()); // label
+        b.i32();
+        b.u8();
+        b.i32();
+    }
+    if (!b.ok) {
+        out.clear();
+    }
+    return out;
+}
+
 static bool loadRig(Rig& r, const std::string& data, bool wolf)
 {
     r = Rig();
@@ -393,7 +434,7 @@ static bool loadRig(Rig& r, const std::string& data, bool wolf)
         }
         r.verts.resize(vn);
         for (int i = 0; i < vn; i++) {
-            V3 v(b.f32(), b.f32(), b.f32());
+            V3 v = b.v3();
             r.verts[i] = doRotation(v, 180, 0, 0) * .04f;
         }
         r.tris.resize(tn);
@@ -427,7 +468,7 @@ static bool loadRig(Rig& r, const std::string& data, bool wolf)
         }
         r.joints.resize(nj);
         for (auto& j : r.joints) {
-            j.rest = V3(b.f32(), b.f32(), b.f32());
+            j.rest = b.v3();
             b.f32();
             b.f32();     // length, mass
             b.u8();
@@ -477,13 +518,30 @@ static bool loadRig(Rig& r, const std::string& data, bool wolf)
             return false;
         }
     }
-    // NOTE: Skeleton::Load computes the rest pose *before* it fills its
-    // jointlabels table (still all zero on a fresh skeleton), so the limb
-    // "special forward" vectors degenerate to forward/lowforward there.
-    // Using the same (zero) table for the rest pose and the animated pose
-    // reconstructs the mesh exactly and gives the in-game idle look.
+    // Every drawn frame finds the limbs' "special forward" vectors through the
+    // skeleton's filled jointlabels table. Skeleton::Load builds the rest pose
+    // *before* it fills that table: on a fresh skeleton (a rabbit player as the
+    // level loads it) it is still all zero, so those vectors degenerate to
+    // forward/lowforward there. A wolf player is made by changeCreatureType,
+    // which reloads a skeleton whose table the rabbit already filled.
     for (int& x : r.byLabel) {
         x = 0;
+    }
+    for (int& x : r.byLabelPose) {
+        x = 0;
+    }
+    for (int i = 0; i < (int)r.joints.size(); i++) {
+        if (r.joints[i].label >= 0 && r.joints[i].label < numlabels) {
+            r.byLabelPose[r.joints[i].label] = i;
+        }
+    }
+    if (wolf) {
+        const std::vector<int> rl = skeletonLabels(firstExisting(data + "Skeleton/", { "Basic Figure", "BasicFigure" }));
+        for (int i = 0; i < (int)rl.size(); i++) {
+            if (rl[i] >= 0 && rl[i] < numlabels && i < (int)r.joints.size()) {
+                r.byLabel[rl[i]] = i;
+            }
+        }
     }
 
     { // idle animation: joint positions + frame speed
@@ -497,7 +555,7 @@ static bool loadRig(Rig& r, const std::string& data, bool wolf)
         for (int f = 0; f < nf; f++) {
             r.frames[f].resize(nj);
             for (int j = 0; j < nj; j++) {
-                r.frames[f][j] = V3(b.f32(), b.f32(), b.f32());
+                r.frames[f][j] = b.v3();
             }
             for (int j = 0; j < nj; j++) {
                 b.f32(); // twist
@@ -517,7 +575,7 @@ static bool loadRig(Rig& r, const std::string& data, bool wolf)
     for (size_t i = 0; i < rest.size(); i++) {
         rest[i] = r.joints[i].rest;
     }
-    Forwards F = findForwards(r, rest);
+    Forwards F = findForwards(r, rest, true);
     std::vector<int> owner(vn, -1);
     for (int m = 0; m < (int)r.muscles.size(); m++) {
         for (int v : r.muscles[m].verts) {
@@ -613,7 +671,7 @@ static const float kFloatPeriod = 4.0f; // seconds for one down-and-up float
 static const float kWolfFloatFrom = 0.0f;
 static const float kWolfFloatTo = 3.0f;
 static const float kWolfFloatPeriod = 5.0f;
-static const float kDefaultYaw = 90.f;   // front view
+static const float kDefaultYaw = 0.f;    // front view
 static const float kDefaultPitch = 8.f;
 
 struct State
@@ -628,7 +686,7 @@ struct State
     int frame = 0;
     float t = 0;
     // view
-    float yaw = 90, pitch = 8, zoom = 1; // 90 = facing the camera
+    float yaw = kDefaultYaw, pitch = 8, zoom = 1; // facing the camera
     bool returning = false;
     float phase = 0; // rabbit float oscillator
     float returnT = 0, fromYaw = 0, fromPitch = 0, fromZoom = 1, dYaw = 0, dPitch = 0;
@@ -647,6 +705,12 @@ static void currentJoints(std::vector<V3>& J)
     J.resize(r.joints.size());
     for (size_t j = 0; j < J.size(); j++) {
         J[j] = r.frames[a][j] * (1 - g.t) + r.frames[b][j] * g.t;
+    }
+    static const bool restDbg = getenv("LUGARUEX_PREVIEW_REST") != nullptr; // debug: bind pose
+    if (restDbg) {
+        for (size_t j = 0; j < J.size(); j++) {
+            J[j] = r.joints[j].rest;
+        }
     }
 }
 
@@ -724,6 +788,40 @@ void PreviewCore_SetTexture(const unsigned char* rgba, int w, int h)
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, flip.data());
     g.texW = w;
     g.texH = h;
+}
+
+std::vector<PreviewCloth> PreviewCore_Outfit(const std::string& key)
+{
+    // the same outfits the game puts on (shared/outfits.h)
+    std::vector<PreviewCloth> out;
+    for (const OutfitDef& o : Outfits()) {
+        if (key == o.key) {
+            for (const OutfitPiece& p : o.pieces) {
+                out.push_back({ p.tex, p.r, p.g, p.b });
+            }
+        }
+    }
+    return out;
+}
+
+void PreviewCore_PaintCloth(std::vector<unsigned char>& skin, int w, int h, const unsigned char* cloth, int cw, int chh, float r, float g, float b)
+{
+    if (!cloth || cw <= 0 || chh <= 0 || w <= 0 || h <= 0 || skin.size() < (size_t)w * h * 4) {
+        return;
+    }
+    const float tint[3] = { std::max(0.f, std::min(1.f, r)), std::max(0.f, std::min(1.f, g)), std::max(0.f, std::min(1.f, b)) };
+    for (int y = 0; y < h; y++) {
+        const int sy = std::min(chh - 1, (int)((y + 0.5f) * chh / h));
+        for (int x = 0; x < w; x++) {
+            const int sx = std::min(cw - 1, (int)((x + 0.5f) * cw / w));
+            const unsigned char* c = cloth + ((size_t)sy * cw + sx) * 4;
+            unsigned char* d = &skin[((size_t)y * w + x) * 4];
+            const float a = c[3] / 255.f;
+            for (int k = 0; k < 3; k++) {
+                d[k] = (unsigned char)(d[k] * (1 - a) + c[k] * tint[k] * a + 0.5f);
+            }
+        }
+    }
 }
 
 void PreviewCore_SetDimmed(bool dimmed)

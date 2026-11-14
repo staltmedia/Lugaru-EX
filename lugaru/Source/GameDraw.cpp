@@ -20,6 +20,8 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "Game.hpp"
 #include "EX/ExConfig.hpp"
+#include "EX/ExGraphics.hpp"
+#include "EX/ExProfile.hpp"
 #include "EX/ExLighting.hpp"
 #include "EX/ExLocal.hpp"
 #include "EX/ExNet.hpp"
@@ -380,13 +382,15 @@ int Game::DrawGLScene(StereoSide side)
 
         if (environment == desertenvironment) {
             if (detail == 2) {
-                glTexEnvf(GL_TEXTURE_FILTER_CONTROL, GL_TEXTURE_LOD_BIAS, blurness + .4);
+                EX::SetLodBias(blurness + .4f);
             }
             glRotatef((float)(abs(Random() % 100)) / 1000, 1, 0, 0);
             glRotatef((float)(abs(Random() % 100)) / 1000, 0, 1, 0);
         }
+        EX_PROF("view setup");
         skybox->draw();
-        glTexEnvf(GL_TEXTURE_FILTER_CONTROL, GL_TEXTURE_LOD_BIAS, 0);
+        EX_PROF("sky");
+        EX::SetLodBias(0);
         glPopMatrix();
         glTranslatef(-viewer.x, -viewer.y, -viewer.z);
         EX::LightingCaptureCamera(); // LugaruEX: camera matrices for the lighting pass
@@ -480,6 +484,7 @@ int Game::DrawGLScene(StereoSide side)
             }
         }
 
+        EX_PROF("blob shadows");
         //Terrain
         glEnable(GL_TEXTURE_2D);
         glDepthMask(1);
@@ -495,6 +500,7 @@ int Game::DrawGLScene(StereoSide side)
 
         terrain.drawdecals();
 
+        EX_PROF("terrain");
         //Model
         glEnable(GL_CULL_FACE);
         glEnable(GL_LIGHTING);
@@ -552,7 +558,9 @@ int Game::DrawGLScene(StereoSide side)
         glPushMatrix();
         glCullFace(GL_BACK);
         glEnable(GL_TEXTURE_2D);
+        EX_PROF("people");
         Object::Draw();
+        EX_PROF("objects");
         glPopMatrix();
 
         //draw hawk
@@ -617,7 +625,9 @@ int Game::DrawGLScene(StereoSide side)
 
         glPushMatrix();
         glEnable(GL_TEXTURE_2D);
+        EX_PROF("people");
         weapons.Draw();
+        EX_PROF("weapons");
         glPopMatrix();
         glCullFace(GL_BACK);
 
@@ -629,6 +639,7 @@ int Game::DrawGLScene(StereoSide side)
         glDepthMask(0);
 
         Sprite::Draw();
+        EX_PROF("sprites");
 
         //waypoints, pathpoints in editor
         if (editorenabled) {
@@ -670,8 +681,10 @@ int Game::DrawGLScene(StereoSide side)
 
         // LugaruEX: lighting looks (AO, fire light, bloom, shafts, grading) on the
         // finished 3D world, before any HUD/text is drawn on top
+        EX_PROF("misc");
         EX::LightingApply();
 
+        EX_PROF("lighting");
         //Text
 
         glEnable(GL_TEXTURE_2D);
@@ -1725,6 +1738,7 @@ int Game::DrawGLScene(StereoSide side)
     EX::LightingDrawName(); // LugaruEX: fading "Lighting: <look>" label, bottom-left
     EX::NetDrawOverlay();   // LugaruEX: online guest "Waiting for host..." over the menu
 
+    EX_PROF("hud");
     if ((side == stereoRight || side == stereoCenter) && !EX::DrawingViews()) { // LugaruEX: split screen presents once, after all views
         exMotionTrail(drawmode == motionblurmode && !mainmenu, motionbluramount, realmultiplier);
         {

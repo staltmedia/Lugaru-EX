@@ -140,3 +140,8 @@ void Texture::bind()
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 }
+
+GLuint Texture::exId() const
+{
+    return tex ? tex->exId() : 0;
+}

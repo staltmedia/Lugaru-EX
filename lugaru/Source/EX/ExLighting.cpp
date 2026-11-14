@@ -12,6 +12,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include "EX/ExLighting.hpp"
 
 #include "EX/ExConfig.hpp"
+#include "EX/ExProfile.hpp"
+#include "EX/ExMath.hpp"
 #include "EX/ExLocal.hpp"
 #include "Game.hpp"
 #include "Objects/Object.hpp"
@@ -154,11 +156,8 @@ static const char* kAO =
     "  if (d >= 0.99999) { gl_FragData[0] = vec4(1.0, 0.5, 0.5, 1.0); gl_FragData[1] = vec4(0.0); return; }\n"
     "  vec3 p = viewPos(tc, d);\n"
     "  vec3 V = normalize(-p);\n"
-    "  vec3 n = normalAt(tc, p);\n"
-    "  if (uUseG > 0.5) {\n"
-    "    vec4 g = texture2D(uGBuf, tc);\n"
-    "    if (g.b >= 1.0 && abs(g.a + p.z) < 0.06 + 0.02 * -p.z) n = octDec(g.rg);\n"
-    "  }\n"
+    "  vec4 g = (uUseG > 0.5) ? texture2D(uGBuf, tc) : vec4(0.0);\n"
+    "  vec3 n = (g.b >= 1.0 && abs(g.a + p.z) < 0.06 + 0.02 * -p.z) ? octDec(g.rg) : normalAt(tc, p);  // (depth normal only when needed)\n"
     "  if (dot(n, V) < 0.0) n = -n;\n"
     "  float rPix = uRadius * uPixPerUnit / -p.z;\n"
     "  if (rPix < 2.0) { gl_FragData[0] = vec4(1.0, n.xy * 0.5 + 0.5, 1.0); gl_FragData[1] = vec4(0.0); return; }\n"
@@ -265,11 +264,16 @@ static const char* kComposite =
     "                     // 5 game light (red: has a surface), 6 relight gain, 7 the game's colour, 8 surfaces (red) over it\n"
     "float hash(vec2 s) { return fract(sin(dot(gl_FragCoord.xy + s, vec2(12.9898, 78.233))) * 43758.5453); }\n"
     "float pcf(sampler2D sm, vec3 sc, float bias, float spread) {\n"
+    "  // a golden-angle spiral: each sample turns the last one's direction by 2.3999632\n"
+    "  // radians (one sin/cos for the pixel instead of one per sample, same pattern)\n"
     "  float ang = hash(vec2(0.0)) * 6.2831853, sum = 0.0;\n"
+    "  vec2 dir = vec2(cos(ang), sin(ang));\n"
+    "  const float cG = -0.7373688, sG = 0.6754903;  // cos, sin of 2.3999632\n"
+    "  float k = spread * uShadowInfo.x;\n"
     "  for (int i = 0; i < 12; i++) {\n"
-    "    float t = (float(i) + 0.5) / 12.0, a = ang + float(i) * 2.3999632;\n"
-    "    vec2 o = vec2(cos(a), sin(a)) * sqrt(t) * spread * uShadowInfo.x;\n"
-    "    sum += step(sc.z - bias, texture2D(sm, sc.xy + o).r);\n"
+    "    float t = (float(i) + 0.5) / 12.0;\n"
+    "    sum += step(sc.z - bias, texture2D(sm, sc.xy + dir * (sqrt(t) * k)).r);\n"
+    "    dir = vec2(dir.x * cG - dir.y * sG, dir.x * sG + dir.y * cG);\n"
     "  }\n"
     "  return sum / 12.0;\n"
     "}\n"
@@ -305,8 +309,11 @@ static const char* kComposite =
     "  float len = sky ? 60.0 : min(length(p), 60.0);\n"
     "  vec3 dir = normalize(p);\n"
     "  float j = hash(vec2(5.3, 1.9)), lit = 0.0;\n"
+    "  // the ray is a straight line from the eye: its point in the shadow map moves along a\n"
+    "  // line too (one matrix product for the pixel, not one per step)\n"
+    "  vec4 s0 = uShadowMat1 * vec4(0.0, 0.0, 0.0, 1.0), sd = uShadowMat1 * vec4(dir * (len / 16.0), 0.0);\n"
     "  for (int i = 0; i < 16; i++) {\n"
-    "    vec4 s = uShadowMat1 * vec4(dir * ((float(i) + j) / 16.0 * len), 1.0);\n"
+    "    vec4 s = s0 + sd * (float(i) + j);\n"
     "    lit += (s.x > 0.0 && s.y > 0.0 && s.x < 1.0 && s.y < 1.0 && s.z < 1.0) ? step(s.z - uShadowInfo.w * 0.1, texture2D(uShadow1, s.xy).r) : 1.0;\n"
     "  }\n"
     "  lit /= 16.0;\n"
@@ -339,13 +346,18 @@ static const char* kComposite =
     "      if (uDebug == 3) { gl_FragColor = vec4(aoS.gb, 1.0, 1.0); return; }\n"
     "      if (uEngine < 0.5) c *= mix(1.0, aoS.r, uAOStr);\n"
     "    }\n"
-    "    vec3 n = normalAt(uv, p);\n"
+    "    // the surface pass's exact normal where it drew this pixel, else one from the depth\n"
+    "    // (only worked out when needed: four depth reads)\n"
+    "    vec4 g = vec4(0.0);\n"
+    "    bool gv = false;\n"
+    "    if (uEngine > 0.5) {\n"
+    "      g = texture2D(uGBuf, uv);\n"
+    "      gv = g.b >= 1.0 && abs(g.a + p.z) < 0.06 + 0.02 * -p.z;\n"
+    "    }\n"
+    "    vec3 n = gv ? octDec(g.rg) : normalAt(uv, p);\n"
     "    if (uEngine > 0.5) {\n"
     "      vec3 cIn = c;  // the game's own colour for this pixel\n"
     "      if (uDebug == 7) { gl_FragColor = vec4(cIn, 1.0); return; }\n"
-    "      vec4 g = texture2D(uGBuf, uv);\n"
-    "      bool gv = g.b >= 1.0 && abs(g.a + p.z) < 0.06 + 0.02 * -p.z;\n"
-    "      if (gv) n = octDec(g.rg);\n"
     "      if (uDebug == 8) { gl_FragColor = vec4(gv ? mix(cIn, vec3(1.0, 0.0, 0.0), 0.45) : (g.b >= 1.0 ? mix(cIn, vec3(0.0, 0.0, 1.0), 0.45) : cIn), 1.0); return; }\n"
     "      float mat = gv ? floor(g.b) : 0.0;\n"
     "      float ndlv = gv ? fract(g.b) * 1.001 : 0.0;\n"
@@ -628,13 +640,38 @@ void LightingCaptureCamera()
     g_recording = g_engine;
 }
 
+static bool g_nextValid = false, g_nextLit = false; // LightingNextDraw (below)
+static float g_nextMV[16];
+
 void LightingDrawKind(int kind)
 {
     g_drawKind = kind;
+    g_nextValid = false; // (a matrix given for a model that was then not drawn)
 }
 
-void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout)
+// The next recorded draw's matrix and lighting, from the caller (Object::draw). Asking the
+// driver instead (glGetFloatv / glIsEnabled) makes the game wait for a multi-threaded
+// driver to catch up, once per object: about 1 ms a frame on a slowly running PC.
+
+bool LightingRecording()
 {
+    return g_recording && g_drawKind != LK_NONE;
+}
+
+void LightingNextDraw(const float* world, bool lit)
+{
+    Mat4 m;
+    m.set(g_camMV); // the camera, as captured where the world is drawn
+    m.mul(world);
+    memcpy(g_nextMV, m.m, sizeof(g_nextMV));
+    g_nextLit = lit;
+    g_nextValid = true;
+}
+
+void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout, unsigned tex)
+{
+    const bool given = g_nextValid;
+    g_nextValid = false;
     if (!g_recording || g_drawKind == LK_NONE || !vArray || vertices <= 0) {
         return;
     }
@@ -642,12 +679,32 @@ void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout)
     r.v = vArray;
     r.n = vertices;
     r.colorLayout = colorLayout;
-    r.lit = glIsEnabled(GL_LIGHTING) && !colorLayout;
     r.kind = g_drawKind;
-    GLint t = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &t);
-    r.tex = (GLuint)t;
-    glGetFloatv(GL_MODELVIEW_MATRIX, r.mv);
+    r.tex = (GLuint)tex;
+    if (given) {
+        r.lit = g_nextLit && !colorLayout;
+        memcpy(r.mv, g_nextMV, sizeof(r.mv));
+        static const bool check = getenv("LUGARUEX_TEST_RECCHECK") != nullptr; // test hook: compare with the driver's
+        if (check) {
+            float gl[16];
+            glGetFloatv(GL_MODELVIEW_MATRIX, gl);
+            float worst = 0;
+            for (int i = 0; i < 16; i++) {
+                worst = std::max(worst, fabsf(gl[i] - r.mv[i]));
+            }
+            static float worstEver = 0;
+            static int lastShown = 0;
+            worstEver = std::max(worstEver, worst);
+            const bool litGL = glIsEnabled(GL_LIGHTING) && !colorLayout;
+            if (SDL_GetTicks() - lastShown > 2000 || litGL != r.lit) {
+                lastShown = SDL_GetTicks();
+                printf("EXTEST recorded matrix vs driver: largest difference %g (so far %g)%s\n", worst, worstEver, litGL != r.lit ? " - LIGHTING FLAG DIFFERS" : "");
+            }
+        }
+    } else {
+        r.lit = glIsEnabled(GL_LIGHTING) && !colorLayout; // (characters, weapons: few draws)
+        glGetFloatv(GL_MODELVIEW_MATRIX, r.mv);
+    }
     g_draws.push_back(r);
 }
 
@@ -788,7 +845,10 @@ static void ensureTargets(int w, int h)
 
 void LightingInit()
 {
-    g_look = std::max(0, std::min(kNumLooks - 1, cfg.lighting));
+    // the launcher's Shaders box decides: ticked = every game starts in the Enhanced look.
+    // The hotkey (R / a controller's Back) switches for this session only; a saved choice
+    // made friends' games come up in the Original look after a stray press.
+    g_look = cfg.shaders ? kNumLooks - 1 : 0;
     if (!cfg.shaders && !cfg.colorblind) {
         g_shadersOff = true; // launcher "Shaders" box unticked: Original look only
         g_look = 0;
@@ -861,10 +921,7 @@ void LightingCycle()
         g_look = (g_look + 1) % kNumLooks;
     }
     g_nameShownAt = SDL_GetTicks();
-    if (cfg.loaded && g_ready) { // never overwrite the saved look while shaders are off
-        SetIniValue("Display", "Lighting", std::to_string(g_look));
-    }
-    cfg.lighting = g_look;
+    cfg.lighting = g_look; // (this session only: the next start follows the Shaders box again)
 }
 
 static void quad()
@@ -1070,6 +1127,7 @@ static void enginePasses(int w, int h, const float* proj, const float* mv, Engin
         g_shadowsThisFrame = true;
     }
 
+    EX_PROF("L sun shadows");
     // surface pass
     ex_glBindFramebuffer(GL_FRAMEBUFFER, g_fboG);
     glViewport(0, 0, w, h);
@@ -1213,6 +1271,7 @@ void LightingApply()
         }
     }
 
+    EX_PROF("L copy");
     // 1b. engine lighting (Enhanced): sun shadow maps + surface pass from this frame's draws
     EngineFrame ef;
     g_recording = false;
@@ -1221,6 +1280,7 @@ void LightingApply()
         enginePasses(w, h, proj, mv, ef);
     }
 
+    EX_PROF("L surface");
     bindTex(1, g_texDepth);
 
     // 2. ambient occlusion
@@ -1240,6 +1300,7 @@ void LightingApply()
         quad();
     }
 
+    EX_PROF("L ao");
     // 3. bloom: bright pass at quarter size, then two blur passes
     const int bw = std::max(1, w / 4), bh = std::max(1, h / 4);
     if (L.bloom > 0) {
@@ -1266,6 +1327,7 @@ void LightingApply()
         }
     }
 
+    EX_PROF("L bloom");
     // fire lights -> eye space
     static std::vector<FireLight> fires;
     collectFires(fires);

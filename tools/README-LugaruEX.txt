@@ -1,4 +1,4 @@
-LugaruEX 0.4.10 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.4.11 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -8,8 +8,8 @@ What it is
 
 Install (Windows)
   Run LugaruEX-<version>-Setup.exe. It finds your Lugaru (Steam or other
-  copies; Browse... for anywhere else; "Get the free game data" if you have
-  none), and with Install puts LugaruEX in. Steam's Play button then opens
+  copies; Browse... for anywhere else; "Download game free" if you have
+  none - it asks where to put it), and with Install puts LugaruEX in. Steam's Play button then opens
   the LugaruEX launcher; there is also a desktop / Start menu shortcut.
   (The win64 zip holds the same files, for installing by hand or updating.)
   Uninstall: run LugaruEX\Uninstall.bat, then in Steam use "Verify integrity
@@ -72,8 +72,8 @@ at if something goes wrong; the previous run is LugaruEX.prev.log, and a
 crash also writes crash.dmp on Windows (on Linux the log lists where).
 
 Launcher
-  Graphics: monitor, any resolution (incl. ultrawide / custom), windowed /
-  borderless / exclusive fullscreen, MSAA, anisotropic
+  Graphics: monitor, any resolution (incl. ultrawide / custom), windowed
+  (resizable) / borderless / exclusive fullscreen, MSAA, anisotropic
   filtering, V-Sync (off / on / adaptive), FPS cap, field of view, texture
   quality, Shaders (off = only the original 2005 look), High Resolution
   Textures (uses the Overrides folder), colour blind mode (Deuteranopia,
@@ -89,10 +89,12 @@ Launcher
     game's own skins (start from one of the files in Data\Textures).
     Uninstalling LugaruEX removes them with the LugaruEX folder.
     Clothes: Default (the level's own), Random (a different outfit each
-    level), None, Shirt and pants, Camo, Snow camo, Desert camo, Leather armor,
-    Gi, or your own image ("New clothes...", same layout as a skin; saved in
-    LugaruEX\Data\Textures\Custom\clothes\). Wolves wear none. Online, the
-    others see your clothes too (your own image only if they have the file).
+    level), None, 25 outfits put together from what the game's own
+    characters wear (shirts, camo, leather, gis, ninja, desert robes...), or
+    your own image ("New clothes...", same layout as a skin; saved in
+    LugaruEX\Data\Textures\Custom\clothes\). The 3D preview shows the
+    character and clothes as they look in the game. Wolves wear none. Online,
+    the others see your clothes too (your own image only if they have the file).
   Controls: every action with a keyboard/mouse key and a controller button.
     Double-click a cell (or A on a row), then press the key or button (Esc
     cancels). Presets:
@@ -101,15 +103,15 @@ Launcher
     touched: buttons sink when pressed, sticks tilt and click, triggers fill.
     "Shaders (next look)" is the key / button that switches the look.
     Vibration on/off and look speed.
-    Walking: hold Ctrl, or push the left stick only part way (push it all
-    the way to run).
+    Walking: hold Ctrl (unless Ctrl is bound to something), or push the left
+    stick only part way (push it all the way to run).
     F12 takes a screenshot, F11 starts and stops recording a video. Both
     go to LugaruEX\Screenshots & Recording. Videos are MP4 with the game's
     sound (Windows 10 2004 or newer; older Windows records without sound).
     On Linux, recording needs ffmpeg installed and has no sound yet.
   Local: one player per connected controller (plug one in to add a player).
-    Each picks Default / Random / Rabbit - skin / Wolf - skin, or "New
-    rabbit/wolf skin...". The screen picture shows who gets which part of
+    Player 1 looks as set on the Character tab; the others each pick Default
+    / Random / Rabbit - skin / Wolf - skin, or "New rabbit/wolf skin...". The screen picture shows who gets which part of
     the screen; each box only reacts to its own controller so you can tell
     who is who. Layouts are fixed: 1 full screen, 2 top / bottom or side by
     side (drag a screen toward a side or toward the top / bottom), 3 = two
@@ -158,9 +160,9 @@ Local split-screen co-op (up to 4 players)
 
 Online co-op (first version)
   Host: pick "Host a co-op game" in the launcher's Multiplayer tab, press
-  Play and start any level as usual. Everyone who joins drops into it next to
-  you and follows you to every level after that. No player limit is set by
-  the game (8 guests per host for now).
+  Play and start any level as usual. Everyone who joins - also in the middle
+  of a level - drops in next to you and follows you to every level after
+  that. There is no player limit.
   Join: pick "Join a co-op game" and type the host's IP:port, or tick LAN to
   find a host on the same network by itself. You wait in the menu ("Waiting
   for host...") until the host is in a level.
@@ -198,12 +200,16 @@ Online co-op (first version)
     Linux (native or Proton) PCs can play together.
   - Alt-tab is fine online: the game keeps running in the background.
   - Each PC writes the other's graphics card, screen and frame rate to its
-    log, and a guest is warned on screen if its copy of a level differs from
-    the host's (characters would float or sink).
+    log. A guest whose copy of a level differs from the host's (Lugaru HD and
+    the free game, for example) gets the host's copy when the level starts;
+    it is only warned on screen if that can't be done.
+  - If the host's PC stalls (a slow PC loading a level), guests wait up to 20
+    seconds and carry on.
   - Frame rate matters most: a PC that shows far fewer frames than it
     simulates looks choppy to everyone. LugaruEX lowers the simulation rate by
-    itself when that happens (the log says so); on a weaker PC also try the
-    Original look (R), less antialiasing or a lower resolution.
+    itself when that happens (the log says so, and also writes what each
+    part of a frame costs there); on a weaker PC also try the Original look
+    (R), less antialiasing or a lower resolution.
   Not yet: predicting a guest's own moves (your character answers your
   buttons after the network round trip plus that small delay).
 
@@ -238,8 +244,10 @@ Bodies, score and time
   The game's own moves on bodies work on a dead partner's body too (drop kick
   it when no fight is on, crouch-stab with a knife, ground-stab with a sword,
   smash with a staff, jump down on it), and every player can stomp bodies.
-  A body kicked into a player knocks them over (player 1 too), and a thrown
-  knife that hits a partner hurts them like anyone (no bonus for it).
+  As in the original, a flying body knocks over enemies but not a standing
+  player (a jump kick that lands sends you off in a backflip; a missed one
+  drops you), and a thrown knife that hits a partner hurts them like anyone
+  (no bonus for it).
   Score works as in the original: going straight on to the next level keeps
   it; dying replays the level with the score you started it with. The end-of-
   level screen shows the level score, time (m:ss) and awards, the same on
@@ -250,9 +258,10 @@ Bodies, score and time
   Linux: ~/.local/share/LugaruEX/).
 
 In game
-  R          switch lighting look: Original / Enhanced
+  R          switch lighting look: Original / Enhanced, for this game
              (the name shows bottom-left - in split screen only in the bottom-left
-             view; your last choice is remembered)
+             view). With Shaders ticked in the launcher every game starts in
+             Enhanced.
   ~          cycles: developer console -> stats display (fps; online also
              ping, lost snapshots, jitter, delay) -> off. The first time the
              console opens it lists every command (dev tools are always on)

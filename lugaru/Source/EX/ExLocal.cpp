@@ -17,6 +17,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "Audio/openal_wrapper.hpp"
 #include "Game.hpp"
 #include "Level/Dialog.hpp"
+#include "Objects/Object.hpp"
 #include "Objects/Person.hpp"
 #include "Objects/PersonType.hpp"
 #include "Objects/Weapons.hpp"
@@ -31,6 +32,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+
+#include "outfits.h"
 
 extern XYZ viewer, viewerfacing, cameraloc;
 extern float cameradist, camerashake, woozy, blackout;
@@ -196,7 +199,9 @@ void LocalInit()
         if (s.padId.empty()) {
             continue;
         }
-        s.ch = lower(IniString("Local", k + "Char", "default"));
+        // player 1 is always the Character tab (LocalCharacterOf); older launchers wrote
+        // P1Char=random for it, which turned a chosen wolf back into a random rabbit
+        s.ch = g_slots.empty() ? std::string("default") : lower(IniString("Local", k + "Char", "default"));
         float x, y, w, h;
         if (sscanf(IniString("Local", k + "Rect").c_str(), "%f,%f,%f,%f", &x, &y, &w, &h) == 4 && w > 0.05f && h > 0.05f) {
             s.rx = x, s.ry = y, s.rw = w, s.rh = h;
@@ -278,6 +283,12 @@ void ApplyCharacter(Person& p, const std::string& model, const std::string& skin
         if (wolf) {
             p.setProportions(1, 1, 1, 1);
         }
+        // the level started this person on the other creature's animations (a wolf kept
+        // playing the rabbit idle): start over on this creature's own idle
+        p.animCurrent = p.animTarget = p.getIdle();
+        p.frameCurrent = 0;
+        p.frameTarget = 1;
+        p.target = 0;
     }
 
     if (skin.empty()) {
@@ -307,31 +318,13 @@ void ApplyCharacter(Person& p, const std::string& model, const std::string& skin
 
 
 // ------------------------------------------------------------------ outfits
-// The launcher's "Clothes" choice: made of the game's own clothing textures.
-struct OutfitPiece
-{
-    const char* tex;
-    float r, g, b;
-};
-struct Outfit
-{
-    const char* key;
-    std::vector<OutfitPiece> pieces;
-};
+// The launcher's "Clothes" choice: made of the game's own clothing textures (shared/outfits.h,
+// the same list the launchers show).
+typedef OutfitDef Outfit;
 static const std::vector<Outfit>& outfits()
 {
-    static const std::vector<Outfit> list = {
-        { "none", {} },
-        { "shirt", { { "Textures/Shirt.png", .9f, .88f, .82f }, { "Textures/Pants.png", .5f, .4f, .3f }, { "Textures/Belt.png", 1, 1, 1 } } },
-        { "camo", { { "Textures/FancyPantsCamo.png", 1, 1, 1 }, { "Textures/Belt.png", 1, 1, 1 } } },
-        { "snowcamo", { { "Textures/FancyPantsCamoArctic.png", 1, 1, 1 }, { "Textures/Belt.png", 1, 1, 1 } } },
-        { "desertcamo", { { "Textures/FancyPantsCamoDesert.png", 1, 1, 1 }, { "Textures/Belt.png", 1, 1, 1 } } },
-        { "leather", { { "Textures/LeatherArmor.png", 1, 1, 1 }, { "Textures/LeatherPants.png", 1, 1, 1 }, { "Textures/LeatherWristLeft.png", 1, 1, 1 }, { "Textures/LeatherWristRight.png", 1, 1, 1 } } },
-        { "gi", { { "Textures/Gi.png", 1, 1, 1 }, { "Textures/Headband.png", .8f, .1f, .1f } } },
-    };
-    return list;
+    return Outfits();
 }
-
 // put an outfit on (key "" / "default" = keep the level's own clothes). Wolves wear none.
 void ApplyOutfit(Person& p, const std::string& key)
 {
@@ -473,6 +466,31 @@ static void resetCamera(Slot& s, const Person& p)
     s.viewValid = false;
 }
 
+// can a new player stand at 'to'? Nothing solid between player 1's chest and there,
+// and nothing over it up to a head and a half (not inside or under a box or platform)
+static bool clearSpot(const XYZ& from, const XYZ& to, float h)
+{
+    for (const auto& o : Object::objects) {
+        if (o->type == treeleavestype || o->type == bushtype || o->type == firetype) {
+            continue; // nothing to bump into
+        }
+        XYZ a = from, b = to, hit;
+        a.y += h;
+        b.y += h;
+        if (o->model.LineCheck(&a, &b, &hit, &o->position, &o->yaw) != -1) {
+            return false;
+        }
+        a = to;
+        b = to;
+        a.y += 0.05f;
+        b.y += h * 2.5f;
+        if (o->model.LineCheck(&a, &b, &hit, &o->position, &o->yaw) != -1) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void spawn(Slot& s, int slotIndex, bool tutorial)
 {
     if (Person::players.empty()) {
@@ -486,17 +504,35 @@ static void spawn(Slot& s, int slotIndex, bool tutorial)
     p.whichskin = p1.whichskin;
     p.scale = p1.scale;
 
-    // next to player 1: right, left, behind
+    // next to player 1: right, left, behind - or the first other spot around that isn't
+    // inside, under or behind something (a level starting player 1 on a platform or by a
+    // box put the others under it); none free: player 1's own spot
     static const float off[4][2] = { { 0, 0 }, { 1.1f, 0 }, { -1.1f, 0 }, { 0, -1.3f } };
-    XYZ o;
-    o.x = off[slotIndex & 3][0];
-    o.y = 0;
-    o.z = off[slotIndex & 3][1];
-    o = DoRotation(o, 0, p1.yaw, 0);
-    p.coords = p1.coords + o;
-    const float ground = terrain.getHeight(p.coords.x, p.coords.z);
-    if (p.coords.y < ground) {
-        p.coords.y = ground;
+    static const float more[8][2] = { { 1.1f, 0 }, { -1.1f, 0 }, { 0, -1.3f }, { 0, 1.3f }, { .8f, -.8f }, { -.8f, -.8f }, { .8f, .8f }, { -.8f, .8f } };
+    const float h = std::max(.5f, p1.scale * 4); // about chest height
+    bool placed = false;
+    for (int k = -1; k < 8 && !placed; k++) {
+        XYZ o;
+        o.x = k < 0 ? off[slotIndex & 3][0] : more[k][0];
+        o.y = 0;
+        o.z = k < 0 ? off[slotIndex & 3][1] : more[k][1];
+        o = DoRotation(o, 0, p1.yaw, 0);
+        XYZ at = p1.coords + o;
+        const float ground = terrain.getHeight(at.x, at.z);
+        if (at.y < ground) {
+            at.y = ground;
+        }
+        if ((o.x == 0 && o.z == 0) || clearSpot(p1.coords, at, h)) {
+            p.coords = at;
+            placed = true;
+            if (k >= 0) {
+                printf("LugaruEX: player %d's usual spot is blocked - starts at another next to player 1\n", slotIndex + 1);
+            }
+        }
+    }
+    if (!placed) {
+        p.coords = p1.coords;
+        printf("LugaruEX: no free spot next to player 1 - the new player starts on the same spot\n");
     }
     p.oldcoords = p.realoldcoords = p.coords;
     p.yaw = p.targetyaw = p1.yaw;

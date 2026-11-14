@@ -21,6 +21,7 @@ static const SkinInfo kSkins[] = {
     { "rabbit", "Textures/FurSable.jpg", L"Sable", L"Sable.jpg" },
     { "rabbit", "Textures/FurChocolate.jpg", L"Chocolate", L"Chocolate.jpg" },
     { "rabbit", "Textures/FurDavid.jpg", L"David", L"David.jpg" },
+    { "rabbit", "Textures/FurDarko.jpg", L"Darko", L"Darko.jpg" },
     { "wolf", "Textures/FurWolfGrey.jpg", L"Grey", L"Wolf.jpg" },
     { "wolf", "Textures/FurWolfDark.jpg", L"Dark", L"DarkWolf.jpg" },
     { "wolf", "Textures/FurWolfSnow.jpg", L"Snow", L"SnowWolf.jpg" },

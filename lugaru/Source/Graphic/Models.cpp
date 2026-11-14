@@ -893,7 +893,7 @@ void Model::draw()
         glInterleavedArrays(GL_T2F_N3F_V3F, 8 * sizeof(GLfloat), &vArray[0]);
     }
     textureptr.bind();
-    EX::LightingRecordDraw(vArray, (int)Triangles.size() * 3, color); // LugaruEX: Enhanced lighting
+    EX::LightingRecordDraw(vArray, (int)Triangles.size() * 3, color, textureptr.exId()); // LugaruEX: Enhanced lighting
 
     glDrawArrays(GL_TRIANGLES, 0, Triangles.size() * 3);
 
@@ -920,7 +920,7 @@ void Model::drawdifftex(Texture texture)
     texture.bind();
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    EX::LightingRecordDraw(vArray, (int)Triangles.size() * 3, color); // LugaruEX: Enhanced lighting
+    EX::LightingRecordDraw(vArray, (int)Triangles.size() * 3, color, texture.exId()); // LugaruEX: Enhanced lighting
 
     glDrawArrays(GL_TRIANGLES, 0, Triangles.size() * 3);
 

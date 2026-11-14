@@ -37,6 +37,8 @@ embedded in this program.
 
 #include "resource.h"
 #include "preview.h"
+#include "preview_core.h"
+#include "../shared/outfits.h"
 #include "skins.h"
 #include "pad.h"
 #include <SDL.h> // controller button numbers (controller navigation)
@@ -51,7 +53,7 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.4.10" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.4.11" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
@@ -78,7 +80,7 @@ struct Settings
     std::string mpmode = "off";
     int lan = 0; // LAN: hosts announce themselves, joiners find them automatically
     int port = 27015;
-    std::string addr = "127.0.0.1:27015";
+    std::string addr; // join address: empty until the player types the host's
     int chDefault = 0; // new installs: Random (a skin nobody else in the level wears)
     std::string chModel = "rabbit";
     std::string chSkin = "random"; // engine path, e.g. Textures/FurBrown.jpg, or "random"
@@ -275,7 +277,7 @@ static bool SaveIni(const Settings& s)
       << "HUDAspect=1\r\n"
       << "; colour blind filter: 0 off, 1 deuteranopia, 2 protanopia, 3 tritanopia\r\n"
       << "Colorblind=" << s.colorblind << "\r\n"
-      << "; lighting look, cycled in game with R (0 = Original, 1 = Enhanced)\r\n"
+      << "; (old) the game now starts in the Enhanced look when Shaders=1; R switches looks for that game only\r\n"
       << "Lighting=" << s.lighting << "\r\n"
       << "; 0 = shaders off (Original look only)\r\n"
       << "Shaders=" << s.shaders << "\r\n"
@@ -1439,6 +1441,8 @@ static std::string SkinPathOf(LPARAM d)
     return "";
 }
 
+static std::vector<PreviewClothFile> PreviewClothes(); // the Clothes choice's images (below)
+
 static void UpdatePreview()
 {
     // animated 3D model (preview.cpp); greyed out while "Default" is ticked
@@ -1459,7 +1463,7 @@ static void UpdatePreview()
     }
     const std::string model = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
     const bool def = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
-    Preview_Set(GetDlgItem(g_ch, IDC_CH_PREVIEW), model, file, def);
+    Preview_Set(GetDlgItem(g_ch, IDC_CH_PREVIEW), model, file, def || model == "wolf" ? std::vector<PreviewClothFile>() : PreviewClothes(), def);
 }
 
 static void FillSkins(const std::string& wantPath)
@@ -1518,21 +1522,32 @@ static void NewSkin()
 
 // "Clothes": outfits made of the game's own clothing textures (wolves wear none),
 // Random (a different outfit each level), and the player's own images
-static const struct
+struct ClothesItem
 {
-    const char* key;
-    const wchar_t* label;
-} kClothes[] = { { "default", L"Default" }, { "random", L"Random" }, { "none", L"None" }, { "shirt", L"Shirt and pants" },
-                 { "camo", L"Camo" }, { "snowcamo", L"Snow camo" }, { "desertcamo", L"Desert camo" }, { "leather", L"Leather armor" },
-                 { "gi", L"Gi" } };
+    std::string key;
+    std::wstring label;
+};
+// Default, Random, then every outfit of shared/outfits.h (the game's own list)
+static const std::vector<ClothesItem>& ClothesItems()
+{
+    static std::vector<ClothesItem> v;
+    if (v.empty()) {
+        v.push_back({ "default", L"Default" });
+        v.push_back({ "random", L"Random" });
+        for (const OutfitDef& o : Outfits()) {
+            v.push_back({ o.key, widen(o.label) });
+        }
+    }
+    return v;
+}
 static const LPARAM kClothesCustomBase = 2000, kNewClothes = 1900;
 static std::vector<CustomSkin> g_customClothes;
 static std::string g_lastClothes = "default"; // to go back to if "New clothes..." is cancelled
 
 static std::string ClothesKeyOf(LPARAM d)
 {
-    if (d >= 0 && d < (LPARAM)(sizeof(kClothes) / sizeof(kClothes[0]))) {
-        return kClothes[d].key;
+    if (d >= 0 && d < (LPARAM)ClothesItems().size()) {
+        return ClothesItems()[d].key;
     }
     if (d >= kClothesCustomBase && d < kClothesCustomBase + (LPARAM)g_customClothes.size()) {
         return "custom:" + g_customClothes[d - kClothesCustomBase].enginePath;
@@ -1544,9 +1559,9 @@ static void FillClothes(const std::string& want)
 {
     SendDlgItemMessageW(g_ch, IDC_CH_CLOTHES, CB_RESETCONTENT, 0, 0);
     int sel = 0;
-    for (int i = 0; i < (int)(sizeof(kClothes) / sizeof(kClothes[0])); i++) {
-        const int idx = ComboAdd(g_ch, IDC_CH_CLOTHES, kClothes[i].label, i);
-        if (_stricmp(want.c_str(), kClothes[i].key) == 0) {
+    for (int i = 0; i < (int)ClothesItems().size(); i++) {
+        const int idx = ComboAdd(g_ch, IDC_CH_CLOTHES, ClothesItems()[i].label.c_str(), i);
+        if (_stricmp(want.c_str(), ClothesItems()[i].key.c_str()) == 0) {
             sel = idx;
         }
     }
@@ -1565,7 +1580,39 @@ static void FillClothes(const std::string& want)
     ComboAdd(g_ch, IDC_CH_CLOTHES, L"New clothes...", kNewClothes);
     SendDlgItemMessageW(g_ch, IDC_CH_CLOTHES, CB_SETCURSEL, sel, 0);
     g_lastClothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
+    UpdatePreview();
 }
+
+static std::vector<PreviewClothFile> PreviewClothes()
+{
+    std::vector<PreviewClothFile> out;
+    if (!g_ch) {
+        return out;
+    }
+    const LPARAM d = ComboData(g_ch, IDC_CH_CLOTHES);
+    if (d >= kClothesCustomBase && d < kClothesCustomBase + (LPARAM)g_customClothes.size()) {
+        out.push_back({ g_customClothes[d - kClothesCustomBase].file, 1, 1, 1 }); // painted as is
+        return out;
+    }
+    for (const PreviewCloth& c : PreviewCore_Outfit(ClothesKeyOf(d))) {
+        // the game's own image: an override (png or jpg) first, then Data
+        std::wstring rel = widen(c.tex);
+        std::replace(rel.begin(), rel.end(), L'/', L'\\');
+        const std::wstring base = rel.substr(0, rel.rfind(L'.'));
+        std::wstring found;
+        for (const std::wstring& p : { g_exDir + L"Overrides\\" + base + L".png", g_exDir + L"Overrides\\" + base + L".jpg", g_exeDir + L"Data\\" + rel,
+                                       g_exeDir + L"Data\\" + base + L".jpg" }) {
+            if (found.empty() && PathFileExistsW(p.c_str())) {
+                found = p;
+            }
+        }
+        if (!found.empty()) {
+            out.push_back({ found, c.r, c.g, c.b });
+        }
+    }
+    return out;
+}
+
 static void UpdateCharEnable()
 {
     const bool def = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
@@ -1694,6 +1741,7 @@ static INT_PTR CALLBACK PageProc(HWND p, UINT msg, WPARAM wp, LPARAM lp)
                         }
                     } else {
                         g_lastClothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
+                        UpdatePreview();
                     }
                 }
             }
@@ -1755,7 +1803,7 @@ static bool CollectSettings()
     s.chSkin = SkinPathOf(sk);
     s.chClothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
     if (s.mpmode == "join" && s.addr.empty()) {
-        MessageBoxW(g_main, L"Enter the host's address as IP:port (for example 100.64.0.2:27015).", L"LugaruEX", MB_ICONWARNING);
+        MessageBoxW(g_main, L"Enter the host's address as IP:port.", L"LugaruEX", MB_ICONWARNING);
         return false;
     }
     return true;
@@ -2029,7 +2077,7 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
             if (g_set.autoUpdate) { // look for a new LugaruEX meanwhile (it installs on the next start)
                 std::thread(UpdateThread, d, narrow(g_exDir), g_set.updateRepo.empty() ? std::string(kUpdateRepo) : g_set.updateRepo).detach();
             }
-            std::wstring ver = L"LugaruEX 0.4.10";
+            std::wstring ver = L"LugaruEX 0.4.11";
             if (!PathFileExistsW((g_exeDir + L"Data").c_str())) {
                 ver = L"No game Data folder here!";
             }
@@ -2182,7 +2230,7 @@ static void FillGames(int select)
     SetDlgItemTextW(g_setup, IDC_SU_STATUS, g_games.empty() ? L"No game found." : L"");
 }
 
-static std::wstring PickFolder(HWND owner)
+static std::wstring PickFolder(HWND owner, const wchar_t* title = L"Choose your Lugaru folder (the one with Data in it)", const std::wstring& start = L"")
 {
     std::wstring out;
     IFileOpenDialog* d = NULL;
@@ -2190,7 +2238,12 @@ static std::wstring PickFolder(HWND owner)
         DWORD o = 0;
         d->GetOptions(&o);
         d->SetOptions(o | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        d->SetTitle(L"Choose your Lugaru folder (the one with Data in it)");
+        d->SetTitle(title);
+        IShellItem* at = NULL;
+        if (!start.empty() && SUCCEEDED(SHCreateItemFromParsingName(start.c_str(), NULL, IID_PPV_ARGS(&at)))) {
+            d->SetFolder(at); // opens here
+            at->Release();
+        }
         if (SUCCEEDED(d->Show(owner))) {
             IShellItem* it = NULL;
             if (SUCCEEDED(d->GetResult(&it))) {
@@ -2207,9 +2260,11 @@ static std::wstring PickFolder(HWND owner)
     return out;
 }
 
+static std::string g_freeDir; // where "Download game free" puts the game (the player picks it)
+
 static void FreeDataThread(HWND d)
 {
-    const std::string dir = Setup_FreeGameFolder(), zip = dir + "\\lugaru-data.zip";
+    const std::string dir = g_freeDir, zip = dir + "\\lugaru-data.zip";
     fsu::MakeDirs(dir);
     std::string err;
     bool ok = Http_GetFile(Setup_FreeDataUrl(), zip, &g_dlBytes, err) && Setup_UnpackFreeData(zip, dir, err);
@@ -2322,11 +2377,18 @@ static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
             EnableWindow(GetDlgItem(d, IDOK), TRUE);
             if (wp) {
                 g_games = Setup_FindGames();
-                int sel = 0;
+                int sel = -1;
                 for (int i = 0; i < (int)g_games.size(); i++) {
-                    if (fsu::Lower(g_games[i].path) == fsu::Lower(Setup_FreeGameFolder())) {
+                    if (fsu::Lower(g_games[i].path) == fsu::Lower(g_freeDir)) {
                         sel = i;
                     }
+                }
+                if (sel < 0) { // a folder of the player's choosing: not one setup looks in by itself
+                    const GameFolder g = Setup_Describe(g_freeDir);
+                    if (!g.path.empty()) {
+                        g_games.insert(g_games.begin(), g);
+                    }
+                    sel = 0;
                 }
                 FillGames(sel);
                 SetDlgItemTextW(d, IDC_SU_STATUS, L"Game downloaded. Press Install.");
@@ -2360,6 +2422,26 @@ static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 case IDC_SU_FREE:
                     if (!g_dlBusy) {
+                        // where the game goes: an empty (or new) folder as it is, else a "Lugaru" folder in it
+                        const std::string def = Setup_FreeGameFolder();
+                        const std::wstring p = PickFolder(d, L"Choose where to put the game", widen(fsu::Parent(def)));
+                        if (p.empty()) {
+                            return TRUE;
+                        }
+                        std::string dir = U8(p);
+                        while (dir.size() > 3 && (dir.back() == '\\' || dir.back() == '/')) {
+                            dir.pop_back();
+                        }
+                        if (fsu::IsDir(dir) && (!fsu::List(dir, true).empty() || !fsu::List(dir, false).empty())) {
+                            dir = fsu::Join(dir, "Lugaru");
+                        }
+                        const std::string probe = fsu::Join(dir, ".lugaruex-write-test");
+                        if (!fsu::MakeDirs(dir) || !fsu::WriteAll(probe, "x")) {
+                            MessageBoxW(d, (L"Can't write to " + widen(dir) + L".\n\nPick a folder of your own, for example in Documents.").c_str(), L"LugaruEX Setup", MB_ICONWARNING);
+                            return TRUE;
+                        }
+                        fsu::RemoveTree(probe);
+                        g_freeDir = dir;
                         g_dlBusy = true;
                         g_dlBytes = 0;
                         EnableWindow(GetDlgItem(d, IDC_SU_FREE), FALSE);

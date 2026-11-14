@@ -27,6 +27,11 @@ if(WIN32 AND NOT MINGW) #assuming MSVC
     #/EHsc = synchronous exceptions
     add_compile_options(/W3 /EHsc /MP /wd4244 /wd4305 /wd4267 /wd4996 /wd4100)
     add_compile_definitions(_USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS)
+    # LugaruEX: source file names in the exe (__FILE__) start at the repository root, not at
+    # the folder it was built in
+    # (forward slashes: the compiler matches either, and a trailing backslash would escape a quote)
+    get_filename_component(EX_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+    add_compile_options("/d1trimfile:${EX_REPO_ROOT}/")
     if(CMAKE_BUILD_TYPE MATCHES DEBUG)
         #/Zi = edit and continue (aka hot reload)
         add_compile_options("/Zi")
@@ -43,6 +48,9 @@ if(WIN32 AND NOT MINGW) #assuming MSVC
     endif() # check for MSVC debug build
 elseif(MINGW OR NOT WIN32) #not MSVC but could be Unix or MSYS2 or MINGW or CYGWIN
     add_compile_options(-Wall -Wextra -Wno-parentheses -pedantic)
+    # LugaruEX: __FILE__ relative to the repository root (see the MSVC branch)
+    get_filename_component(EX_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+    add_compile_options("-fmacro-prefix-map=${EX_REPO_ROOT}/=")
     if (CMAKE_BUILD_TYPE MATCHES DEBUG)
         add_compile_options(-g3 -Og)
     else()
@@ -171,6 +179,7 @@ set(LUGARU_SRCS
     ${SRCDIR}/EX/ExLighting.cpp
     ${SRCDIR}/EX/ExCapture.cpp
     ${SRCDIR}/EX/ExPad.cpp
+    ${SRCDIR}/EX/ExProfile.cpp
     ${SRCDIR}/EX/ExLocal.cpp
     ${SRCDIR}/EX/ExNet.cpp
     ${SRCDIR}/EX/ExMods.cpp

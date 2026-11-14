@@ -20,6 +20,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "Objects/Object.hpp"
 #include "EX/ExNet.hpp"
+#include "EX/ExGraphics.hpp"
 #include "EX/ExLighting.hpp"
 #include "EX/ExMath.hpp"
 
@@ -345,9 +346,9 @@ void Object::draw()
         if (!hidden) {
 
             if (detail == 2 && distance > viewdistance * viewdistance / 4 && environment == desertenvironment) {
-                glTexEnvf(GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, blurness);
+                EX::SetLodBias(blurness);
             } else {
-                glTexEnvf(GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, 0);
+                EX::SetLodBias(0);
             }
             distance = (viewdistance * viewdistance - (distance - (viewdistance * viewdistance * fadestart)) * (1 / (1 - fadestart))) / viewdistance / viewdistance;
             if (distance > 1) {
@@ -404,6 +405,11 @@ void Object::draw()
                     }
                     glRotatef(yaw, 0, 1, 0);
                     EX::LightingDrawKind(EX::LK_STATIC | ((type == treeleavestype || type == bushtype) ? EX::LK_FOLIAGE : EX::LK_OBJECT)); // LugaruEX: Enhanced lighting
+                    if (EX::LightingRecording()) { // (its matrix and lighting for the record, without asking the driver)
+                        float world[16];
+                        exWorldMatrix(world);
+                        EX::LightingNextDraw(world, !model.color && type != treeleavestype && type != bushtype); // (leaves and bushes: lit by the terrain's light below)
+                    }
                     glColor4f((1 - shadowed) / 2 + .5, (1 - shadowed) / 2 + .5, (1 - shadowed) / 2 + .5, distance);
                     if (distance >= 1) {
                         glDisable(GL_BLEND);
@@ -637,12 +643,12 @@ void Object::Draw()
         objects[i]->draw();
     }
 
-    glTexEnvf(GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, 0);
+    EX::SetLodBias(0);
     for (unsigned i = 0; i < objects.size(); i++) {
         objects[i]->drawSecondPass();
     }
     if (environment == desertenvironment) {
-        glTexEnvf(GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, 0);
+        EX::SetLodBias(0);
     }
     glEnable(GL_ALPHA_TEST);
     SetUpLight(&light, 0);

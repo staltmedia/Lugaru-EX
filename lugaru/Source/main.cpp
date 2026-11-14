@@ -37,6 +37,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExCapture.hpp"
 #include "EX/ExLighting.hpp"
 #include "EX/ExPad.hpp"
+#include "EX/ExProfile.hpp"
 #include "Utils/Folders.hpp"
 #include "Objects/Object.hpp"
 #include "Objects/Person.hpp"
@@ -181,6 +182,23 @@ SDL_bool sdlEventProc(const SDL_Event& e)
             if (e.window.event == SDL_WINDOWEVENT_CLOSE) {
                 return SDL_FALSE;
             }
+            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED && EX::cfg.displayMode == EX::DISPLAY_WINDOWED) {
+                // LugaruEX: the window was resized or maximized: draw at the new size from
+                // the next frame on (projection, views and the lighting buffers follow
+                // screenwidth/screenheight); the size is kept for next time
+                int w = 0, h = 0;
+                SDL_GL_GetDrawableSize(sdlwindow, &w, &h);
+                if (w >= 64 && h >= 64 && (w != (int)screenwidth || h != (int)screenheight)) {
+                    screenwidth = (float)w;
+                    screenheight = (float)h;
+                    kContextWidth = w;
+                    kContextHeight = h;
+                    newscreenwidth = w;
+                    newscreenheight = h;
+                    EX::LocalInvalidateViews();
+                    printf("LugaruEX: window resized to %dx%d\n", w, h);
+                }
+            }
             break;
 
         case SDL_CONTROLLERDEVICEADDED:
@@ -308,7 +326,7 @@ bool SetUp()
     }
     fullscreen = (EX::cfg.displayMode == EX::DISPLAY_FULLSCREEN);
     newscreenwidth = kContextWidth;
-    newscreenheight = kContextHeight;
+    newscreenheight = kContextHeight - EX::BorderlessExtraRows(); // the size chosen, not the extra row
 
     int dblbuf = 0;
     if ((SDL_GL_GetAttribute(SDL_GL_DOUBLEBUFFER, &dblbuf) == -1) || (!dblbuf)) {
@@ -336,10 +354,10 @@ bool SetUp()
 
     newdetail = detail;
     newscreenwidth = screenwidth;
-    newscreenheight = screenheight;
+    newscreenheight = screenheight - EX::BorderlessExtraRows();
 
     /* If saved resolution is not in the list, add it to the list (so that itâ€™s selectable in the options) */
-    pair<int, int> startresolution(width, height);
+    pair<int, int> startresolution(width, height - EX::BorderlessExtraRows());
     if (resolutions.find(startresolution) == resolutions.end()) {
         resolutions.insert(startresolution);
     }
@@ -524,9 +542,11 @@ void DoUpdate()
     }
     fps = 1 / frameDt;
 
+    EX::ProfFrameStart(); // (LUGARUEX_PROFILE: frame-time breakdown in the log)
     EX::PadFrame(frameDt, pendingMouseH, pendingMouseV); // controller: look, menu navigation
     EX::LocalFrame(frameDt);                             // local co-op: drop-in, players 2-4 look
     EX::NetFrame(frameDt);                               // online: packets in, inputs out
+    EX_PROF("input+net");
     const double step = 1.0 / EX::SimRate();
     accumulator += frameDt;
     if (forceSimStep && accumulator < step) {
@@ -535,7 +555,19 @@ void DoUpdate()
     forceSimStep = false;
     int steps = 0;
     const int maxSteps = 10;
+    // test hook LUGARUEX_TEST_FREEZE=n: the world stops after n simulation steps in a level
+    // (no simulation, no draw-time effects): every run then draws the very same frame,
+    // for comparing pictures between builds
+    static const long freezeAt = getenv("LUGARUEX_TEST_FREEZE") ? atol(getenv("LUGARUEX_TEST_FREEZE")) : -1;
+    static long levelSteps = 0;
+    const bool frozen = freezeAt >= 0 && Game::gameon && !mainmenu && levelSteps >= freezeAt;
+    if (frozen) {
+        accumulator = 0;
+    }
     while (accumulator >= step && steps < maxSteps) {
+        if (Game::gameon && !mainmenu) {
+            levelSteps++;
+        }
         const int levelBefore = loading;
         SimStep((float)step);
         accumulator -= step;
@@ -551,6 +583,7 @@ void DoUpdate()
     if (steps == maxSteps) {
         accumulator = 0; // can't keep up (very slow machine): slow down instead of spiralling
     }
+    EX_PROF("sim");
     // A PC that can't show half as many frames as it simulates spends most of each
     // frame catching up (several steps per frame), which makes the frames slower
     // still: halve the simulation rate (not below 60 Hz) until it keeps up.
@@ -565,6 +598,11 @@ void DoUpdate()
             perfFrames++;
             if (perfT >= 3.0) {
                 const double f = perfFrames / perfT;
+                if (f < 50) { // a slow PC: its log shows what the time goes on (nothing on screen)
+                    char why[64];
+                    snprintf(why, sizeof(why), "only %.0f fps", f);
+                    EX::ProfAuto(why);
+                }
                 if (EX::cfg.simRate <= 0 && EX::SimRate() > 60 && f < EX::SimRate() * 0.5) {
                     const int nr = std::max(60, EX::SimRate() / 2);
                     printf("LugaruEX: only %.0f fps here - simulation lowered from %d to %d Hz\n", f, EX::SimRate(), nr);
@@ -580,8 +618,13 @@ void DoUpdate()
 
     // Draw-time effects (particles, flashes...) advance by real frame time,
     // exactly like the original one-update-per-frame loop did.
-    realmultiplier = (float)frameDt;
-    multiplier = (float)frameDt * GameTimeScale();
+    realmultiplier = frozen ? 0.f : (float)frameDt;
+    multiplier = frozen ? 0.f : (float)frameDt * GameTimeScale();
+    if (frozen) {
+        alpha = 1; // the last step as it is
+        extern float windvar, smoketex;
+        windvar = smoketex = 0; // (they also ran in the menu before the level, for however long that took)
+    }
 
     float pendYaw = 0, pendPitch = 0;
     if (!mainmenu && (Dialog::directing || !Dialog::inDialog())) {
@@ -625,12 +668,14 @@ void DoUpdate()
             num_channels = 0;
         }
     */
+    EX_PROF("interp");
     if (stereomode == stereoNone) {
         EX::DrawViews(alpha, [] { DrawGLScene(stereoCenter); }); // LugaruEX: one view per local player
     } else {
         DrawGLScene(stereoLeft);
         DrawGLScene(stereoRight);
     }
+    EX::ProfFrameEnd();
     EX::InterpRestore();
     EX::LimitFrameRate();
 }

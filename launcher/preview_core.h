@@ -5,7 +5,7 @@
 #include <vector>
 
 void PreviewCore_SetDataDir(const std::string& dataDir); // UTF-8, ends with a slash: <game>/Data/
-void PreviewCore_SetModel(const std::string& model);     // "rabbit" | "wolf" (loads the rig once per change)
+void PreviewCore_SetModel(const std::string& model, const std::string& modelDir = std::string()); // "rabbit" / "wolf" / "rabbit/Name"; modelDir = that custom model's folder (UTF-8, ends with a slash)
 void PreviewCore_SetTexture(const unsigned char* rgba, int w, int h); // top-down RGBA; nullptr = none. Needs the GL context.
 void PreviewCore_SetDimmed(bool dimmed);                  // greyed out (Default is ticked)
 

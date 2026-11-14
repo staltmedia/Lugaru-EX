@@ -31,6 +31,9 @@ std::string ModsFolder();                   // LugaruEX/Mods/
 // this PC's, searched before everything else; "" when not playing as a guest
 void ModsSetSyncRoot(const std::string& dir);
 void ModsRescan(); // files were added to a root: look again
+// online: folders with players' looks (skins, models, clothes under Textures/Custom and
+// Models/Custom), searched after the mods
+void ModsSetLookRoots(const std::vector<std::string>& roots);
 }
 
 #endif

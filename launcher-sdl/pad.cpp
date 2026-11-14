@@ -1,5 +1,6 @@
 // LugaruEX launcher for Linux - game controllers (GPLv2+)
 #include "pad.h"
+#include "padid.h"
 
 #include <cmath>
 #include <cstdio>
@@ -16,6 +17,10 @@ static std::string identity(SDL_GameController* gc)
         return std::string("serial:") + serial;
     }
     const char* path = SDL_GameControllerPath(gc);
+    const std::string behind = PadIdBehindPath(path); // (Steam Input's stand-in for a real pad)
+    if (!behind.empty()) {
+        return behind;
+    }
     if (path && *path) {
         return std::string("path:") + path;
     }

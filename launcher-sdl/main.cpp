@@ -32,6 +32,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include "netinfo.h"
 #include "serverquery.h"
 #include "adminlink.h"
+#include "looks.h"
 
 #include <algorithm>
 #include <sstream>
@@ -64,7 +65,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.5.0"
+#define LUGARUEX_VERSION "0.5.1"
 
 namespace
 {
@@ -290,7 +291,7 @@ bool g_askModShare = false; // Play: the "this server shares mods" question is o
 bool g_autoUpdate = true;
 // Character
 bool g_chDefault = false;
-int g_modelSel = 0;
+std::string g_modelKey = "rabbit"; // "rabbit", "wolf" or a custom model "rabbit/Name" (shared/looks.h)
 std::string g_skin = "random", g_clothes = "default";
 std::string g_previewKey; // what the preview shows now
 // popups / messages
@@ -382,7 +383,7 @@ void InitFromSettings()
     }
     g_autoUpdate = s.autoUpdate != 0;
     g_chDefault = s.chDefault != 0;
-    g_modelSel = s.chModel == "wolf" ? 1 : 0;
+    g_modelKey = s.chModel.empty() ? std::string("rabbit") : s.chModel;
     g_skin = s.chSkin;
     g_clothes = s.chClothes;
 }
@@ -393,21 +394,52 @@ struct CustomSkin
     std::string model, enginePath, label, file;
 };
 
+std::vector<CustomSkin> CustomSkins_List();
+
+// the mods that are on (Mods tab), and the skins, clothes and models they and the player's
+// own LugaruEX/Data bring (shared/looks.h), looked up at most once a second
+extern std::vector<ModEntry> g_modOrder;
+struct LooksCache
+{
+    unsigned at = 0;
+    std::vector<LookImage> images;
+    std::vector<LookModel> models;
+};
+LooksCache g_looks;
+LooksCache& Looks()
+{
+    const unsigned now = SDL_GetTicks();
+    if (g_looks.at == 0 || now - g_looks.at > 1000) {
+        std::vector<std::string> mods;
+        for (const ModEntry& e : g_modOrder) {
+            if (e.on) {
+                mods.push_back(e.folder);
+            }
+        }
+        g_looks.images = Looks_Images(g_exDir, mods);
+        g_looks.models = Looks_Models(g_exDir, mods);
+        g_looks.at = now | 1;
+    }
+    return g_looks;
+}
+
 std::vector<CustomSkin> CustomSkins_List()
 {
     std::vector<CustomSkin> v;
-    for (const char* model : { "rabbit", "wolf", "clothes" }) {
-        const std::string dir = g_exDir + "Data/Textures/Custom/" + model;
-        for (const std::string& n : ListDir(dir, ".png")) {
-            CustomSkin s;
-            s.model = model;
-            s.file = dir + "/" + n;
-            s.label = n.substr(0, n.rfind('.'));
-            s.enginePath = std::string("Textures/Custom/") + model + "/" + n;
-            v.push_back(s);
-        }
+    for (const LookImage& i : Looks().images) {
+        v.push_back({ i.model, i.enginePath, i.label, i.file });
     }
     return v;
+}
+
+const LookModel* CustomModelOf(const std::string& key)
+{
+    for (const LookModel& m : Looks().models) {
+        if (Lower(m.key) == Lower(key)) {
+            return &m;
+        }
+    }
+    return nullptr;
 }
 
 bool FindSkinFile(const SkinInfo& s, std::string& out)
@@ -468,6 +500,7 @@ bool ImportImage(const std::string& src, const std::string& model, CustomSkin& o
     out.file = dir + "/" + file;
     out.label = file.substr(0, file.size() - 4);
     out.enginePath = "Textures/Custom/" + model + "/" + file;
+    g_looks.at = 0; // (list it now)
     return true;
 }
 
@@ -852,6 +885,7 @@ void RefreshMods()
     fsu::MakeDirs(ModsDir());
     g_modInfo = Mod_List(ModsDir());
     g_modOrder = Mod_Order(g_modOrder, g_modInfo);
+    g_looks.at = 0; // (their skins, clothes and models)
     if (g_modSel >= (int)g_modOrder.size()) {
         g_modSel = (int)g_modOrder.size() - 1;
     }
@@ -1028,7 +1062,7 @@ bool CollectSettings()
         s.steam = s.lan ? 0 : 1;
     }
     s.chDefault = g_chDefault;
-    s.chModel = g_modelSel == 1 ? "wolf" : "rabbit";
+    s.chModel = CustomModelOf(g_modelKey) ? g_modelKey : Looks_Base(g_modelKey); // (a model whose mod is off: its creature)
     s.chSkin = g_skin;
     s.chClothes = g_clothes;
     s.shareMods = g_shareMods;
@@ -1358,7 +1392,7 @@ void PreviewCallback(const ImDrawList*, const ImDrawCmd*)
 
 void UpdatePreview()
 {
-    const std::string model = g_modelSel == 1 ? "wolf" : "rabbit";
+    const std::string model = Looks_Base(g_modelKey);
     std::string file;
     if (g_skin == "random" || g_skin == "default") {
         for (const auto& k : kSkins) {
@@ -1366,6 +1400,10 @@ void UpdatePreview()
                 break;
             }
             file.clear();
+        }
+        const LookModel* cm = CustomModelOf(g_modelKey);
+        if (cm && g_skin == "default" && !cm->skin.empty()) {
+            file = cm->skin; // a custom model's own skin
         }
     } else {
         bool found = false;
@@ -1415,7 +1453,10 @@ void UpdatePreview()
     for (const PreviewCloth& c : clothes) {
         key += "|" + c.tex;
     }
-    PreviewCore_SetModel(model);
+    {
+        const LookModel* cm = CustomModelOf(g_modelKey);
+        PreviewCore_SetModel(cm ? cm->key : model, cm ? cm->dir : std::string());
+    }
     PreviewCore_SetDimmed(g_chDefault);
     if (key != g_previewKey) {
         g_previewKey = key;
@@ -1618,17 +1659,32 @@ void TabCharacter(float s)
     const float lw = 80 * s, cw = std::max(120 * s, avail - pw - lw - 24 * s);
     ImGui::BeginDisabled(g_chDefault);
     Label("Model:", lw);
-    if (Combo("##model", &g_modelSel, { "Rabbit", "Wolf" }, cw)) {
-        g_skin = "random";
+    {
+        // Rabbit, Wolf, then the custom models of LugaruEX/Data and the mods that are on
+        std::vector<std::string> labels = { "Rabbit", "Wolf" }, keys = { "rabbit", "wolf" };
+        for (const LookModel& m : Looks().models) {
+            labels.push_back(m.label);
+            keys.push_back(m.key);
+        }
+        int sel = Looks_Base(g_modelKey) == "wolf" ? 1 : 0;
+        for (int i = 2; i < (int)keys.size(); i++) {
+            if (Lower(keys[i]) == Lower(g_modelKey)) {
+                sel = i;
+            }
+        }
+        if (Combo("##model", &sel, labels, cw)) {
+            g_modelKey = keys[sel];
+            g_skin = CustomModelOf(g_modelKey) ? "default" : "random";
+        }
     }
-    const std::string model = g_modelSel == 1 ? "wolf" : "rabbit";
+    const std::string model = Looks_Base(g_modelKey);
     bool pickNew = false;
     Label("Skin:", lw);
     ChoiceCombo("##skin", SkinChoices(model), g_skin, cw, &pickNew);
     if (pickNew) {
         StartImport(model, "char");
     }
-    ImGui::BeginDisabled(g_modelSel == 1); // wolves wear no clothes
+    ImGui::BeginDisabled(model == "wolf"); // wolves wear no clothes
     pickNew = false;
     Label("Clothes:", lw);
     ChoiceCombo("##clothes", ClothesChoices(), g_clothes, cw, &pickNew);
@@ -2544,6 +2600,7 @@ void TabMods(float s)
                 ModEntry& e = g_modOrder[g_modSel];
                 if (ImGui::MenuItem(e.on ? "Switch off" : "Switch on")) {
                     e.on = !e.on;
+                    g_looks.at = 0;
                 }
                 if (ImGui::MenuItem("Open its folder")) {
                     OpenFolder(fsu::Join(ModsDir(), e.folder));

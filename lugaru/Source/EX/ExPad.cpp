@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "EX/ExPad.hpp"
+#include "padid.h"
 
 #include "EX/ExConfig.hpp"
 #include "EX/ExLighting.hpp"
@@ -185,6 +186,7 @@ struct Pad
     std::string id;
     Uint32 rumbleEnd = 0; // current rumble (a weaker one never cuts a stronger one short)
     float rumbleStrength = 0;
+    Uint32 lastUsed = 0; // (one controller seen twice - Steam Input: the one being pressed counts)
 };
 static std::vector<Pad> g_pads;
 
@@ -197,6 +199,10 @@ std::string PadIdentity(SDL_GameController* gc)
         return std::string("serial:") + serial;
     }
     const char* path = SDL_GameControllerPath(gc);
+    const std::string behind = PadIdBehindPath(path); // (Steam Input's stand-in for a real pad)
+    if (!behind.empty()) {
+        return behind;
+    }
     if (path && *path) {
         return std::string("path:") + path;
     }
@@ -306,12 +312,28 @@ static SDL_GameController* padById(const std::string& id)
     if (id.empty()) {
         return nullptr;
     }
+    // the same controller can show up twice (Steam Input puts a virtual pad next to the
+    // real one, which may go quiet): the one last pressed / pushed is the one to read
+    Pad* best = nullptr;
     for (auto& p : g_pads) {
-        if (p.id == id) {
-            return p.gc;
+        if (p.id != id) {
+            continue;
+        }
+        bool used = false;
+        for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX && !used; b++) {
+            used = SDL_GameControllerGetButton(p.gc, (SDL_GameControllerButton)b) != 0;
+        }
+        for (int a = 0; a < SDL_CONTROLLER_AXIS_MAX && !used; a++) {
+            used = abs(SDL_GameControllerGetAxis(p.gc, (SDL_GameControllerAxis)a)) > 12000;
+        }
+        if (used) {
+            p.lastUsed = SDL_GetTicks();
+        }
+        if (!best || p.lastUsed >= best->lastUsed) {
+            best = &p;
         }
     }
-    return nullptr;
+    return best ? best->gc : nullptr;
 }
 
 bool PadConnected(const std::string& id)
@@ -667,7 +689,7 @@ void PadRumble(const std::string& id, float strength, int ms)
         const Uint16 lo = (Uint16)(strength * 65535.f);
         const Uint16 hi = (Uint16)(std::min(1.f, strength * 0.8f) * 65535.f);
         SDL_GameControllerRumble(p.gc, lo, hi, (Uint32)ms);
-        return;
+        // (every device of this controller: the real one and a Steam Input stand-in)
     }
 }
 }

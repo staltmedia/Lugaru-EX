@@ -19,4 +19,5 @@ struct PreviewClothFile
     std::wstring file;
     float r, g, b;
 };
-void Preview_Set(HWND wnd, const std::string& model, const std::wstring& skinFile, const std::vector<PreviewClothFile>& clothes, bool dimmed);
+void Preview_Set(HWND wnd, const std::string& model, const std::wstring& skinFile, const std::vector<PreviewClothFile>& clothes, bool dimmed,
+                 const std::string& modelDir = std::string()); // a custom model's folder (shared/looks.h)

@@ -120,7 +120,9 @@ mkdir -p $FAKEHOME/.local/share/LugaruEX && echo /tmp/game > $FAKEHOME/.local/sh
 if [ "${LUGARUEX_CI_UPDATE:-1}" = 1 ]; then
     mkgame /tmp/upd off
     printf '[Launcher]\nAutoUpdate=1\n' >> /tmp/upd/LugaruEX/LugaruEX.ini
-    before=$(sha256sum /tmp/upd/LugaruEX/lugaruex | cut -d' ' -f1)
+    # (marked, so replacing it shows even when the release has the very same build as this one)
+    printf "old-build-marker" >> /tmp/upd/LugaruEX/lugaruex
+    before=$(sha256sum /tmp/upd/LugaruEX/lugaruex | cut -d" " -f1)
     Xvfb :92 -screen 0 1280x800x24 >/dev/null 2>&1 &
     XU=$!
     sleep 2

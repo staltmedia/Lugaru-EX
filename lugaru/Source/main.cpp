@@ -1266,7 +1266,7 @@ int main(int argc, char** argv)
                                         chasers++;
                                     }
                                 }
-                                printf(" human%d[dmg=%.0f dead=%d targetedBy=%d at %.1f,%.1f,%.1f anim=%d head=%.0f/%.0f %s skin=%d clothes=%d]", (int)i, h.damage + h.permanentdamage, (int)h.dead, chasers, h.coords.x, h.coords.y, h.coords.z, h.animTarget, h.headyaw, h.headpitch, h.creature == wolftype ? "wolf" : "rabbit", h.whichskin, (int)h.clothes.size());
+                                printf(" human%d[dmg=%.0f dead=%d targetedBy=%d at %.1f,%.1f,%.1f anim=%d head=%.0f/%.0f %s skin=%d clothes=%d model=%s skinfile=%s]", (int)i, h.damage + h.permanentdamage, (int)h.dead, chasers, h.coords.x, h.coords.y, h.coords.z, h.animTarget, h.headyaw, h.headpitch, h.creature == wolftype ? "wolf" : "rabbit", h.whichskin, (int)h.clothes.size(), h.exModelDir.c_str(), h.exSkinPath.c_str());
                             }
                         }
                         {

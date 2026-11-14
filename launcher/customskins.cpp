@@ -1,5 +1,6 @@
 // LugaruEX launcher - player-made skins (GPLv2+)
 #include "customskins.h"
+#include "../shared/looks.h"
 
 #include <commdlg.h>
 #include <shlobj.h>
@@ -18,9 +19,23 @@ std::wstring exeDir()
     return s.substr(0, s.find_last_of(L"\\/") + 1);
 }
 
+std::wstring g_ex; // <game>\LugaruEX\ (CustomSkins_SetExDir)
+std::wstring exDirW()
+{
+    return g_ex.empty() ? exeDir() + L"LugaruEX\\" : g_ex;
+}
+
 std::wstring folder(const std::string& model)
 {
-    return exeDir() + L"LugaruEX\\Data\\Textures\\Custom\\" + (model == "wolf" ? L"wolf" : model == "clothes" ? L"clothes" : L"rabbit");
+    return exDirW() + L"Data\\Textures\\Custom\\" +(model == "wolf" ? L"wolf" : model == "clothes" ? L"clothes" : L"rabbit");
+}
+
+std::wstring wideUtf8(const std::string& s)
+{
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), NULL, 0);
+    std::wstring w(n, 0);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
+    return w;
 }
 
 std::string narrowUtf8(const std::wstring& w)
@@ -69,31 +84,19 @@ bool convertToPng(const std::wstring& src, const std::wstring& dst)
 }
 } // namespace
 
-std::vector<CustomSkin> CustomSkins_List()
+std::vector<CustomSkin> CustomSkins_List(const std::vector<std::string>& mods)
 {
+    // the player's own (LugaruEX\Data\Textures\Custom) and those of the mods that are on
     std::vector<CustomSkin> v;
-    for (const char* model : { "rabbit", "wolf", "clothes" }) {
-        const std::wstring dir = folder(model);
-        WIN32_FIND_DATAW fd;
-        HANDLE h = FindFirstFileW((dir + L"\\*.png").c_str(), &fd);
-        if (h == INVALID_HANDLE_VALUE) {
-            continue;
-        }
-        do {
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                continue;
-            }
-            CustomSkin s;
-            s.model = model;
-            s.file = dir + L"\\" + fd.cFileName;
-            std::wstring name = fd.cFileName;
-            s.label = name.substr(0, name.rfind(L'.'));
-            s.enginePath = std::string("Textures/Custom/") + model + "/" + narrowUtf8(name);
-            v.push_back(s);
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
+    for (const LookImage& i : Looks_Images(narrowUtf8(exDirW()), mods)) {
+        CustomSkin s;
+        s.model = i.model;
+        s.enginePath = i.enginePath;
+        s.label = wideUtf8(i.label);
+        s.file = wideUtf8(i.file);
+        std::replace(s.file.begin(), s.file.end(), L'/', L'\\');
+        v.push_back(s);
     }
-    std::sort(v.begin(), v.end(), [](const CustomSkin& a, const CustomSkin& b) { return a.model != b.model ? a.model < b.model : _wcsicmp(a.label.c_str(), b.label.c_str()) < 0; });
     return v;
 }
 
@@ -139,4 +142,21 @@ bool CustomSkins_Import(HWND owner, const std::string& model, CustomSkin& out)
         }
     }
     return false;
+}
+
+void CustomSkins_SetExDir(const std::wstring& exDir)
+{
+    g_ex = exDir;
+}
+
+static std::vector<std::string> (*g_modsFn)() = nullptr;
+
+void CustomSkins_SetMods(std::vector<std::string> (*fn)())
+{
+    g_modsFn = fn;
+}
+
+std::vector<CustomSkin> CustomSkins_List()
+{
+    return CustomSkins_List(g_modsFn ? g_modsFn() : std::vector<std::string>());
 }

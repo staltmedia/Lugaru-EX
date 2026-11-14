@@ -122,10 +122,13 @@ struct NetLook
     int person, creature, whichskin;
     std::string skin; // custom texture path, "" = the creature's own skins[whichskin]
     std::string outfit; // launcher Clothes ("" = the level's own)
+    std::string model;  // a custom model "rabbit/Name" ("" = the creature's own)
 };
 void LocalRoster(std::vector<NetLook>& out);
 /** guest: after loading the host's level, add the other players; mine[k] = this PC's k-th player's character */
-void LocalGuestEnter(const std::vector<int>& mine, const std::vector<NetLook>& roster);
+void LocalGuestEnter(const std::vector<int>& mine, const std::vector<NetLook>& roster, bool force = false); // force: dress everyone again (their looks arrived)
+/** host: dress the online guests' characters again (their skins / models / clothes arrived) */
+void LocalReapplyRemoteLooks();
 /** guest: how many players are on this PC, what each looks like, and their buttons / camera */
 int LocalPlayersHere();
 std::string LocalCharacterOf(int k);

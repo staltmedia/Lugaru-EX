@@ -24,6 +24,7 @@ namespace EX
 static std::vector<std::string> g_local, g_session, g_roots;
 static bool g_sessionActive = false;
 static std::string g_sync; // online guest: the host's copies of levels that differ here
+static std::vector<std::string> g_looks; // online: players' skins / models / clothes (look packs), after the mods
 
 std::string ModsFolder()
 {
@@ -37,6 +38,9 @@ static void rebuild()
         g_roots.push_back(g_sync);
     }
     for (const std::string& r : g_sessionActive ? g_session : g_local) {
+        g_roots.push_back(r);
+    }
+    for (const std::string& r : g_looks) {
         g_roots.push_back(r);
     }
     ResourceCacheClear();
@@ -97,3 +101,14 @@ void ModsSetSession(const std::vector<std::string>& roots, bool active)
     rebuild();
 }
 }
+
+namespace EX
+{
+void ModsSetLookRoots(const std::vector<std::string>& roots)
+{
+    if (roots != g_looks) {
+        g_looks = roots;
+        rebuild();
+    }
+}
+} // namespace EX

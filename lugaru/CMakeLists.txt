@@ -187,6 +187,7 @@ set(LUGARU_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/fsutil.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/modpack.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/netinfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shared/looks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/lanaddr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/miniz/miniz.c
 

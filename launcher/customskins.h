@@ -18,7 +18,12 @@ struct CustomSkin
     std::wstring file;      // full path on disk
 };
 
+// the player's own skins and clothes plus those of the mods that are on (shared/looks.h)
+std::vector<CustomSkin> CustomSkins_List(const std::vector<std::string>& mods);
+// the same with the mods that are on right now (the launcher gives the function that knows)
 std::vector<CustomSkin> CustomSkins_List();
+void CustomSkins_SetMods(std::vector<std::string> (*fn)());
+void CustomSkins_SetExDir(const std::wstring& exDir); // <game>\LugaruEX\ (the launcher may run from inside it)
 // Opens a file picker, converts the chosen image to PNG into the custom folder.
 // false if cancelled or the image couldn't be read.
 bool CustomSkins_Import(HWND owner, const std::string& model, CustomSkin& out);

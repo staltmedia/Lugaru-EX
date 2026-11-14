@@ -4,6 +4,7 @@
 #include "resource.h"
 #include "../shared/fsutil.h"
 #include "../shared/modpack.h"
+#include "../shared/looks.h"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -322,4 +323,20 @@ INT_PTR Mods_Proc(HWND page, UINT msg, WPARAM wp, LPARAM lp)
     }
     (void)page;
     return FALSE;
+}
+
+std::vector<std::string> Mods_Enabled(const std::wstring& exDir, const std::wstring& iniPath)
+{
+    if (!g_page) { // (the Mods tab isn't made yet: what the ini says)
+        char buf[16384] = {};
+        GetPrivateProfileStringA("Mods", "List", "", buf, sizeof(buf), U8(iniPath).c_str());
+        return Looks_EnabledMods(U8(exDir), buf);
+    }
+    std::vector<std::string> out;
+    for (const ModEntry& e : g_order) {
+        if (e.on) {
+            out.push_back(e.folder);
+        }
+    }
+    return out;
 }

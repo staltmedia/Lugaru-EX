@@ -425,6 +425,8 @@ public:
     float exPopTime = 10;
     // skin texture set by the launcher's character choice ("" = the creature's own skins[whichskin])
     std::string exSkinPath;
+    // custom model folder ("Models/Custom/rabbit/Name/"; "" = the creature's own files)
+    std::string exModelDir;
     bool exPoseReady = false; // online guest: limb rotations computed at least once
     std::string exOutfit; // the launcher's Clothes choice ("" = the level's own)
     int exSkinState = -1; // free * 4 + dead when the mesh was last skinned

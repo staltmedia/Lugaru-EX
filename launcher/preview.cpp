@@ -182,13 +182,14 @@ void Preview_Register(HINSTANCE inst, const std::wstring& gameDir)
     RegisterClassW(&wc);
 }
 
-void Preview_Set(HWND wnd, const std::string& model, const std::wstring& skinFile, const std::vector<PreviewClothFile>& clothes, bool dimmed)
+void Preview_Set(HWND wnd, const std::string& model, const std::wstring& skinFile, const std::vector<PreviewClothFile>& clothes, bool dimmed,
+                 const std::string& modelDir)
 {
     if (!g.rc) {
         return;
     }
     wglMakeCurrent(g.dc, g.rc);
-    PreviewCore_SetModel(model);
+    PreviewCore_SetModel(model, modelDir);
     std::wstring key = skinFile; // the skin and its clothes
     for (const PreviewClothFile& f : clothes) {
         key += L"|" + f.file;

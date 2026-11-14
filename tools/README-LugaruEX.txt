@@ -1,4 +1,4 @@
-LugaruEX 0.5.0 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.5.1 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -54,6 +54,16 @@ Mods
   everyone who joins and they play with exactly the host's mods (yours come
   back afterwards). It happens before you join the level ("Downloading the
   host's mods").
+  Mods can bring characters: skins in Textures\Custom\rabbit\ and
+  Textures\Custom\wolf\, clothes in Textures\Custom\clothes\ (PNG or JPG), and
+  models in Models\Custom\rabbit\<Name>\ or Models\Custom\wolf\<Name>\: any
+  of the creature's own files by their names (Body.solid .. Body7.solid,
+  BodyLow.solid, Belt.solid and the Skeleton files BasicFigure,
+  BasicFigureLow, RabbitBelt; Wolf*.solid and BasicFigureWolf* for wolves)
+  plus an optional Skin.png (its Default skin). Missing files come from the
+  creature, and a model moves like its creature. While the mod is ticked they
+  show up on the Character tab ("Name (Mod)"); untick it and they are gone.
+  The same folders in LugaruEX\Data work without a mod.
 
 What goes into the game folder
   Lugaru.exe        (Steam) the LugaruEX launcher, so Play opens it
@@ -106,8 +116,11 @@ Launcher
     characters wear (shirts, camo, leather, gis, ninja, desert robes...), or
     your own image ("New clothes...", same layout as a skin; saved in
     LugaruEX\Data\Textures\Custom\clothes\). The 3D preview shows the
-    character and clothes as they look in the game. Wolves wear none. Online,
-    the others see your clothes too (your own image only if they have the file).
+    character and clothes as they look in the game. Wolves wear none, but
+    player wolves carry, draw and put away weapons like rabbits. Online,
+    everyone sees your skin, model and clothes; your own images and models
+    (from a mod or LugaruEX\Data) are sent to the others when Mod share is on
+    for the host and them, else they see the creature's own look.
   Controls: every action with a keyboard/mouse key and a controller button.
     Double-click a cell (or A on a row), then press the key or button (Esc
     cancels). Presets:

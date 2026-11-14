@@ -46,6 +46,7 @@ typedef int SOCKET;
 #include "fsutil.h"
 #include "modpack.h"
 #include "netinfo.h"
+#include "looks.h"
 #include "lanaddr.h"
 #include "ex_build_id.h" // EX_BUILD_ID: hash of the sources (made by the build)
 #include "Tutorial.hpp"
@@ -113,6 +114,10 @@ enum : uint8_t
     T_CHAT,     // guest -> host: a chat line (its own number, text)
     T_CHATMSG,  // host -> guests: a chat line for everyone (number, person, name, text)
     T_KICK,     // host -> guest: removed (u8: 1 = banned)
+    T_LOOKOFFER, // guest -> host: its players' look pack (hash, size) - 0.5.1
+    T_LOOKLIST,  // host -> guests: the look packs everyone gets
+    T_LOOKGET,   // either way: a piece of a look pack
+    T_LOOKDATA,  // that piece
 };
 static_assert(T_DISCOVER == netinfo::kDiscover && T_HERE == netinfo::kHere, "the launchers' server list uses these numbers");
 // WELCOME status
@@ -885,6 +890,7 @@ void NetChatSend(const std::string& raw)
 // ------------------------------------------------------------------ init
 static void hostPrepareMods(); // (mod sharing, below)
 static void guestModsForget();
+static void lookStart(); // (look packs, below)
 static void computeMyPrints();
 
 static std::string maxPlayersText()
@@ -918,10 +924,12 @@ void NetInit()
             printf("LugaruEX net: hosting through Steam as \"%s\"%s, %s%s\n", netinfo::StripColours(cfg.mpServerName).c_str(),
                    cfg.mpHostPassword.empty() ? "" : " (password)", maxPlayersText().c_str(), cfg.mpListed ? " (in the server list)" : " (unlisted)");
             hostPrepareMods();
+            lookStart();
             startHelper({ "host", std::to_string(boundPort()), cfg.mpListed ? "1" : "0" });
         } else {
             g_role = R_GUEST;
             guestModsForget();
+            lookStart();
             g_syncDir = ModsFolder() + ".net/sync";
             fsu::RemoveTree(g_syncDir);
             if (fsu::MakeDirs(g_syncDir + "/Maps")) {
@@ -950,11 +958,13 @@ void NetInit()
                    netinfo::StripColours(cfg.mpServerName).c_str(), cfg.mpHostPassword.empty() ? "" : " (password)", maxPlayersText().c_str(),
                    g_lan ? " (LAN)" : "");
             hostPrepareMods(); // pack the mods that are on, for guests to download
+            lookStart();
         }
     } else if (cfg.mpMode == "join") {
         if (openSocket(0, true)) {
             g_role = R_GUEST;
             guestModsForget(); // with sharing on, wait for the host's mod list
+            lookStart();
             // the host's copies of levels that differ here (fresh for every session)
             g_syncDir = ModsFolder() + ".net/sync";
             fsu::RemoveTree(g_syncDir);
@@ -1090,12 +1100,13 @@ static void hostSendLevel(Client& c)
     const int countAt = w.n;
     w.u8(0);
     int count = 0;
-    for (size_t i = 0; i < roster.size() && count < 255 && w.room(8 + 6 + (int)roster[i].skin.size() + (int)roster[i].outfit.size()); i++) {
+    for (size_t i = 0; i < roster.size() && count < 255 && w.room(8 + 6 + (int)roster[i].skin.size() + (int)roster[i].outfit.size() + 2 + (int)roster[i].model.size()); i++) {
         w.u8(roster[i].person);
         w.u8(roster[i].creature);
         w.u8(roster[i].whichskin);
         w.str(roster[i].skin);
         w.str(roster[i].outfit);
+        w.str(roster[i].model); // (a custom model: "rabbit/Name", else "")
         count++;
     }
     w.b[countAt] = (uint8_t)count;
@@ -1169,7 +1180,7 @@ static void hostSnapshots()
     LocalRoster(roster);
     std::string sig;
     for (auto& l : roster) {
-        sig += std::to_string(l.person) + "," + std::to_string(l.creature) + "," + std::to_string(l.whichskin) + "," + l.skin + ";";
+        sig += std::to_string(l.person) + "," + std::to_string(l.creature) + "," + std::to_string(l.whichskin) + "," + l.skin + "," + l.model + ";";
     }
     if (sig != g_rosterSig) {
         g_rosterSig = sig;
@@ -2181,6 +2192,434 @@ static void guestModsForget()
     ModsSetSession({}, false);
 }
 
+
+// ------------------------------------------------------------------ look packs
+// With Mod share on (on the host, and on each guest that wants them), the custom skins,
+// models and clothes the players wear travel to everyone, from a mod or the player's own
+// LugaruEX/Data, whoever has them: each PC packs its own players' look files
+// (Mods/.looks/mine.zip), a guest offers its pack to the host, the host fetches it, and
+// every PC fetches the packs it lacks from the host. Received packs are unpacked into
+// Mods/.net/look-<hash>/ (only files under Textures/Custom/ and Models/Custom/ are
+// accepted) and searched after the mods, then the characters are dressed again.
+static const uint32_t kLookMaxSize = 24u * 1024 * 1024;
+static const int kLookMax = 32;    // packs in one game
+static const int kLookWindow = 64; // pieces in flight per pack
+
+struct LookServe
+{
+    uint64_t hash = 0;
+    uint32_t size = 0;
+    std::string zip;
+    FILE* f = nullptr;
+};
+struct LookFetch
+{
+    uint64_t hash = 0;
+    uint32_t size = 0, got = 0;
+    std::vector<uint8_t> have;
+    std::map<uint32_t, double> pending;
+    FILE* f = nullptr;
+    std::string part, dir;
+    sockaddr_in from{};
+    bool done = false;
+    int tries = 0;
+};
+static std::vector<LookServe> g_lookServe;                    // packs this PC sends (its own; the host: all)
+static std::vector<LookFetch> g_lookFetch;                    // packs being fetched (or fetched)
+static std::vector<std::pair<uint64_t, uint32_t>> g_lookList; // host: the packs everyone gets
+static std::vector<std::string> g_lookDirs;                   // unpacked packs in use (searched)
+static std::string g_myLookDir;                               // this PC's own pack, unpacked
+static uint64_t g_myLook = 0;
+static uint32_t g_myLookSize = 0;
+static bool g_myLookAcked = false; // guest: the host lists it
+static double g_lastLookOffer = -10, g_lastLookList = -10;
+static std::vector<int> g_lastMine; // guest: the last roster (to dress everyone again)
+static std::vector<NetLook> g_lastRoster;
+
+static bool lookPathOk(const std::string& rel)
+{
+    const std::string l = fsu::Lower(rel);
+    return (l.compare(0, 16, "textures/custom/") == 0 || l.compare(0, 14, "models/custom/") == 0) && rel.find("..") == std::string::npos;
+}
+
+// the files one player's look needs that aren't the game's own: rel -> path on disk
+static void lookFiles(const std::string& spec, std::vector<std::pair<std::string, std::string>>& out)
+{
+    const size_t bar = spec.find('|');
+    const std::string look = spec.substr(0, bar), outfit = bar == std::string::npos ? std::string() : spec.substr(bar + 1);
+    const size_t colon = look.find(':');
+    const std::string model = look.substr(0, colon), skin = colon == std::string::npos ? std::string() : look.substr(colon + 1);
+    auto add = [&](const std::string& rel) {
+        if (!lookPathOk(rel)) {
+            return;
+        }
+        const std::string abs = Folders::getResourcePath(rel);
+        if (!fsu::IsFile(abs)) {
+            return;
+        }
+        const std::string real = rel.substr(0, rel.rfind('/') + 1) + fsu::BaseName(abs); // (Skin.png may be Skin.jpg)
+        for (const auto& f : out) {
+            if (f.first == real) {
+                return;
+            }
+        }
+        out.push_back({ real, abs });
+    };
+    if (model.find('/') != std::string::npos && Looks_SafeModelKey(model)) {
+        const std::string dir = Looks_ModelDir(model);
+        const bool wolf = Looks_Base(model) == "wolf";
+        const std::string body = wolf ? "Wolf" : "Body";
+        for (const char* n : { "", "2", "3", "4", "5", "6", "7", "Low" }) {
+            add(dir + body + n + ".solid");
+        }
+        for (const char* n : { "Belt.solid", "RabbitBelt", "Skin.png" }) {
+            add(dir + n);
+        }
+        add(dir + (wolf ? "BasicFigureWolf" : "BasicFigure"));
+        add(dir + (wolf ? "BasicFigureWolfLow" : "BasicFigureLow"));
+    }
+    if (!skin.empty() && skin != "random" && skin != "default") {
+        add(skin);
+    }
+    if (outfit.compare(0, 7, "custom:") == 0) {
+        add(outfit.substr(7));
+    }
+}
+
+static void lookRootsUpdate()
+{
+    std::vector<std::string> roots;
+    if (!g_myLookDir.empty()) {
+        roots.push_back(g_myLookDir);
+    }
+    for (const std::string& d : g_lookDirs) {
+        roots.push_back(d);
+    }
+    ModsSetLookRoots(roots);
+}
+
+static void lookServeAdd(uint64_t hash, uint32_t size, const std::string& zip)
+{
+    for (const LookServe& s : g_lookServe) {
+        if (s.hash == hash) {
+            return;
+        }
+    }
+    LookServe s;
+    s.hash = hash;
+    s.size = size;
+    s.zip = zip;
+    s.f = fsu::Open(zip, "rb");
+    if (s.f) {
+        g_lookServe.push_back(s);
+    }
+}
+
+// pack this PC's players' look files (once per session)
+static void lookBuildMine()
+{
+    const std::string base = ModsFolder() + ".looks";
+    const std::string mine = base + "/mine", zip = base + "/mine.zip";
+    std::vector<std::pair<std::string, std::string>> files;
+    for (int k = 0; k < std::max(1, LocalPlayersHere()); k++) {
+        lookFiles(LocalCharacterOf(k), files);
+    }
+    for (LookServe& s : g_lookServe) { // (a rebuild: the old file is replaced)
+        if (s.f && s.hash == g_myLook) {
+            fclose(s.f);
+            s.f = nullptr;
+        }
+    }
+    g_lookServe.erase(std::remove_if(g_lookServe.begin(), g_lookServe.end(), [](const LookServe& s) { return !s.f; }), g_lookServe.end());
+    fsu::RemoveTree(mine);
+    fsu::RemoveTree(zip);
+    g_myLook = 0;
+    g_myLookDir.clear();
+    if (!files.empty()) {
+        for (const auto& f : files) {
+            fsu::MakeDirs(fsu::Parent(mine + "/" + f.first));
+            fsu::Copy(f.second, mine + "/" + f.first);
+        }
+        const uint64_t size = (Mod_PackFolder(mine, zip) ? fsu::Size(zip) : 0);
+        if (size > 0 && size <= kLookMaxSize) {
+            g_myLook = Mod_HashFile(zip);
+            g_myLookSize = (uint32_t)size;
+            g_myLookDir = mine;
+            lookServeAdd(g_myLook, g_myLookSize, zip);
+            printf("LugaruEX net: this PC's looks: %d file%s (%.1f KB) to share\n", (int)files.size(), files.size() == 1 ? "" : "s", size / 1024.0);
+        }
+    }
+    lookRootsUpdate();
+}
+
+// a pack is here (fetched now or earlier): use it, share it on (host), dress everyone again
+static void lookReady(uint64_t hash, uint32_t size, const std::string& dir, const std::string& zip)
+{
+    if (std::find(g_lookDirs.begin(), g_lookDirs.end(), dir) == g_lookDirs.end()) {
+        g_lookDirs.push_back(dir);
+    }
+    lookRootsUpdate();
+    if (g_role == R_HOST) {
+        lookServeAdd(hash, size, zip);
+        bool listed = false;
+        for (const auto& l : g_lookList) {
+            listed |= l.first == hash;
+        }
+        if (!listed) {
+            g_lookList.push_back({ hash, size });
+            g_lastLookList = -10; // tell everyone now
+        }
+        LocalReapplyRemoteLooks();
+    } else if (!g_lastRoster.empty()) {
+        LocalGuestEnter(g_lastMine, g_lastRoster, true);
+    }
+}
+
+// every file of an unpacked pack must be a look file
+static bool lookDirOk(const std::string& dir, const std::string& rel = std::string())
+{
+    const std::string here = rel.empty() ? dir : dir + "/" + rel;
+    for (const std::string& f : fsu::List(here, false)) {
+        const std::string p = rel.empty() ? f : rel + "/" + f;
+        if (p != ".done" && !lookPathOk(p)) {
+            return false;
+        }
+    }
+    for (const std::string& d : fsu::List(here, true)) {
+        if (!lookDirOk(dir, rel.empty() ? d : rel + "/" + d)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void lookFinished(LookFetch& m)
+{
+    fclose(m.f);
+    m.f = nullptr;
+    std::string err;
+    const std::string zip = m.dir + ".zip";
+    const bool hashOk = Mod_HashFile(m.part) == m.hash;
+    if (hashOk && Mod_ExtractTo(m.part, m.dir, err) && lookDirOk(m.dir)) {
+        fsu::WriteAll(m.dir + "/.done", "look pack\n");
+        fsu::Rename(m.part, zip);
+        m.done = true;
+        printf("LugaruEX net: got a player's looks (%.1f KB)\n", m.size / 1024.0);
+        lookReady(m.hash, m.size, m.dir, zip);
+        return;
+    }
+    fsu::RemoveTree(m.dir);
+    if (!hashOk && ++m.tries < 2) { // (damaged on the way: once more)
+        std::fill(m.have.begin(), m.have.end(), 0);
+        m.got = 0;
+        m.pending.clear();
+        m.f = fsu::Open(m.part, "w+b");
+        return;
+    }
+    printf("LugaruEX net: a player's looks could not be used (%s)\n", !hashOk ? "damaged" : err.empty() ? "not only skins, models and clothes" : err.c_str());
+    m.done = true; // (not asked for again)
+    fsu::RemoveTree(m.part);
+}
+
+static void lookFetchStart(uint64_t hash, uint32_t size, const sockaddr_in& from)
+{
+    for (const LookFetch& f : g_lookFetch) {
+        if (f.hash == hash) {
+            return;
+        }
+    }
+    if (hash == 0 || size == 0 || size > kLookMaxSize || (int)g_lookFetch.size() >= kLookMax) {
+        return;
+    }
+    LookFetch m;
+    m.hash = hash;
+    m.size = size;
+    m.from = from;
+    m.dir = ModsFolder() + ".net/look-" + hex64(hash);
+    m.part = m.dir + ".part";
+    if (fsu::IsFile(m.dir + "/.done") && fsu::IsFile(m.dir + ".zip") && Mod_HashFile(m.dir + ".zip") == hash) {
+        m.done = true; // (from an earlier game)
+        g_lookFetch.push_back(m);
+        lookReady(hash, size, m.dir, m.dir + ".zip");
+        return;
+    }
+    fsu::MakeDirs(ModsFolder() + ".net");
+    fsu::RemoveTree(m.dir);
+    m.have.assign((size + kModChunk - 1) / kModChunk, 0);
+    m.f = fsu::Open(m.part, "w+b");
+    if (!m.f) {
+        return;
+    }
+    g_lookFetch.push_back(m);
+}
+
+static void lookPump(double t)
+{
+    for (LookFetch& m : g_lookFetch) {
+        if (m.done || !m.f) {
+            continue;
+        }
+        int inFlight = 0;
+        for (auto it = m.pending.begin(); it != m.pending.end();) {
+            if (t - it->second > 0.8) {
+                it = m.pending.erase(it);
+            } else {
+                ++it;
+                inFlight++;
+            }
+        }
+        for (uint32_t i = 0; i < m.have.size() && inFlight < kLookWindow; i++) {
+            if (m.have[i] || m.pending.count(i)) {
+                continue;
+            }
+            Writer w;
+            w.head(T_LOOKGET);
+            w.u64(m.hash);
+            w.u32(i * (uint32_t)kModChunk);
+            sendTo(w, m.from);
+            m.pending[i] = t;
+            inFlight++;
+        }
+    }
+}
+
+// T_LOOKGET: send a piece of a pack this PC has
+static void lookServePiece(Reader& r, const sockaddr_in& to)
+{
+    const uint64_t hash = r.u64();
+    const uint32_t offset = r.u32();
+    if (!r.ok) {
+        return;
+    }
+    for (LookServe& s : g_lookServe) {
+        if (s.hash != hash || offset >= s.size || offset % kModChunk) {
+            continue;
+        }
+        uint8_t buf[kModChunk];
+        const int len = (int)std::min<uint32_t>(kModChunk, s.size - offset);
+        if (fseek(s.f, (long)offset, SEEK_SET) != 0 || (int)fread(buf, 1, len, s.f) != len) {
+            return;
+        }
+        Writer w;
+        w.head(T_LOOKDATA);
+        w.u64(hash);
+        w.u32(offset);
+        w.u16(len);
+        w.bytes(buf, len);
+        sendTo(w, to);
+        return;
+    }
+}
+
+// T_LOOKDATA: a piece of a pack being fetched
+static void lookData(Reader& r)
+{
+    const uint64_t hash = r.u64();
+    const uint32_t offset = r.u32();
+    const int len = r.u16();
+    uint8_t buf[kModChunk];
+    if (!r.ok || len <= 0 || len > kModChunk || !r.bytes(buf, len)) {
+        return;
+    }
+    for (LookFetch& m : g_lookFetch) {
+        if (m.hash != hash || m.done || !m.f || offset % kModChunk || offset >= m.size) {
+            continue;
+        }
+        const uint32_t idx = offset / kModChunk;
+        m.pending.erase(idx);
+        if (m.have[idx] || len != (int)std::min<uint32_t>(kModChunk, m.size - offset)) {
+            return;
+        }
+        if (fseek(m.f, (long)offset, SEEK_SET) != 0 || (int)fwrite(buf, 1, len, m.f) != len) {
+            return;
+        }
+        m.have[idx] = 1;
+        m.got += len;
+        if (m.got >= m.size) {
+            lookFinished(m);
+        }
+        return;
+    }
+}
+
+// host: a guest offers its pack (only with Mod share on here)
+static void hostLookOffer(Client& c, Reader& r)
+{
+    const uint64_t hash = r.u64();
+    const uint32_t size = r.u32();
+    if (!r.ok || !g_shareOn) {
+        return;
+    }
+    for (const auto& l : g_lookList) {
+        if (l.first == hash) {
+            return; // (have it: the next list tells them)
+        }
+    }
+    lookFetchStart(hash, size, c.addr);
+}
+
+static void hostLookFrame(double t)
+{
+    lookPump(t);
+    if (!g_shareOn || g_lookList.empty() || t - g_lastLookList < 2.0) {
+        return;
+    }
+    g_lastLookList = t;
+    Writer w;
+    w.head(T_LOOKLIST);
+    const int n = std::min<int>(kLookMax, (int)g_lookList.size());
+    w.u8(n);
+    for (int k = 0; k < n; k++) {
+        w.u64(g_lookList[k].first);
+        w.u32(g_lookList[k].second);
+    }
+    for (const Client& c : g_clients) {
+        if (c.connected) {
+            sendTo(w, c.addr);
+        }
+    }
+}
+
+// guest: the host's list of packs - fetch the ones this PC lacks
+static void guestLookList(Reader& r)
+{
+    const int n = r.u8();
+    for (int k = 0; k < n && r.ok; k++) {
+        const uint64_t hash = r.u64();
+        const uint32_t size = r.u32();
+        if (!r.ok || cfg.mpShareMods == 0) {
+            continue;
+        }
+        if (hash == g_myLook) {
+            g_myLookAcked = true;
+            continue;
+        }
+        lookFetchStart(hash, size, g_hostAddr);
+    }
+}
+
+// hosting or joining: pack this PC's looks; a host with Mod share on lists its own
+static void lookStart()
+{
+    lookBuildMine();
+    if (g_role == R_HOST && g_shareOn && g_myLook) {
+        g_lookList.push_back({ g_myLook, g_myLookSize });
+    }
+}
+
+static void guestLookFrame(double t)
+{
+    lookPump(t);
+    if (cfg.mpShareMods && g_myLook && !g_myLookAcked && g_welcomed && g_haveHost && t - g_lastLookOffer > 2.0) {
+        g_lastLookOffer = t;
+        Writer w;
+        w.head(T_LOOKOFFER);
+        w.u64(g_myLook);
+        w.u32(g_myLookSize);
+        sendTo(w, g_hostAddr);
+    }
+}
+
 // a guest who is playing the host's current level (else waiting: menu, loading, mods)
 static bool clientInGame(const Client& c)
 {
@@ -2520,6 +2959,18 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
         hostModGet(*c, r);
         return;
     }
+    if (type == T_LOOKOFFER) {
+        hostLookOffer(*c, r);
+        return;
+    }
+    if (type == T_LOOKGET) {
+        lookServePiece(r, c->addr);
+        return;
+    }
+    if (type == T_LOOKDATA) {
+        lookData(r);
+        return;
+    }
     if (type == T_FILEGET) {
         hostFileGet(*c, r);
         return;
@@ -2636,6 +3087,10 @@ static void guestLevel(Reader& r)
         l.whichskin = r.u8();
         l.skin = r.str();
         l.outfit = r.str();
+        l.model = r.str();
+        if (!l.model.empty() && (l.model.find('/') == std::string::npos || !Looks_SafeModelKey(l.model))) {
+            l.model.clear();
+        }
         // (texture paths from the host: only plain ones under Textures/)
         if (!l.skin.empty() && l.skin != "random" && l.skin != "default" && !netinfo::SafeDataPath(l.skin)) {
             l.skin.clear();
@@ -2701,6 +3156,8 @@ static void guestLevel(Reader& r)
     }
     if (ros != g_gRoster) {
         LocalGuestEnter(mine, roster);
+        g_lastMine = mine; // (to dress everyone again when looks arrive)
+        g_lastRoster = roster;
         g_myPerson = mine.empty() ? -1 : mine[0];
         g_gRoster = ros;
         if (g_hist.size() < Person::players.size()) {
@@ -3118,6 +3575,15 @@ static void guestReceive(const uint8_t* d, int n, const sockaddr_in& from)
         case T_MODDATA:
             guestModData(r);
             break;
+        case T_LOOKLIST:
+            guestLookList(r);
+            break;
+        case T_LOOKGET:
+            lookServePiece(r, g_hostAddr);
+            break;
+        case T_LOOKDATA:
+            lookData(r);
+            break;
         case T_SNAP:
             guestSnap(r);
             break;
@@ -3389,6 +3855,9 @@ void NetFrame(double dt)
     }
     if (g_role == R_HOST) {
         for (auto& c : g_clients) {
+            if (&c == &g_clients.front()) {
+                hostLookFrame(t); // (once a frame)
+            }
             if (c.connected && !c.modsReady && t - c.lastModList > 1.0) {
                 hostSendModList(c); // until the guest says it has them
             }
@@ -3513,6 +3982,7 @@ void NetFrame(double dt)
     }
     g_status = g_inLevel ? "" : !g_modDenied.empty() ? g_modDenied : "Waiting for host...";
     guestModPump(t);
+    guestLookFrame(t);
     guestSyncPump(t);
     g_inputAcc += dt;
     if (g_inputAcc >= 1.0 / kSendRate) {

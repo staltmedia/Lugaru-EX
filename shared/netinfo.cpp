@@ -1,5 +1,6 @@
 // LugaruEX - online play: server info, names, colour codes, password proofs (GPLv2+)
 #include "netinfo.h"
+#include "looks.h"
 
 #include <algorithm>
 #include <cctype>
@@ -294,8 +295,17 @@ bool SafeDataPath(const std::string& p)
     if (p.empty() || p.size() > 200 || p[0] == '/' || p.find("..") != std::string::npos || p.find("//") != std::string::npos) {
         return false;
     }
-    if (p.compare(0, 9, "Textures/") != 0) {
-        return false; // looks are textures, nothing else
+    std::string l = p; // (paths may come in any case: the game finds files in any case)
+    for (char& c : l) {
+        c = (char)tolower((unsigned char)c);
+    }
+    if (l.compare(0, 9, "textures/") != 0) {
+        // looks are textures, nothing else - or a custom model's own skin image
+        const bool image = l.size() > 4 && (l.compare(l.size() - 4, 4, ".png") == 0 || l.compare(l.size() - 4, 4, ".jpg") == 0 ||
+                                            (l.size() > 5 && l.compare(l.size() - 5, 5, ".jpeg") == 0));
+        if (l.compare(0, 14, "models/custom/") != 0 || !image) {
+            return false;
+        }
     }
     return plainChars(p, " _-./()");
 }
@@ -322,7 +332,7 @@ std::string SafeLook(const std::string& spec)
         model = look.substr(0, colon);
         skin = look.substr(colon + 1);
     }
-    if (model != "rabbit" && model != "wolf" && model != "random" && model != "default") {
+    if (model != "random" && model != "default" && !Looks_SafeModelKey(model)) { // (rabbit, wolf, rabbit/Name...)
         return "random";
     }
     if (!skin.empty() && skin != "random" && skin != "default" && !SafeDataPath(skin)) {

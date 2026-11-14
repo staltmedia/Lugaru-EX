@@ -24,6 +24,7 @@ add_executable(lugaruex-launcher
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/setup.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/update.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/netinfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shared/looks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/serverquery.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/adminlink.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/lanaddr.cpp

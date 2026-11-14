@@ -1,5 +1,6 @@
 // LugaruEX launcher - game controller polling (SDL2, linked in) (GPLv2+)
 #include "pad.h"
+#include "../shared/padid.h"
 
 #include <SDL.h>
 
@@ -17,6 +18,10 @@ static std::string identity(SDL_GameController* gc)
         return std::string("serial:") + serial;
     }
     const char* path = SDL_GameControllerPath(gc);
+    const std::string behind = PadIdBehindPath(path); // (Steam Input's stand-in for a real pad)
+    if (!behind.empty()) {
+        return behind;
+    }
     if (path && *path) {
         return std::string("path:") + path;
     }

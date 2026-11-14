@@ -680,6 +680,16 @@ bool Game::LoadLevel(const std::string& name, bool tutorial)
         if (!EX::NetIsGuest()) { // an online guest's characters come from the host
             ExApplyPlayerCharacter(tutorial);
         }
+        // test hook LUGARUEX_TEST_GIVE=knife|sword|staff[,...]: player 1 starts with these, put away
+        if (const char* give = getenv("LUGARUEX_TEST_GIVE")) {
+            Person& p = *Person::players[0];
+            for (const char* s = give; *s && p.num_weapons < 4; s = strchr(s, ',') ? strchr(s, ',') + 1 : "") {
+                const int type = !strncmp(s, "sword", 5) ? sword : !strncmp(s, "staff", 5) ? staff : knife;
+                p.weaponids[p.num_weapons++] = weapons.size();
+                weapons.push_back(Weapon(type, 0));
+            }
+            p.weaponactive = strstr(give, "held") ? 0 : -1;
+        }
         EX::LocalLevelLoaded(name, tutorial); // LugaruEX: local co-op players join
         EX::NetLevelLoaded(name, tutorial);   // LugaruEX: online guests follow the host
     } else {
@@ -1960,6 +1970,24 @@ void Game::ProcessDevInput()
         w.bloody = 2;
         w.blooddrip = 5;
         printf("EXTEST knife %d dropped at %.1f,%.1f,%.1f\n", (int)weapons.size() - 1, ahead.x, ahead.y, ahead.z);
+    }
+    // (LUGARUEX_TEST_GIVE: where player 1's weapons are, 3 s in)
+    static int exGiveLogged = 0; // (every 1.5 s from 1.5 s on, 4 times)
+    if (exGiveLogged < 4 && getenv("LUGARUEX_TEST_GIVE") && leveltime > 1.5f * (exGiveLogged + 1) && !Person::players.empty()) {
+        exGiveLogged++;
+        const Person& p = *Person::players[0];
+        printf("EXTEST give: %s at %.2f,%.2f,%.2f active %d\n", p.creature == wolftype ? "wolf" : "rabbit", p.coords.x, p.coords.y, p.coords.z, p.weaponactive);
+        for (unsigned j = 0; j < p.skeleton.muscles.size(); j++) {
+            const Muscle& m = p.skeleton.muscles[j];
+            if ((m.parent1->label == abdomen || m.parent2->label == abdomen) && (m.parent1->label == neck || m.parent2->label == neck)) {
+                printf("EXTEST give: muscle %u abdomen-neck, %d vertices\n", j, (int)m.vertices.size());
+            }
+        }
+        for (int k = 0; k < p.num_weapons; k++) {
+            Weapon& w = weapons[p.weaponids[k]];
+            printf("EXTEST give: weapon %d type %d at %.2f,%.2f,%.2f (%.2f from the body)\n", k, w.getType(), w.position.x, w.position.y, w.position.z,
+                   std::sqrt(distsq(&w.position, &Person::players[0]->coords)));
+        }
     }
     // test hook LUGARUEX_TEST_SUNVIEW[=pitch]: the camera keeps looking toward the sun
     // (light shafts, rim light); default pitch 8 (a little upward)
@@ -3943,6 +3971,16 @@ void Game::Tick()
                 Person::players[0]->jumpkeydown = Input::isKeyDown(jumpkey);
                 Person::players[0]->crouchkeydown = Input::isKeyDown(crouchkey);
                 Person::players[0]->drawkeydown = Input::isKeyDown(drawkey);
+                {
+                    // test hook LUGARUEX_TEST_DRAW=s1,s2,...: player 1 presses draw / put away at those times
+                    static const char* td = getenv("LUGARUEX_TEST_DRAW");
+                    for (const char* s = td; s && *s; s = strchr(s, ',') ? strchr(s, ',') + 1 : "") {
+                        const float at = (float)atof(s);
+                        if (leveltime > at && leveltime < at + .15f) {
+                            Person::players[0]->drawkeydown = 1;
+                        }
+                    }
+                }
                 Person::players[0]->throwkeydown = Input::isKeyDown(throwkey);
                 Person::players[0]->exWalk = EX::P1Walk() || (exTestWalk() && !exTestWalkRun());
                 if (exTestWalk() && !EX::NetIsGuest()) { // test hook: player 1 walks forward (or left)
@@ -4674,7 +4712,8 @@ void Game::Tick()
                                     isgood = false;
                                 }
                             }
-                            if (isgood && Person::players[i]->creature != wolftype) {
+                            // (LugaruEX: player wolves draw and put away weapons too; the game's wolves never do)
+                            if (isgood && (Person::players[i]->creature != wolftype || Person::players[i]->isPlayerControlled())) {
                                 if (Person::players[i]->isIdle() && Person::players[i]->num_weapons && weapons[Person::players[i]->weaponids[0]].getType() == knife) {
                                     Person::players[i]->setTargetAnimation(drawrightanim);
                                     Person::players[i]->drawtogglekeydown = 1;

@@ -17,3 +17,5 @@ void Mods_Save(const std::wstring& iniPath);              // [Mods] List
 // controller: A switches the selected mod on / off, X asks to delete it
 void Mods_PadToggle();
 void Mods_PadDelete();
+// the mods that are on right now (the tab's ticks, or the ini before the tab exists)
+std::vector<std::string> Mods_Enabled(const std::wstring& exDir, const std::wstring& iniPath);

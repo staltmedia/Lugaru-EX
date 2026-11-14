@@ -517,23 +517,40 @@ void Person::changeCreatureType(person_type type)
     damagetolerance = PersonType::types[creature].defaultDamageTolerance;
 }
 
+// LugaruEX: a custom model (Models/Custom/<creature>/<Name>/, a mod or the player's own)
+// replaces any of the creature's files it has by the same name; the rest stay the creature's
+static std::string exModelFile(const std::string& dir, const std::string& file)
+{
+    if (dir.empty()) {
+        return file;
+    }
+    const std::string candidate = dir + file.substr(file.rfind('/') + 1);
+    if (FILE* f = fopen(Folders::getResourcePath(candidate).c_str(), "rb")) {
+        fclose(f);
+        return candidate;
+    }
+    return file;
+}
+
 void Person::skeletonLoad()
 {
+    const PersonType& t = PersonType::types[creature];
+    const std::string& d = exModelDir;
     skeleton.id = id;
     skeleton.Load(
-        PersonType::types[creature].figureFileName,
-        PersonType::types[creature].lowFigureFileName,
-        PersonType::types[creature].clothesFileName,
-        PersonType::types[creature].modelFileNames[0],
-        PersonType::types[creature].modelFileNames[1],
-        PersonType::types[creature].modelFileNames[2],
-        PersonType::types[creature].modelFileNames[3],
-        PersonType::types[creature].modelFileNames[4],
-        PersonType::types[creature].modelFileNames[5],
-        PersonType::types[creature].modelFileNames[6],
-        PersonType::types[creature].lowModelFileName,
-        PersonType::types[creature].modelClothesFileName,
-        PersonType::types[creature].clothes);
+        exModelFile(d, t.figureFileName),
+        exModelFile(d, t.lowFigureFileName),
+        exModelFile(d, t.clothesFileName),
+        exModelFile(d, t.modelFileNames[0]),
+        exModelFile(d, t.modelFileNames[1]),
+        exModelFile(d, t.modelFileNames[2]),
+        exModelFile(d, t.modelFileNames[3]),
+        exModelFile(d, t.modelFileNames[4]),
+        exModelFile(d, t.modelFileNames[5]),
+        exModelFile(d, t.modelFileNames[6]),
+        exModelFile(d, t.lowModelFileName),
+        exModelFile(d, t.modelClothesFileName),
+        t.clothes);
 
     skeleton.drawmodel.textureptr.load(PersonType::types[creature].skins[whichskin], 1, &skeleton.skinText[0], &skeleton.skinsize);
 }
@@ -2220,7 +2237,8 @@ void Person::DoAnimations()
                 }
             }
 
-            if (!drawtogglekeydown && drawkeydown && (!hasWeapon() || num_weapons == 1) && (targetFrame().label || (animTarget != animCurrent && animCurrent == rollanim)) && num_weapons > 0 && creature != wolftype) {
+            if (!drawtogglekeydown && drawkeydown && (!hasWeapon() || num_weapons == 1) && (targetFrame().label || (animTarget != animCurrent && animCurrent == rollanim)) && num_weapons > 0 &&
+                (creature != wolftype || isPlayerControlled())) { // (LugaruEX: player wolves too)
                 if (weapons[weaponids[0]].getType() == knife) {
                     if (!hasWeapon()) {
                         weaponactive = 0;

@@ -34,6 +34,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <vector>
 
 #include "outfits.h"
+#include "looks.h"
 
 extern XYZ viewer, viewerfacing, cameraloc;
 extern float cameradist, camerashake, woozy, blackout;
@@ -257,9 +258,29 @@ void NoteLevelLook(const Person& p1)
 
 void ApplyCharacter(Person& p, const std::string& model, const std::string& skinIn, bool tutorial)
 {
-    const bool wolf = (model == "wolf") && !tutorial; // tutorial steps need a rabbit
+    // model: "rabbit", "wolf" or a custom model "rabbit/Name" / "wolf/Name" (shared/looks.h)
+    const bool wolf = (Looks_Base(model) == "wolf") && !tutorial; // tutorial steps need a rabbit
     const person_type want = wolf ? wolftype : rabbittype;
+    std::string dir = tutorial ? std::string() : Looks_ModelDir(model);
+    if (!dir.empty() && Looks_Base(model) != (wolf ? "wolf" : "rabbit")) {
+        dir.clear();
+    }
+    auto exists = [](const std::string& rel) {
+        FILE* f = fopen(Folders::getResourcePath(rel).c_str(), "rb");
+        if (f) {
+            fclose(f);
+        }
+        return f != nullptr;
+    };
     std::string skin = skinIn;
+    if (skin == "default" && !dir.empty()) {
+        // a custom model's own skin, when it brings one
+        for (const char* ext : { "png", "jpg", "jpeg" }) {
+            if (skin == "default" && exists(dir + "Skin." + ext)) {
+                skin = dir + "Skin." + ext;
+            }
+        }
+    }
     if (skin == "default") {
         // the level's own skin for its player; on the other creature, that creature's first
         // (players 2+ start as copies of player 1, so name the skin rather than keeping theirs)
@@ -267,22 +288,21 @@ void ApplyCharacter(Person& p, const std::string& model, const std::string& skin
         const int k = (g_levelCreature == want && g_levelSkin >= 0 && g_levelSkin < (int)list.size()) ? g_levelSkin : 0;
         skin = list.empty() ? std::string() : list[k];
     }
+    if (!dir.empty()) {
+        // (a model from a mod that isn't here: online, before the files came, or switched off)
+        bool any = false;
+        for (const std::string& f : { std::string("Body.solid"), std::string("Wolf.solid"), std::string("BasicFigure"), std::string("BasicFigureWolf") }) {
+            any = any || exists(dir + f);
+        }
+        if (!any) {
+            printf("LugaruEX: model %s not found here, using the creature's own\n", model.c_str());
+            dir.clear();
+        }
+    }
 
     if (wolf) {
-        // wolves can't use weapons: leave them at the player's feet
-        for (int w = 0; w < p.num_weapons && w < 4; w++) {
-            const int id = p.weaponids[w];
-            if (id >= 0 && id < int(weapons.size())) {
-                weapons[id].position = p.coords;
-                weapons[id].position.y += 1;
-                weapons[id].tippoint = weapons[id].position;
-                weapons[id].tippoint.y += .5;
-                XYZ zero;
-                zero = 0;
-                weapons[id].drop(zero, zero, false);
-            }
-        }
-        p.num_weapons = 0;
+        // a player wolf keeps the level's weapons put away (they draw them like rabbits; they
+        // used to be dropped at the feet with no speed and stayed floating there)
         p.weaponactive = -1;
         p.clothes.clear();
         p.clothestintr.clear();
@@ -290,6 +310,11 @@ void ApplyCharacter(Person& p, const std::string& model, const std::string& skin
         p.clothestintb.clear();
     }
     p.exPoseReady = false;
+    if (p.creature == want && p.exModelDir != dir) {
+        p.exModelDir = dir; // another model of the same creature: its files, same animations
+        p.skeletonLoad();
+    }
+    p.exModelDir = dir;
     if (p.creature != want) {
         p.changeCreatureType(want);
         if (wolf) {
@@ -448,7 +473,7 @@ static void applySlotCharacter(Slot& s, Person& p, bool tutorial)
     } else {
         parseChar(look, model, skin);
         if (skin == "random") { // "wolf:random", "rabbit:random"
-            skin = randomSkin(s, (model == "wolf" && !tutorial) ? wolftype : rabbittype);
+            skin = randomSkin(s, (Looks_Base(model) == "wolf" && !tutorial) ? wolftype : rabbittype);
         }
     }
     ApplyCharacter(p, model, skin, tutorial);
@@ -461,7 +486,7 @@ void ApplyRandomLook(Person& p, const std::string& model, bool tutorial)
     if (g_slots.empty()) {
         return;
     }
-    const std::string skin = randomSkin(g_slots[0], (model == "wolf" && !tutorial) ? wolftype : rabbittype);
+    const std::string skin = randomSkin(g_slots[0], (Looks_Base(model) == "wolf" && !tutorial) ? wolftype : rabbittype);
     ApplyCharacter(p, model, skin, tutorial);
 }
 
@@ -1417,12 +1442,16 @@ void LocalRoster(std::vector<NetLook>& out)
     for (size_t i = 0; i < Person::players.size(); i++) {
         const Person& p = *Person::players[i];
         if (p.aitype == playercontrolled) {
-            out.push_back({ (int)i, (int)p.creature, p.whichskin, p.exSkinPath, p.exOutfit });
+            NetLook l{ (int)i, (int)p.creature, p.whichskin, p.exSkinPath, p.exOutfit, std::string() };
+            if (p.exModelDir.compare(0, 14, "Models/Custom/") == 0 && p.exModelDir.size() > 15) {
+                l.model = p.exModelDir.substr(14, p.exModelDir.size() - 15); // "rabbit/Name"
+            }
+            out.push_back(l);
         }
     }
 }
 
-void LocalGuestEnter(const std::vector<int>& mine, const std::vector<NetLook>& roster)
+void LocalGuestEnter(const std::vector<int>& mine, const std::vector<NetLook>& roster, bool force)
 {
     g_guestHumans.clear(); // every player in the game, as the host lists them
     for (const NetLook& l : roster) {
@@ -1443,10 +1472,12 @@ void LocalGuestEnter(const std::vector<int>& mine, const std::vector<NetLook>& r
         if (skin.empty() && l.whichskin >= 0 && l.whichskin < (int)skins.size()) {
             skin = skins[l.whichskin];
         }
-        if (p.creature != cr || p.whichskin != l.whichskin || p.exSkinPath != l.skin) {
-            ApplyCharacter(p, cr == wolftype ? "wolf" : "rabbit", skin, Tutorial::active); // tutorial: rabbits only
+        const std::string model = l.model.empty() ? std::string(cr == wolftype ? "wolf" : "rabbit") : l.model;
+        const std::string wantDir = Tutorial::active ? std::string() : Looks_ModelDir(l.model);
+        if (force || p.creature != cr || p.whichskin != l.whichskin || p.exSkinPath != l.skin || p.exModelDir != wantDir) {
+            ApplyCharacter(p, model, skin, Tutorial::active); // tutorial: rabbits only
         }
-        if (!l.outfit.empty() && p.exOutfit != l.outfit) {
+        if (!l.outfit.empty() && (force || p.exOutfit != l.outfit)) {
             ApplyOutfit(p, l.outfit); // that player's Clothes choice
         }
         p.aitype = playercontrolled;
@@ -1574,3 +1605,15 @@ bool LocalLooking(int person)
     return false;
 }
 }
+
+namespace EX
+{
+void LocalReapplyRemoteLooks()
+{
+    for (Slot& s : g_slots) {
+        if (s.remote && !s.removed && personValid(s)) {
+            applySlotCharacter(s, *Person::players[s.person], Tutorial::active);
+        }
+    }
+}
+} // namespace EX

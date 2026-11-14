@@ -56,10 +56,11 @@ embedded in this program.
 #include "../shared/netinfo.h"
 #include "../shared/serverquery.h"
 #include "../shared/adminlink.h"
+#include "../shared/looks.h"
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.5.0" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.5.1" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
@@ -1483,6 +1484,8 @@ static void UpdateMpEnable()
         }
     }
     UpdateHostStatus();
+    // repaint the whole page: hidden / moved checkboxes left black squares behind
+    RedrawWindow(g_mp, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 }
 
 static void PasswordShown(HWND dlg, int edit, int box)
@@ -1787,7 +1790,16 @@ static void RefreshServers()
     ShowServerDetails();
 }
 
-// server names in their colours (^0-^9) on the list's dark rows
+// a name colour (^0-^9, from the game's dark palette) made readable on the white list
+static COLORREF OnWhite(int colour, const unsigned char c[3])
+{
+    if (colour < 0 || colour == 7) {
+        return RGB(20, 20, 20); // (white / plain: black)
+    }
+    return RGB(c[0] * 62 / 100, c[1] * 62 / 100, c[2] * 62 / 100);
+}
+
+// server names in their colours (^0-^9) on the list's white rows
 static LRESULT ServerListDraw(NMLVCUSTOMDRAW* cd)
 {
     switch (cd->nmcd.dwDrawStage) {
@@ -1802,7 +1814,7 @@ static LRESULT ServerListDraw(NMLVCUSTOMDRAW* cd)
             }
             const MpRow& row = g_rows[i];
             const ServerEntry& e = g_shownServers[row.server];
-            cd->clrText = e.answered ? (row.player >= 0 ? RGB(185, 180, 170) : RGB(225, 220, 210)) : RGB(130, 130, 130);
+            cd->clrText = e.answered ? (row.player >= 0 ? RGB(90, 90, 90) : RGB(20, 20, 20)) : RGB(150, 150, 150);
             if (cd->iSubItem != 0 || row.player >= 0) {
                 return CDRF_DODEFAULT;
             }
@@ -1810,7 +1822,7 @@ static LRESULT ServerListDraw(NMLVCUSTOMDRAW* cd)
             RECT r;
             ListView_GetSubItemRect(lv, i, 0, LVIR_LABEL, &r);
             const bool selected = (ListView_GetItemState(lv, i, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-            HBRUSH bg = CreateSolidBrush(selected ? GetSysColor(COLOR_HIGHLIGHT) : RGB(28, 26, 26));
+            HBRUSH bg = CreateSolidBrush(selected ? GetSysColor(COLOR_HIGHLIGHT) : RGB(255, 255, 255));
             FillRect(cd->nmcd.hdc, &r, bg);
             DeleteObject(bg);
             SetBkMode(cd->nmcd.hdc, TRANSPARENT);
@@ -1825,7 +1837,7 @@ static LRESULT ServerListDraw(NMLVCUSTOMDRAW* cd)
             for (const netinfo::Segment& s : segs) {
                 unsigned char c[3];
                 netinfo::ColourRGB(s.colour, c);
-                SetTextColor(cd->nmcd.hdc, e.answered ? RGB(c[0], c[1], c[2]) : RGB(130, 130, 130));
+                SetTextColor(cd->nmcd.hdc, selected ? GetSysColor(COLOR_HIGHLIGHTTEXT) : e.answered ? OnWhite(s.colour, c) : RGB(150, 150, 150));
                 const std::wstring w = widen(s.text);
                 RECT m = r;
                 DrawTextW(cd->nmcd.hdc, w.c_str(), -1, &m, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_CALCRECT);
@@ -2084,9 +2096,9 @@ static void InitMpPage(HWND p)
     // the server list: dark rows (server names can be coloured)
     HWND lv = GetDlgItem(p, IDC_MP_SERVERS);
     ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-    ListView_SetBkColor(lv, RGB(28, 26, 26));
-    ListView_SetTextBkColor(lv, RGB(28, 26, 26));
-    ListView_SetTextColor(lv, RGB(225, 220, 210));
+    ListView_SetBkColor(lv, RGB(255, 255, 255));
+    ListView_SetTextBkColor(lv, RGB(255, 255, 255));
+    ListView_SetTextColor(lv, RGB(20, 20, 20));
     RECT lr;
     GetClientRect(lv, &lr);
     const int w = lr.right - lr.left - GetSystemMetrics(SM_CXVSCROLL); // (room for the scroll bar)
@@ -2109,6 +2121,51 @@ static void InitMpPage(HWND p)
 // ---- Character page ----
 static HWND g_ch = NULL;
 
+// the mods that are on right now (their skins, clothes and models are offered)
+static std::vector<std::string> ModsNow()
+{
+    return Mods_Enabled(g_exDir, IniPath());
+}
+
+// Model list: 0 Rabbit, 1 Wolf, kModelBase+n a custom model (shared/looks.h)
+static const LPARAM kModelBase = 100;
+static std::vector<LookModel> g_customModels;
+
+static std::string ModelKey() // "rabbit", "wolf" or "rabbit/Name"
+{
+    const LPARAM d = ComboData(g_ch, IDC_CH_MODEL);
+    if (d >= kModelBase && d < kModelBase + (LPARAM)g_customModels.size()) {
+        return g_customModels[d - kModelBase].key;
+    }
+    return d == 1 ? "wolf" : "rabbit";
+}
+
+static std::string ModelBase() // the creature: "rabbit" | "wolf"
+{
+    return Looks_Base(ModelKey());
+}
+
+static const LookModel* CustomModel()
+{
+    const LPARAM d = ComboData(g_ch, IDC_CH_MODEL);
+    return d >= kModelBase && d < kModelBase + (LPARAM)g_customModels.size() ? &g_customModels[d - kModelBase] : nullptr;
+}
+
+static void FillModels(const std::string& want)
+{
+    SendDlgItemMessageW(g_ch, IDC_CH_MODEL, CB_RESETCONTENT, 0, 0);
+    ComboAdd(g_ch, IDC_CH_MODEL, L"Rabbit", 0);
+    ComboAdd(g_ch, IDC_CH_MODEL, L"Wolf", 1);
+    LPARAM sel = Looks_Base(want) == "wolf" ? 1 : 0; // (a model from a mod that is off: its creature)
+    g_customModels = Looks_Models(narrow(g_exDir), ModsNow());
+    for (size_t i = 0; i < g_customModels.size(); i++) {
+        ComboAdd(g_ch, IDC_CH_MODEL, widen(g_customModels[i].label).c_str(), kModelBase + (LPARAM)i);
+        if (_stricmp(want.c_str(), g_customModels[i].key.c_str()) == 0) {
+            sel = kModelBase + (LPARAM)i;
+        }
+    }
+    ComboSelectData(g_ch, IDC_CH_MODEL, sel, 0);
+}
 
 
 static bool FindSkinFile(const SkinInfo& s, std::wstring& out)
@@ -2166,7 +2223,7 @@ static void UpdatePreview()
     LPARAM d = ComboData(g_ch, IDC_CH_SKIN);
     std::wstring file;
     if (d == kRandomSkin || d == kDefaultSkin) { // Random / Default: show the model with its first skin
-        const std::string m = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+        const std::string m = ModelBase();
         for (const auto& k : kSkins) {
             if (m == k.model && FindSkinFile(k, file)) {
                 break;
@@ -2178,15 +2235,21 @@ static void UpdatePreview()
     } else if (!(d >= 0 && d < (LPARAM)(sizeof(kSkins) / sizeof(kSkins[0])) && FindSkinFile(kSkins[d], file))) {
         file.clear();
     }
-    const std::string model = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+    const LookModel* cm = CustomModel();
+    if (cm && d == kDefaultSkin && !cm->skin.empty()) {
+        file = widen(cm->skin); // a custom model's own skin
+        std::replace(file.begin(), file.end(), L'/', L'\\');
+    }
+    const std::string model = ModelBase();
     const bool def = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
-    Preview_Set(GetDlgItem(g_ch, IDC_CH_PREVIEW), model, file, def || model == "wolf" ? std::vector<PreviewClothFile>() : PreviewClothes(), def);
+    Preview_Set(GetDlgItem(g_ch, IDC_CH_PREVIEW), cm ? cm->key : model, file,
+                def || model == "wolf" ? std::vector<PreviewClothFile>() : PreviewClothes(), def, cm ? cm->dir : std::string());
 }
 
 static void FillSkins(const std::string& wantPath)
 {
     SendDlgItemMessageW(g_ch, IDC_CH_SKIN, CB_RESETCONTENT, 0, 0);
-    const std::string model = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+    const std::string model = ModelBase();
     int sel = 0, n = 0;
     ComboAdd(g_ch, IDC_CH_SKIN, L"Random", kRandomSkin);
     ComboAdd(g_ch, IDC_CH_SKIN, L"Default", kDefaultSkin);
@@ -2208,7 +2271,7 @@ static void FillSkins(const std::string& wantPath)
         }
         n++;
     }
-    g_customSkins = CustomSkins_List();
+    g_customSkins = CustomSkins_List(ModsNow());
     for (size_t i = 0; i < g_customSkins.size(); i++) {
         if (g_customSkins[i].model != model) {
             continue;
@@ -2227,7 +2290,7 @@ static void FillSkins(const std::string& wantPath)
 // "New skin...": pick an image, it is copied (as PNG) into LugaruEX\Data\Textures\Custom
 static void NewSkin()
 {
-    const std::string model = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+    const std::string model = ModelBase();
     CustomSkin s;
     if (CustomSkins_Import(g_main, model, s)) {
         FillSkins(s.enginePath);
@@ -2283,7 +2346,7 @@ static void FillClothes(const std::string& want)
         }
     }
     g_customClothes.clear();
-    for (const CustomSkin& c : CustomSkins_List()) {
+    for (const CustomSkin& c : CustomSkins_List(ModsNow())) {
         if (c.model == "clothes") {
             g_customClothes.push_back(c);
         }
@@ -2336,7 +2399,7 @@ static void UpdateCharEnable()
     EnableWindow(GetDlgItem(g_ch, IDC_CH_MODEL), !def);
     EnableWindow(GetDlgItem(g_ch, IDC_CH_SKIN), !def);
     // clothes follow the same rules, and wolves wear none
-    EnableWindow(GetDlgItem(g_ch, IDC_CH_CLOTHES), !def && ComboData(g_ch, IDC_CH_MODEL) != 1);
+    EnableWindow(GetDlgItem(g_ch, IDC_CH_CLOTHES), !def && ModelBase() != "wolf");
     UpdatePreview();
 }
 
@@ -2344,9 +2407,7 @@ static void InitCharPage(HWND p)
 {
     g_ch = p;
     CheckDlgButton(p, IDC_CH_DEFAULT, g_set.chDefault ? BST_CHECKED : BST_UNCHECKED);
-    ComboAdd(p, IDC_CH_MODEL, L"Rabbit", 0);
-    ComboAdd(p, IDC_CH_MODEL, L"Wolf", 1);
-    ComboSelectData(p, IDC_CH_MODEL, g_set.chModel == "wolf" ? 1 : 0, 0);
+    FillModels(g_set.chModel);
     FillSkins(g_set.chSkin);
     FillClothes(g_set.chClothes);
     UpdateCharEnable();
@@ -2464,8 +2525,18 @@ static INT_PTR CALLBACK PageProc(HWND p, UINT msg, WPARAM wp, LPARAM lp)
     return FALSE;
 }
 
+static std::string ClothesKeyOf(LPARAM d);
 static void ShowPage(int i)
 {
+    if (i == 1 && g_ch) {
+        // the mods may have changed on the Mods tab: their skins, clothes and models come and go
+        const std::string model = ModelKey(), skin = SkinPathOf(ComboData(g_ch, IDC_CH_SKIN));
+        const std::string clothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
+        FillModels(model);
+        FillSkins(skin);
+        FillClothes(clothes);
+        UpdateCharEnable();
+    }
     ShowWindow(g_gfx, i == 0 ? SW_SHOW : SW_HIDE);
     ShowWindow(g_ch, i == 1 ? SW_SHOW : SW_HIDE);
     ShowWindow(g_ct, i == 2 ? SW_SHOW : SW_HIDE);
@@ -2537,7 +2608,7 @@ static bool CollectSettings()
     s.guestChars = IsDlgButtonChecked(g_mp, IDC_MP_GUESTCHARS) == BST_CHECKED;
     s.mpAdvanced = IsDlgButtonChecked(g_mp, IDC_MP_ADVANCED) == BST_CHECKED;
     s.chDefault = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
-    s.chModel = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
+    s.chModel = ModelKey();
     LPARAM sk = ComboData(g_ch, IDC_CH_SKIN);
     s.chSkin = SkinPathOf(sk);
     s.chClothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
@@ -3563,6 +3634,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         }
     }
     g_exDir = g_exeDir + L"LugaruEX\\";
+    CustomSkins_SetExDir(g_exDir);
+    CustomSkins_SetMods(ModsNow);
     Setup_CleanOld(Setup_SelfPath()); // left by an update
     if (RunSetupIfNeeded(inst)) {     // LugaruEX-<ver>-Setup.exe, or an unpacked release
         CoUninitialize();

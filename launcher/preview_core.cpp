@@ -407,12 +407,17 @@ static std::vector<int> skeletonLabels(const std::string& path)
     return out;
 }
 
-static bool loadRig(Rig& r, const std::string& data, bool wolf)
+static bool loadRig(Rig& r, const std::string& data, bool wolf, const std::string& modelDir)
 {
     r = Rig();
-    const std::string model = firstExisting(data + "Models/", { wolf ? "Wolf.solid" : "Body.solid" });
-    const std::string skel = wolf ? firstExisting(data + "Skeleton/", { "Basic Figure wolf", "BasicFigureWolf" })
-                                   : firstExisting(data + "Skeleton/", { "Basic Figure", "BasicFigure" });
+    // a custom model (shared/looks.h) replaces the files it has, by the creature's own names
+    auto pick = [&](const std::string& sub, std::initializer_list<const char*> names) {
+        std::string p = modelDir.empty() ? std::string() : firstExisting(modelDir, names);
+        return p.empty() ? firstExisting(data + sub, names) : p;
+    };
+    const std::string model = wolf ? pick("Models/", { "Wolf.solid" }) : pick("Models/", { "Body.solid" });
+    const std::string skel = wolf ? pick("Skeleton/", { "Basic Figure wolf", "BasicFigureWolf" })
+                                   : pick("Skeleton/", { "Basic Figure", "BasicFigure" });
     const std::string anim = firstExisting(data + "Animations/", { wolf ? "Wolfidle" : "Idle" });
     if (model.empty() || skel.empty() || anim.empty()) {
         return false;
@@ -676,6 +681,7 @@ struct State
     std::string dataDir;
     Rig rig;
     std::string model;
+    std::string modelDir; // custom model folder ("" = the creature's own files)
     bool dimmed = false;
     GLuint tex = 0;
     int texW = 0, texH = 0;
@@ -746,13 +752,15 @@ void PreviewCore_SetDataDir(const std::string& dataDir)
     g.dataDir = dataDir;
 }
 
-void PreviewCore_SetModel(const std::string& model)
+void PreviewCore_SetModel(const std::string& model, const std::string& modelDir)
 {
-    if (model == g.model) {
+    if (model == g.model && modelDir == g.modelDir) {
         return;
     }
     g.model = model;
-    loadRig(g.rig, g.dataDir, model == "wolf");
+    g.modelDir = modelDir;
+    const bool wolf = model == "wolf" || model.compare(0, 5, "wolf/") == 0;
+    loadRig(g.rig, g.dataDir, wolf, modelDir);
     g.frame = 0;
     g.t = 0;
     if (g.rig.ok) {

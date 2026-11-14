@@ -454,7 +454,13 @@ std::string Setup_SelfPath()
 #else
     char buf[4096];
     const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    return n > 0 ? std::string(buf, (size_t)n) : std::string();
+    std::string p = n > 0 ? std::string(buf, (size_t)n) : std::string();
+    // once an update has replaced the running file, the link reads "<path> (deleted)"
+    const std::string del = " (deleted)";
+    if (p.size() > del.size() && p.compare(p.size() - del.size(), del.size(), del) == 0) {
+        p.erase(p.size() - del.size());
+    }
+    return p;
 #endif
 }
 

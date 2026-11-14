@@ -53,14 +53,20 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.4.11" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.4.12" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
     WM_UPDATE_STATE = WM_APP + 11,  // the update download moved on
     WM_NOGAME = WM_APP + 12         // the installer found no game: ask what to do
 };
-static void UpdateThread(HWND notify, std::string exDir, std::string repo);
+static void UpdateThread(HWND notify, std::string repo);
+static void UpdateDownloadThread(HWND notify, std::string exDir, UpdateInfo info);
+static bool ApplyPendingUpdate();
+static std::string CurrentVersion();
+static UpdateInfo g_updInfo;             // the release the player was asked about
+static bool g_updBusy = false;           // asking or downloading: Play waits
+static std::atomic<uint64_t> g_updBytes(0);
 
 // ----------------------------------------------------------------------------
 // Settings / ini
@@ -303,7 +309,7 @@ static bool SaveIni(const Settings& s)
       << "; default (the level's own) | none | shirt | camo | snowcamo | desertcamo | leather | gi\r\n"
       << "Clothes=" << s.chClothes << "\r\n"
       << "\r\n[Launcher]\r\n"
-      << "; 1 = look for a new LugaruEX on GitHub when the launcher starts, and install it\r\n"
+      << "; 1 = look for a new LugaruEX on GitHub when the launcher starts, and offer to install it\r\n"
       << "AutoUpdate=" << s.autoUpdate << "\r\n"
       << "Tab=" << s.tab << "\r\n"
       << (s.updateRepo.empty() ? std::string() : "UpdateRepo=" + s.updateRepo + "\r\n");
@@ -1904,6 +1910,13 @@ static void PadNavigate()
         start |= pressed(SDL_CONTROLLER_BUTTON_START);
         x |= pressed(SDL_CONTROLLER_BUTTON_X);
     }
+    if (g_updBusy) { // the update question (a message box) answers to A / B; nothing else meanwhile
+        HWND fg = GetForegroundWindow();
+        if (fg != g_main && (a || b)) {
+            PostMessageW(fg, WM_COMMAND, a ? IDOK : IDCANCEL, 0);
+        }
+        return;
+    }
     if (Controls_Capturing()) {
         if (Controls_CapturingKeys() && b) {
             Controls_CancelCapture(); // a controller can't type the key: B backs out
@@ -2025,6 +2038,15 @@ static bool LaunchEngine()
     return true;
 }
 
+// the footer text next to Auto Update
+static std::wstring VersionLabel()
+{
+    if (!PathFileExistsW((g_exeDir + L"Data").c_str())) {
+        return L"No game Data folder here!";
+    }
+    return L"LugaruEX " + widen(EX_LAUNCHER_VERSION);
+}
+
 static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -2074,14 +2096,10 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
 
             CheckDlgButton(d, IDC_AUTOUPDATE, g_set.autoUpdate ? BST_CHECKED : BST_UNCHECKED);
             DragAcceptFiles(d, TRUE); // mod zips dropped anywhere on the window
-            if (g_set.autoUpdate) { // look for a new LugaruEX meanwhile (it installs on the next start)
-                std::thread(UpdateThread, d, narrow(g_exDir), g_set.updateRepo.empty() ? std::string(kUpdateRepo) : g_set.updateRepo).detach();
+            if (g_set.autoUpdate) { // look for a new LugaruEX meanwhile (the player is asked)
+                std::thread(UpdateThread, d, g_set.updateRepo.empty() ? std::string(kUpdateRepo) : g_set.updateRepo).detach();
             }
-            std::wstring ver = L"LugaruEX 0.4.11";
-            if (!PathFileExistsW((g_exeDir + L"Data").c_str())) {
-                ver = L"No game Data folder here!";
-            }
-            SetDlgItemTextW(d, IDC_VERSION, ver.c_str());
+            SetDlgItemTextW(d, IDC_VERSION, VersionLabel().c_str());
             return TRUE;
         }
         case WM_TIMER:
@@ -2090,18 +2108,56 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                 Controls_Tick();
                 Local_Tick();
                 PadNavigate();
+            } else if (wp == 8 && g_updInfo.size > 0) { // download progress
+                const int pct = (int)std::min<uint64_t>(100, g_updBytes * 100 / g_updInfo.size);
+                SetDlgItemTextW(d, IDC_VERSION, (L"Downloading " + widen(g_updInfo.version) + L"... " + std::to_wstring(pct) + L"%").c_str());
             }
             return TRUE;
-        case WM_UPDATE_STATE: {
-            std::string* s = (std::string*)lp;
-            if (wp == 1) {
-                SetDlgItemTextW(d, IDC_VERSION, (L"Downloading LugaruEX " + widen(*s) + L"...").c_str());
-            } else if (wp == 2) {
-                SetDlgItemTextW(d, IDC_VERSION, (L"LugaruEX " + widen(*s) + L" installs next start").c_str());
+        case WM_UPDATE_STATE:
+            if (wp == 3) { // a newer release: ask
+                UpdateInfo* info = (UpdateInfo*)lp;
+                g_updInfo = *info;
+                delete info;
+                if (g_updBusy) {
+                    return TRUE;
+                }
+                g_updBusy = true;
+                const std::wstring q = widen(g_updInfo.version) + L" is available. Current version is " + widen(CurrentVersion()) + L".\n\nUpdate now?";
+                if (MessageBoxW(d, q.c_str(), L"LugaruEX Update", MB_OKCANCEL | MB_ICONQUESTION) == IDOK) {
+                    g_updBytes = 0;
+                    EnableWindow(GetDlgItem(d, IDOK), FALSE);
+                    SetDlgItemTextW(d, IDC_VERSION, (L"Downloading " + widen(g_updInfo.version) + L"...").c_str());
+                    SetTimer(d, 8, 250, NULL);
+                    std::thread(UpdateDownloadThread, d, narrow(g_exDir), g_updInfo).detach();
+                } else {
+                    g_updBusy = false;
+                }
+            } else if (wp == 2) { // downloaded: put it in place, the new launcher takes over
+                KillTimer(d, 8);
+                SetDlgItemTextW(d, IDC_VERSION, (L"Installing " + widen(g_updInfo.version) + L"...").c_str());
+                SetCursor(LoadCursor(NULL, IDC_WAIT));
+                if (CollectSettings() && SaveIni(g_set)) { // the new launcher opens with this session's choices
+                    Controls_Save(IniPath());
+                    Local_Save(IniPath());
+                    Mods_Save(IniPath());
+                }
+                if (ApplyPendingUpdate()) {
+                    EndDialog(d, IDCANCEL);
+                    return TRUE;
+                }
+                g_updBusy = false;
+                EnableWindow(GetDlgItem(d, IDOK), TRUE);
+                SetDlgItemTextW(d, IDC_VERSION, VersionLabel().c_str());
+            } else if (wp == 0) {
+                std::string* err = (std::string*)lp;
+                KillTimer(d, 8);
+                g_updBusy = false;
+                EnableWindow(GetDlgItem(d, IDOK), TRUE);
+                SetDlgItemTextW(d, IDC_VERSION, VersionLabel().c_str());
+                MessageBoxW(d, (L"The update could not be downloaded: " + widen(*err)).c_str(), L"LugaruEX Update", MB_ICONWARNING);
+                delete err;
             }
-            delete s;
             return TRUE;
-        }
         case WM_DROPFILES: {
             HDROP drop = (HDROP)wp;
             std::vector<std::wstring> files;
@@ -2139,6 +2195,9 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
         }
         case WM_COMMAND:
             if (LOWORD(wp) == IDOK) {
+                if (g_updBusy) {
+                    return TRUE; // updating: the game starts from the new launcher
+                }
                 if (!CollectSettings()) {
                     return TRUE;
                 }
@@ -2475,26 +2534,36 @@ static INT_PTR CALLBACK SetupProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
     return FALSE;
 }
 
-// ---- updates: found and downloaded while the launcher is open, put in place on its next start
-static std::wstring g_updateNote;
+// ---- updates: looked for when the launcher opens; the player is asked, then it is
+// downloaded, put in place and the new launcher started
 
-static void UpdateThread(HWND notify, std::string exDir, std::string repo)
+// this launcher's version (test hook LUGARUEX_TEST_UPDATE_FROM=<version>: pretend to be older)
+static std::string CurrentVersion()
+{
+    const char* e = getenv("LUGARUEX_TEST_UPDATE_FROM");
+    return e && *e ? e : EX_LAUNCHER_VERSION;
+}
+
+// WM_UPDATE_STATE: 3 = a newer release (lp: UpdateInfo*), 2 = downloaded, 0 = failed (lp: error string)
+static void UpdateThread(HWND notify, std::string repo)
 {
     UpdateInfo info;
     std::string err;
-    if (!Update_Latest(repo, Update_Platform(), info, err) || !Update_IsNewer(info.version, EX_LAUNCHER_VERSION)) {
-        return;
+    if (Update_Latest(repo, Update_Platform(), info, err) && Update_IsNewer(info.version, CurrentVersion())) {
+        PostMessageW(notify, WM_UPDATE_STATE, 3, (LPARAM) new UpdateInfo(info));
     }
+}
+
+static void UpdateDownloadThread(HWND notify, std::string exDir, UpdateInfo info)
+{
     const std::string dir = exDir + "update";
+    fsu::RemoveTree(dir);
     fsu::MakeDirs(dir);
-    const std::string pkg = dir + "/" + info.asset;
-    if (fsu::IsFile(dir + "/ready.txt")) {
-        return; // already downloaded
-    }
-    PostMessageW(notify, WM_UPDATE_STATE, 1, (LPARAM) new std::string(info.version));
-    if (Update_Download(info, pkg, nullptr, err) && fsu::WriteAll(dir + "/ready.txt", info.version + "\n" + info.asset + "\n")) {
-        PostMessageW(notify, WM_UPDATE_STATE, 2, (LPARAM) new std::string(info.version));
+    std::string err;
+    if (Update_Download(info, dir + "/" + info.asset, &g_updBytes, err) && fsu::WriteAll(dir + "/ready.txt", info.version + "\n" + info.asset + "\n")) {
+        PostMessageW(notify, WM_UPDATE_STATE, 2, 0);
     } else {
+        fsu::RemoveTree(dir);
         PostMessageW(notify, WM_UPDATE_STATE, 0, (LPARAM) new std::string(err));
     }
 }
@@ -2511,7 +2580,7 @@ static bool ApplyPendingUpdate()
     const std::string asset = fsu::Trim(ready.substr(ready.find('\n') + 1));
     std::string err, launcher;
     bool ok = false;
-    if (Update_IsNewer(version, EX_LAUNCHER_VERSION) && !asset.empty() && asset.find_first_of("/\\") == std::string::npos) {
+    if (Update_IsNewer(version, CurrentVersion()) && !asset.empty() && asset.find_first_of("/\\") == std::string::npos) {
         const std::string tmp = dir + "/unpacked";
         GameFolder g;
         g.path = narrow(g_exeDir);

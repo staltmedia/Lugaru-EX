@@ -37,6 +37,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <cstring>
 #include <map>
 #include <set>
@@ -59,7 +60,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.4.11"
+#define LUGARUEX_VERSION "0.4.12"
 
 namespace
 {
@@ -1912,8 +1913,8 @@ void TabMods(float s)
 // ============================================================================ installer + updates
 // Run from an unpacked release outside a game folder, this program is the installer:
 // it finds the game (Steam, the open-source version, or the free data it can download)
-// and puts LugaruEX in. Updates are found and downloaded while the launcher is open, and
-// put in place when it starts the next time.
+// and puts LugaruEX in. Updates are looked for when the launcher opens; the player is
+// asked, then the update is downloaded, put in place and the new launcher started.
 bool g_setupMode = false;
 std::string g_package; // the unpacked release (holds LugaruEX/)
 std::vector<GameFolder> g_games;
@@ -1923,8 +1924,18 @@ std::atomic<int> g_freeState(0); // free data: 0 idle, 1 downloading, 2 ready, 3
 std::string g_freeError;
 std::string g_installed;       // after installing: the installed launcher
 std::string g_installedNote;
-std::atomic<int> g_updState(0); // 0 nothing, 1 downloading, 2 ready
-std::string g_updVersion;
+// 0 nothing, 3 a newer release (ask), 1 downloading, 2 downloaded (install), 4 download failed
+std::atomic<int> g_updState(0);
+UpdateInfo g_updInfo;   // written before g_updState becomes 3
+std::string g_updError; // written before g_updState becomes 4
+std::atomic<uint64_t> g_updBytes(0);
+
+// this launcher's version (test hook LUGARUEX_TEST_UPDATE_FROM=<version>: pretend to be older)
+std::string CurrentVersion()
+{
+    const char* e = getenv("LUGARUEX_TEST_UPDATE_FROM");
+    return e && *e ? e : LUGARUEX_VERSION;
+}
 
 void DecideSetupMode(const std::string& exeDir)
 {
@@ -2162,29 +2173,37 @@ bool SetupScreen(float s, float bannerH, float btnW)
     return !quit;
 }
 
+// looked for when the launcher opens; the player is asked before anything is downloaded
 void UpdateThread(std::string repo)
 {
     UpdateInfo info;
     std::string err;
-    if (!Update_Latest(repo, Update_Platform(), info, err) || !Update_IsNewer(info.version, LUGARUEX_VERSION)) {
-        return;
-    }
-    const std::string dir = g_exDir + "update";
-    if (fsu::IsFile(dir + "/ready.txt")) {
-        return;
-    }
-    fsu::MakeDirs(dir);
-    g_updVersion = info.version;
-    g_updState = 1;
-    if (Update_Download(info, dir + "/" + info.asset, nullptr, err) && fsu::WriteAll(dir + "/ready.txt", info.version + "\n" + info.asset + "\n")) {
-        g_updState = 2;
-    } else {
-        g_updState = 0;
+    if (!Update_Latest(repo, Update_Platform(), info, err)) {
+        printf("LugaruEX launcher: no update information: %s\n", err.c_str());
+        fflush(stdout);
+    } else if (Update_IsNewer(info.version, CurrentVersion())) {
+        g_updInfo = info;
+        g_updState = 3;
     }
 }
 
-// a downloaded update: put it in place and start the new launcher (true = this one is done)
-bool ApplyPendingUpdate(char** argv)
+void UpdateDownloadThread(UpdateInfo info)
+{
+    const std::string dir = g_exDir + "update";
+    fsu::RemoveTree(dir);
+    fsu::MakeDirs(dir);
+    std::string err;
+    if (Update_Download(info, dir + "/" + info.asset, &g_updBytes, err) && fsu::WriteAll(dir + "/ready.txt", info.version + "\n" + info.asset + "\n")) {
+        g_updState = 2;
+    } else {
+        fsu::RemoveTree(dir);
+        g_updError = err;
+        g_updState = 4;
+    }
+}
+
+// a downloaded update: put it in place (false: nothing waiting, or err says why it failed)
+bool InstallPendingUpdate(std::string& err)
 {
     const std::string dir = g_exDir + "update";
     std::string ready;
@@ -2193,9 +2212,9 @@ bool ApplyPendingUpdate(char** argv)
     }
     const std::string version = Trim(ready.substr(0, ready.find('\n')));
     const std::string asset = Trim(ready.substr(ready.find('\n') + 1));
-    std::string err, launcher;
+    std::string launcher;
     bool ok = false;
-    if (Update_IsNewer(version, LUGARUEX_VERSION) && !asset.empty() && asset.find_first_of("/\\") == std::string::npos) {
+    if (Update_IsNewer(version, CurrentVersion()) && !asset.empty() && asset.find_first_of("/\\") == std::string::npos) {
         GameFolder g;
         g.path = g_gameDir.substr(0, g_gameDir.size() - 1);
         SetupOptions o;
@@ -2203,17 +2222,34 @@ bool ApplyPendingUpdate(char** argv)
         ok = Setup_Unpack(dir + "/" + asset, dir + "/unpacked", err) && Setup_Install(dir + "/unpacked", g, o, launcher, err);
     }
     fsu::RemoveTree(dir); // used or not, never twice
-    if (!ok) {
+    return ok;
+}
+
+// this program's path, taken at start (an update replaces the file while it runs)
+std::string g_selfPath;
+
+// start the (new) launcher at this program's path with the same arguments
+void RelaunchSelf(char** argv)
+{
+#ifndef _WIN32
+    const std::string self = g_selfPath.empty() ? Setup_SelfPath() : g_selfPath;
+    execv(self.c_str(), argv);
+    fprintf(stderr, "LugaruEX launcher: could not start the new launcher (%s): %s\n", self.c_str(), strerror(errno));
+#endif
+    (void)argv;
+}
+
+// at start: an update downloaded earlier goes in, then the new launcher (true = this one is done)
+bool ApplyPendingUpdate(char** argv)
+{
+    std::string err;
+    if (!InstallPendingUpdate(err)) {
         if (!err.empty()) {
             fprintf(stderr, "LugaruEX launcher: the update could not be installed: %s\n", err.c_str());
         }
         return false;
     }
-#ifndef _WIN32
-    const std::string self = Setup_SelfPath();
-    execv(self.c_str(), argv); // the new launcher, same arguments
-#endif
-    (void)argv;
+    RelaunchSelf(argv);
     return false;
 }
 
@@ -2235,7 +2271,8 @@ int main(int argc, char** argv)
         return 1;
     }
     FindFolders();
-    Setup_CleanOld(Setup_SelfPath()); // left by an update
+    g_selfPath = Setup_SelfPath();
+    Setup_CleanOld(g_selfPath); // left by an update
     {
         char* bp = SDL_GetBasePath();
         std::string exeDir = bp ? bp : "./";
@@ -2363,7 +2400,7 @@ int main(int argc, char** argv)
         }
     }
     const bool haveData = DirExists(g_gameDir + "Data/Maps");
-    if (!g_setupMode && g_set.autoUpdate) { // look for a new LugaruEX meanwhile (it installs on the next start)
+    if (!g_setupMode && g_set.autoUpdate) { // look for a new LugaruEX meanwhile (the player is asked)
         const std::string repo = g_ini.Get("Launcher", "UpdateRepo");
         std::thread(UpdateThread, repo.empty() ? std::string(kUpdateRepo) : repo).detach();
     }
@@ -2380,7 +2417,8 @@ int main(int argc, char** argv)
     }
 
     int tab = 0, wantTab = shotTab >= 0 ? shotTab : std::max(0, std::min(5, g_set.tab)); // last time's tab
-    bool running = true, play = false;
+    bool running = true, play = false, applyUpdate = false, updAsked = false;
+    Uint32 updAskedAt = 0;
     Uint64 last = SDL_GetPerformanceCounter();
     while (running) {
         SDL_Event e;
@@ -2425,7 +2463,7 @@ int main(int argc, char** argv)
                     wantTab = (tab + 5) % 6;
                 } else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
                     wantTab = (tab + 1) % 6;
-                } else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START && g_message.empty() && g_importModel.empty()) {
+                } else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START && g_message.empty() && g_importModel.empty() && g_updState == 0) {
                     play = true;
                 }
             }
@@ -2557,7 +2595,13 @@ int main(int argc, char** argv)
             const char* full = "LugaruEX " LUGARUEX_VERSION "  -  LB / RB tabs, Start plays";
             const char* base = "LugaruEX " LUGARUEX_VERSION;
             const int us = g_updState;
-            const std::string upd = us == 1 ? "Downloading LugaruEX " + g_updVersion + "..." : us == 2 ? "LugaruEX " + g_updVersion + " installs next start" : "";
+            std::string upd;
+            if (us == 1) {
+                const uint64_t total = g_updInfo.size;
+                upd = "Downloading " + g_updInfo.version + "..." + (total ? " " + std::to_string((int)std::min<uint64_t>(100, g_updBytes * 100 / total)) + "%" : std::string());
+            } else if (us == 2) {
+                upd = "Installing " + g_updInfo.version + "...";
+            }
             ImGui::TextDisabled("%s", !upd.empty() ? upd.c_str() : (anyPad && ImGui::CalcTextSize(full).x <= textW) ? full : base);
         } else {
             ImGui::PushTextWrapPos(pad + textW);
@@ -2565,9 +2609,11 @@ int main(int argc, char** argv)
             ImGui::PopTextWrapPos();
         }
         ImGui::SameLine(io.DisplaySize.x - pad - 2 * btnW - 8 * s);
+        ImGui::BeginDisabled(g_updState == 1 || g_updState == 2); // updating: the game starts from the new launcher
         if (ImGui::Button("Play!", ImVec2(btnW, 0))) {
             play = true;
         }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Quit", ImVec2(btnW, 0))) {
             running = false;
@@ -2588,6 +2634,63 @@ int main(int argc, char** argv)
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();
+        }
+        // a newer LugaruEX: ask once
+        if (g_updState == 3 && !updAsked && g_message.empty()) {
+            updAsked = true;
+            updAskedAt = SDL_GetTicks();
+            printf("LugaruEX launcher: update %s available (this is %s), asking\n", g_updInfo.version.c_str(), CurrentVersion().c_str());
+            fflush(stdout);
+            ImGui::OpenPopup("LugaruEX Update");
+        }
+        if (ImGui::BeginPopupModal("LugaruEX Update", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("%s is available. Current version is %s.", g_updInfo.version.c_str(), CurrentVersion().c_str());
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Update now?");
+            ImGui::Spacing();
+            // test hook LUGARUEX_TEST_UPDATE_ANSWER=ok|cancel[,seconds]: answer by itself (default after 5 s)
+            static const char* testAnswer = getenv("LUGARUEX_TEST_UPDATE_ANSWER");
+            const bool testDue = testAnswer && SDL_GetTicks() - updAskedAt > (Uint32)(1000 * (strchr(testAnswer, ',') ? atof(strchr(testAnswer, ',') + 1) : 5.0));
+            const bool testOk = testDue && strncmp(testAnswer, "ok", 2) == 0;
+            if (ImGui::Button("OK", ImVec2(btnW, 0)) || testOk) {
+                printf("LugaruEX launcher: update accepted, downloading %s\n", g_updInfo.asset.c_str());
+                fflush(stdout);
+                g_updBytes = 0;
+                g_updState = 1;
+                std::thread(UpdateDownloadThread, g_updInfo).detach();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(btnW, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight) || (testDue && !testOk)) {
+                printf("LugaruEX launcher: update declined\n");
+                fflush(stdout);
+                g_updState = 0;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        if (g_updState == 4) {
+            printf("LugaruEX launcher: update download failed: %s\n", g_updError.c_str());
+            fflush(stdout);
+            g_message = "The update could not be downloaded: " + g_updError;
+            g_updState = 0;
+        } else if (g_updState == 2 && !applyUpdate) {
+            // downloaded: keep this session's choices, put it in place, then the new launcher takes over
+            if (CollectSettings()) {
+                SaveIni();
+            }
+            std::string err;
+            if (InstallPendingUpdate(err)) {
+                printf("LugaruEX launcher: update %s installed, starting the new launcher\n", g_updInfo.version.c_str());
+                fflush(stdout);
+                applyUpdate = true;
+                running = false;
+            } else {
+                printf("LugaruEX launcher: update could not be installed: %s\n", err.c_str());
+                fflush(stdout);
+                g_message = "The update could not be installed: " + (err.empty() ? std::string("unknown error") : err);
+                g_updState = 0;
+            }
         }
         // "Delete..." on a mod: ask first
         if (!g_modDelete.empty()) {
@@ -2701,5 +2804,8 @@ int main(int argc, char** argv)
     SDL_GL_DeleteContext(gl);
     SDL_DestroyWindow(win);
     SDL_Quit();
+    if (applyUpdate) {
+        RelaunchSelf(argv); // (Linux: this process becomes the new launcher)
+    }
     return 0;
 }

@@ -1,4 +1,4 @@
-LugaruEX 0.4.11 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.4.12 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -28,8 +28,8 @@ Install (Linux, Steam Deck)
 
 Updates
   With Auto Update ticked (bottom left of the launcher), the launcher looks
-  for a new LugaruEX when it starts and downloads it in the background; it is
-  put in place the next time the launcher starts. Settings, mods, presets and
+  for a new LugaruEX when it starts and asks before updating. OK downloads
+  and installs it, then the launcher opens again. Settings, mods, presets and
   saves are kept.
 
 Mods

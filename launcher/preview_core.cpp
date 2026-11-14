@@ -668,9 +668,6 @@ static const float kReturnTime = 2.5f;  // seconds to glide back to the front vi
 static const float kFloatFrom = 0.0f;   // rabbit float: frame range (fractional)
 static const float kFloatTo = 1.25f;
 static const float kFloatPeriod = 4.0f; // seconds for one down-and-up float
-static const float kWolfFloatFrom = 0.0f;
-static const float kWolfFloatTo = 3.0f;
-static const float kWolfFloatPeriod = 5.0f;
 static const float kDefaultYaw = 0.f;    // front view
 static const float kDefaultPitch = 8.f;
 
@@ -892,18 +889,18 @@ void PreviewCore_Advance(double dt, unsigned nowMs)
         // engine rate is target += multiplier * speed * 2; the preview plays it
         // at a slow, calm pace so the pose is easy to look at
         const bool wolf = (g.model == "wolf");
-        if (nf >= 4) {
-            // Float smoothly back and forth over the clean part of the idle.
-            // Rabbit: at the bottom of its bob (frame 2) one foot twists and
-            // points down. Wolf: around frames 4.5-6 an arm twists straight.
-            // (In game, foot IK and the other animations hide these.)
-            const float from = wolf ? kWolfFloatFrom : kFloatFrom, to = wolf ? kWolfFloatTo : kFloatTo;
-            g.phase += (float)dt * 6.2831853f / (wolf ? kWolfFloatPeriod : kFloatPeriod);
+        if (nf >= 4 && !wolf) {
+            // Rabbit: float smoothly back and forth over the clean part of the
+            // idle (at the bottom of its bob, frame 2, one foot twists and points
+            // down; in game foot IK hides it).
+            g.phase += (float)dt * 6.2831853f / kFloatPeriod;
             const float u = 0.5f - 0.5f * cosf(g.phase);
-            const float f = from + (to - from) * u;
+            const float f = kFloatFrom + (kFloatTo - kFloatFrom) * u;
             g.frame = (int)f;
             g.t = f - (int)f;
         } else {
+            // Wolf: its own idle loop as the game plays it, slowed to kAnimSpeed
+            // (rocking over part of it looked broken)
             g.t += (float)dt * s * 2 * kAnimSpeed;
             while (g.t >= 1) {
                 g.t -= 1;

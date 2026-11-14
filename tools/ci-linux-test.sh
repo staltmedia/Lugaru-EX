@@ -85,4 +85,43 @@ grep -n "net:" "$OUT/host.log" | head -20
 grep -n "net:" "$OUT/guest.log" | head -20
 grep -n "WARNING\|CRASH" "$OUT/host.log" "$OUT/guest.log" | head
 
+# 4. launcher update: pretend to be 0.4.10, answer OK, the public release goes in and the new
+#    launcher starts (pictures of the question and of the launcher after it)
+if [ "${LUGARUEX_CI_UPDATE:-1}" = 1 ]; then
+    mkgame /tmp/upd off
+    printf '[Launcher]\nAutoUpdate=1\n' >> /tmp/upd/LugaruEX/LugaruEX.ini
+    before=$(sha256sum /tmp/upd/LugaruEX/lugaruex | cut -d' ' -f1)
+    Xvfb :92 -screen 0 1280x800x24 >/dev/null 2>&1 &
+    XU=$!
+    sleep 2
+    (cd /tmp/upd/LugaruEX && DISPLAY=:92 XDG_DATA_HOME=/tmp/xdg-upd XDG_CONFIG_HOME=/tmp/xdg-upd LIBGL_ALWAYS_SOFTWARE=1 \
+        LUGARUEX_TEST_UPDATE_FROM=0.4.10 LUGARUEX_TEST_UPDATE_ANSWER=ok,4 \
+        timeout 120 ./lugaruex-launcher > "$OUT/update.log" 2>&1) &
+    UP=$!
+    for i in $(seq 1 30); do grep -q "asking" "$OUT/update.log" && break; sleep 1; done
+    sleep 2
+    DISPLAY=:92 import -window root "$OUT/update-question.png" 2>/dev/null
+    for i in $(seq 1 90); do grep -q "installed, starting\|could not\|failed" "$OUT/update.log" && break; sleep 1; done
+    sleep 8
+    DISPLAY=:92 import -window root "$OUT/update-after.png" 2>/dev/null
+    # the new launcher must be running from the new file, with its window up
+    relaunched=0
+    for pid in $(pgrep -x lugaruex-launch); do
+        exe=$(readlink /proc/$pid/exe)
+        echo "update: launcher process $pid runs $exe"
+        case "$exe" in /tmp/upd/*" (deleted)") ;; /tmp/upd/*) relaunched=1 ;; esac
+    done
+    mean=$(convert "$OUT/update-after.png" -colorspace Gray -format "%[fx:mean]" info: 2>/dev/null || echo 0)
+    echo "update: screen brightness after the update $mean"
+    awk "BEGIN { exit !($mean > 0.02) }" || relaunched=0
+    [ $relaunched = 1 ] && echo "update: the new launcher started" || { echo "FAIL: the new launcher did not start"; fail=1; }
+    kill $UP 2>/dev/null
+    pkill -f /tmp/upd/LugaruEX/lugaruex-launcher 2>/dev/null
+    kill $XU 2>/dev/null
+    after=$(sha256sum /tmp/upd/LugaruEX/lugaruex | cut -d' ' -f1)
+    cat "$OUT/update.log" | grep "LugaruEX launcher" | head
+    grep -q "installed, starting" "$OUT/update.log" && [ "$before" != "$after" ] && echo "update: installed (engine binary replaced)" ||
+        { echo "FAIL: the launcher update did not go in"; fail=1; }
+fi
+
 exit $fail

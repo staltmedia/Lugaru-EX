@@ -182,9 +182,12 @@ set(LUGARU_SRCS
     ${SRCDIR}/EX/ExProfile.cpp
     ${SRCDIR}/EX/ExLocal.cpp
     ${SRCDIR}/EX/ExNet.cpp
+    ${SRCDIR}/EX/ExChat.cpp
     ${SRCDIR}/EX/ExMods.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/fsutil.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/modpack.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shared/netinfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shared/lanaddr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/miniz/miniz.c
 
 )
@@ -348,6 +351,14 @@ set(LUGARU_LIBS ${OPENAL_LIBRARY} ${PNG_LIBRARY} ${JPEG_LIBRARY} ${SDL2_LIBRARIE
 
 add_executable(lugaru ${LUGARU_SRCS} ${LUGARU_H} ${LUGARU_OBJS})
 target_link_libraries(lugaru ${LUGARU_LIBS})
+# LugaruEX: EX_BUILD_ID (ex_build_id.h) = hash of the sources, made before every build;
+# online play needs the same one on every PC (cmake/SourceId.cmake)
+add_custom_target(ex_build_id
+    COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/.. -DOUT=${CMAKE_CURRENT_BINARY_DIR}/ex_build_id.h -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/SourceId.cmake
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/ex_build_id.h
+    COMMENT "LugaruEX build id")
+add_dependencies(lugaru ex_build_id)
+target_include_directories(lugaru PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(LINUX)
     # LugaruEX: one binary for every distro - the C++ runtime inside, SDL2 and OpenAL
     # from LugaruEX/lib when bundled (else the system's); no fused multiply-add so

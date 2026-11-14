@@ -66,13 +66,13 @@ sleep 2
 # 3. cross-play: the Windows build (under Wine) hosts, the native Linux build joins
 LINUX_TGZ=${3:-}
 if [ -n "$LINUX_TGZ" ] && [ -f "$LINUX_TGZ" ]; then
-    printf '[Multiplayer]\r\nMode=host\r\nPort=27015\r\n' >> $GAME/LugaruEX/LugaruEX.ini
+    printf '[Multiplayer]\r\nMode=host\r\nSteam=0\r\nPort=27015\r\n' >> $GAME/LugaruEX/LugaruEX.ini
     LGAME=/tmp/lgame
     rm -rf $LGAME
     mkdir -p $LGAME
     cp -r /tmp/oss/Data $LGAME/Data
     tar -C $LGAME -xzf "$LINUX_TGZ"
-    printf '[Display]\nWidth=960\nHeight=540\nMode=windowed\nMSAA=0\nVSync=0\nFPSCap=60\n[Multiplayer]\nMode=join\nAddress=127.0.0.1:27015\n' > $LGAME/LugaruEX/LugaruEX.ini
+    printf '[Display]\nWidth=960\nHeight=540\nMode=windowed\nMSAA=0\nVSync=0\nFPSCap=60\n[Multiplayer]\nMode=join\nSteam=0\nAddress=127.0.0.1:27015\n' > $LGAME/LugaruEX/LugaruEX.ini
     (cd $GAME && LUGARUEX_STDOUT=1 timeout 300 wine LugaruEX/LugaruEX.exe --exlevel=$LEVEL --exquit=70 > "$OUT/xhost.log" 2>&1) &
     HP=$!
     sleep 15

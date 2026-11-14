@@ -34,6 +34,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExInterp.hpp"
 #include "EX/ExLocal.hpp"
 #include "EX/ExNet.hpp"
+#include "ex_build_id.h" // EX_BUILD_ID (made by the build)
 #include "EX/ExCapture.hpp"
 #include "EX/ExLighting.hpp"
 #include "EX/ExPad.hpp"
@@ -174,6 +175,9 @@ void toggleFullscreen()
 
 SDL_bool sdlEventProc(const SDL_Event& e)
 {
+    if (EX::ChatHandleEvent(&e)) {
+        return SDL_TRUE; // LugaruEX: typing a chat line (online)
+    }
     switch (e.type) {
         case SDL_QUIT:
             return SDL_FALSE;
@@ -487,10 +491,12 @@ static void SimStep(float dt)
 
     for (int i = 0; i < count; i++) {
         Tick();
+        EX_PROF("s objects + sound");
     }
     multiplier = oldmult;
 
     TickOnceAfter();
+    EX_PROF("s after (camera, ai sight)");
 
     // Weapon physics used to run once per rendered frame (inside DrawGLScene),
     // so its behaviour depended on the frame rate. It now runs per sim step.
@@ -499,6 +505,7 @@ static void SimStep(float dt)
     }
     if (!EX::NetIsGuest()) { // an online guest's weapons are placed by the host
         weapons.DoStuff();
+        EX_PROF("s weapons");
     }
     multiplier = oldmult;
 }
@@ -861,6 +868,7 @@ int main(int argc, char** argv)
     }
     printf("LugaruEX %s\n", EX_VERSION_STRING);
 #endif
+    printf("LugaruEX build %s (online play needs the same on every PC)\n", EX_BUILD_ID);
     argc -= (argc > 0);
     argv += (argc > 0); // skip program name argv[0] if present
     option::Stats stats(true, usage, argc, argv);
@@ -929,7 +937,7 @@ int main(int argc, char** argv)
             bool gameDone = false;
             bool gameFocused = true;
 
-            srand(time(nullptr));
+            srand(getenv("LUGARUEX_TEST_SEED") ? (unsigned)atoi(getenv("LUGARUEX_TEST_SEED")) : (unsigned)time(nullptr)); // (test hook: same random numbers every run)
 
             if (commandLineOptions[CMD].count() > 0) {
                 devtools = true;
@@ -948,6 +956,7 @@ int main(int argc, char** argv)
                 exQuitAt = SDL_GetTicks() + (Uint32)(atof(commandLineOptions[EXQUIT].last()->arg) * 1000);
             }
             if (commandLineOptions[EXLEVEL].count() > 0 && commandLineOptions[EXLEVEL].last()->arg) {
+                EX::SamplerStart(); // (test hook LUGARUEX_TEST_SAMPLE: from the level load on)
                 const char* lvl = commandLineOptions[EXLEVEL].last()->arg;
                 bool ok = true;
                 if (strncmp(lvl, "campaign:", 9) == 0) {
@@ -1002,7 +1011,67 @@ int main(int argc, char** argv)
                 if (exEnv("LUGARUEX_TEST_CYCLE")) {
                     EX::LightingCycle(); // test hook: same as pressing R
                 }
+                // test hook LUGARUEX_TEST_CROWD=n[,calm]: n more enemies (copies of the level's own)
+                // in rings around player 1, hostile unless ",calm" - for timing big fights
+                char exCrowd[32] = {};
+                if (exEnv("LUGARUEX_TEST_CROWD", exCrowd, sizeof(exCrowd)) && Person::players.size() > 1) {
+                    const int n = atoi(exCrowd);
+                    const bool calm = strstr(exCrowd, "calm") != nullptr;
+                    std::vector<int> src;
+                    for (size_t i = 1; i < Person::players.size(); i++) {
+                        if (!Person::players[i]->isPlayerControlled()) {
+                            src.push_back((int)i);
+                        }
+                    }
+                    XYZ c = Person::players[0]->coords;
+                    for (int k = 0; k < n && !src.empty(); k++) {
+                        Json::Value v = *Person::players[src[k % src.size()]];
+                        std::shared_ptr<Person> np(new Person(v, 0, (unsigned)Person::players.size()));
+                        Person& p = *np;
+                        const float ring = 6.f + 3.f * (k / 12), ang = (k % 12) * 30.f + (k / 12) * 15.f;
+                        XYZ o;
+                        o.x = 0;
+                        o.y = 0;
+                        o.z = ring;
+                        p.coords = c + DoRotation(o, 0, ang, 0);
+                        p.coords.y = terrain.getHeight(p.coords.x, p.coords.z);
+                        p.oldcoords = p.realoldcoords = p.coords;
+                        p.numwaypoints = 1;
+                        p.waypoints[0] = p.coords;
+                        p.waypoint = 0;
+                        Person::players.push_back(np);
+                        p.skeleton.free = 0;
+                        p.skeletonLoad();
+                        p.addClothes();
+                        p.speed = 1 + (float)(Random() % 100) / 1000;
+                        if (!calm) {
+                            p.aitype = attacktypecutoff;
+                        }
+                    }
+                    printf("EXTEST crowd: %d enemies added (%s), %d people now\n", n, calm ? "calm" : "hostile", (int)Person::players.size());
+                }
                 printf("EXTEST level=%s load=%s players=%d at %.2fs\n", lvl, ok ? "ok" : "FAILED", (int)Person::players.size(), SDL_GetTicks() / 1000.f);
+                if (exEnv("LUGARUEX_TEST_SKINHASH")) { // test hook: everyone's painted skin, bounding spheres and rest models (A/B builds)
+                    unsigned long long h = 1469598103934665603ULL;
+                    auto mix = [&](const void* p, size_t n) {
+                        for (size_t b = 0; b < n; b++) {
+                            h = (h ^ ((const unsigned char*)p)[b]) * 1099511628211ULL;
+                        }
+                    };
+                    for (auto& pp : Person::players) {
+                        Skeleton& s = pp->skeleton;
+                        mix(s.skinText, (size_t)s.skinsize * s.skinsize * 3);
+                        Model* ms[] = { &s.drawmodel, &s.drawmodellow, &s.drawmodelclothes, &s.model[0], &s.model[3], &s.modellow, &s.modelclothes };
+                        for (Model* m : ms) {
+                            mix(&m->boundingsphereradius, sizeof(float));
+                            mix(&m->boundingspherecenter, sizeof(XYZ));
+                            if (m->vertex) {
+                                mix(m->vertex, sizeof(XYZ) * m->vertexNum);
+                            }
+                        }
+                    }
+                    printf("EXTEST skin hash %016llx over %d people\n", h, (int)Person::players.size());
+                }
                 if (exQuitAt) {
                     exQuitAt = SDL_GetTicks() + (exQuitAt - SDL_GetTicks()); // count from after loading
                 }
@@ -1028,6 +1097,14 @@ int main(int argc, char** argv)
                         exWorstMs = worst * 1000;
                         exMissed = missed;
                         exCounted = counted;
+                    }
+                    // test hook LUGARUEX_TEST_GOD: player 1 heals every frame (long fights for timing)
+                    static const bool exGod = exEnv("LUGARUEX_TEST_GOD");
+                    if (exGod && !Person::players.empty() && !Person::players[0]->dead) {
+                        Person& g = *Person::players[0];
+                        g.damage = g.permanentdamage = g.superpermanentdamage = 0;
+                        g.bloodloss = 0;
+                        g.deathbleeding = 0;
                     }
                     // test hook: knock player 1 out after 3 s (co-op: the level must go on)
                     static bool exKilled = false;
@@ -1171,6 +1248,7 @@ int main(int argc, char** argv)
                     }
                     if (exQuitAt && SDL_GetTicks() >= exQuitAt) {
                         const float secs = (SDL_GetTicks() - exStart) / 1000.f;
+                        EX::SamplerReport();
                         printf("EXTEST done frames=%ld avgfps=%.1f players=%d", exFrames, exFrames / secs, (int)Person::players.size());
                         printf(" worstframe=%.2fms missedrefresh=%ld/%ld", exWorstMs, exMissed, exCounted);
                         if (!Person::players.empty()) {
@@ -1188,7 +1266,7 @@ int main(int argc, char** argv)
                                         chasers++;
                                     }
                                 }
-                                printf(" human%d[dmg=%.0f dead=%d targetedBy=%d at %.1f,%.1f,%.1f anim=%d head=%.0f/%.0f]", (int)i, h.damage + h.permanentdamage, (int)h.dead, chasers, h.coords.x, h.coords.y, h.coords.z, h.animTarget, h.headyaw, h.headpitch);
+                                printf(" human%d[dmg=%.0f dead=%d targetedBy=%d at %.1f,%.1f,%.1f anim=%d head=%.0f/%.0f %s skin=%d clothes=%d]", (int)i, h.damage + h.permanentdamage, (int)h.dead, chasers, h.coords.x, h.coords.y, h.coords.z, h.animTarget, h.headyaw, h.headpitch, h.creature == wolftype ? "wolf" : "rabbit", h.whichskin, (int)h.clothes.size());
                             }
                         }
                         {

@@ -19,6 +19,9 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "Devtools/ConsoleCmds.hpp"
+#include "EX/ExNet.hpp"
+
+#include <cctype>
 
 #include "Game.hpp"
 #include "Level/Dialog.hpp"
@@ -830,4 +833,42 @@ void ch_skybox(const char*)
 
     terrain.DoShadows();
     Object::DoShadows();
+}
+
+// LugaruEX: online host only - kick / ban / unban <player name> (bans last for this hosting session)
+static void exConsoleReply(const std::string& l)
+{
+    for (int k = 14; k >= 1; k--) {
+        consoletext[k] = consoletext[k - 1];
+    }
+    consoletext[0] = l;
+    consoleselected = 0;
+}
+
+static void exKickCommand(const char* args, int mode, const char* name)
+{
+    std::string who = args;
+    std::string low = who;
+    for (char& ch : low) {
+        ch = (char)tolower((unsigned char)ch);
+    }
+    if (low == name) { // (typed without a name: the dispatcher passes the whole line)
+        who.clear();
+    }
+    exConsoleReply(EX::NetConsoleKick(who, mode));
+}
+
+void ch_kick(const char* args)
+{
+    exKickCommand(args, 0, "kick");
+}
+
+void ch_ban(const char* args)
+{
+    exKickCommand(args, 1, "ban");
+}
+
+void ch_unban(const char* args)
+{
+    exKickCommand(args, 2, "unban");
 }

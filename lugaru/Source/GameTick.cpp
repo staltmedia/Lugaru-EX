@@ -28,10 +28,13 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 #include "Game.hpp"
 #include "EX/ExInterp.hpp"
+#include <cctype>
 #include "EX/ExConfig.hpp"
 #include "EX/ExLocal.hpp"
 #include "EX/ExNet.hpp"
 #include "EX/ExPad.hpp"
+#include "EX/ExProfile.hpp"
+#include "Utils/ImageIO.hpp"
 #include "Objects/PersonType.hpp"
 
 #include "Animation/Animation.hpp"
@@ -127,6 +130,7 @@ int leveltheme;
 extern int mainmenu;
 extern int oldmainmenu;
 extern bool visibleloading;
+extern float flashamount;
 extern XYZ envsound[30];
 extern float envsoundvol[30];
 extern int numenvsounds;
@@ -343,8 +347,23 @@ void Game::cmd_dispatch(const string cmd)
 {
     int i, n_cmds = sizeof(cmd_names) / sizeof(cmd_names[0]);
 
+    if (EX::NetIsGuest()) {
+        // LugaruEX: online, only the host uses commands (the game runs on the host's PC)
+        for (int k = 14; k >= 1; k--) {
+            consoletext[k] = consoletext[k - 1];
+        }
+        consoletext[0] = "Only the host can use commands";
+        consoleselected = 0;
+        emit_sound_np(consolefailsound);
+        return;
+    }
+    // (command names in any case: "Kick Bob" works like "kick Bob")
+    std::string word = cmd.substr(0, cmd.find(' '));
+    for (char& ch : word) {
+        ch = (char)tolower((unsigned char)ch);
+    }
     for (i = 0; i < n_cmds; i++) {
-        if (cmd.substr(0, cmd.find(' ')) == string(cmd_names[i])) {
+        if (word == string(cmd_names[i])) {
             cout << "|" << cmd.substr(cmd.find(' ') + 1) << "|" << endl;
             cmd_handlers[i](cmd.substr(cmd.find(' ') + 1).c_str());
             break;
@@ -511,7 +530,9 @@ void Setenvironment(int which)
 
 bool Game::LoadLevel(int which)
 {
-    return LoadLevelInt(which);
+    const bool ok = LoadLevelInt(which);
+    flashamount = 0; // LugaruEX: no red flash over a level that just loaded
+    return ok;
 }
 
 bool Game::LoadLevelInt(int which)
@@ -532,6 +553,7 @@ bool Game::LoadLevelInt(int which)
 
 void Game::ResetBeforeLevelLoad(bool tutorial)
 {
+    image_cache_clear(); // LugaruEX: skins and clothes are decoded afresh for each level
     Tutorial::active = tutorial;
 
     if (Tutorial::active) {
@@ -614,10 +636,43 @@ static void ExApplyPlayerCharacter(bool tutorial)
     EX::ApplyOutfit(*Person::players[0], EX::cfg.playerClothes); // launcher Clothes
 }
 
+// LugaruEX: a level's path links must name path points that exist (they become array
+// indices); levels can come from an online host, so nothing out of range is kept
+static void exCheckPathPoints()
+{
+    if (numpathpoints < 0 || numpathpoints > 30) {
+        numpathpoints = 0;
+    }
+    for (int j = 0; j < numpathpoints; j++) {
+        int n = 0;
+        for (int k = 0; k < std::max(0, std::min(numpathpointconnect[j], 30)); k++) {
+            if (pathpointconnect[j][k] >= 0 && pathpointconnect[j][k] < numpathpoints) {
+                pathpointconnect[j][n++] = pathpointconnect[j][k];
+            }
+        }
+        numpathpointconnect[j] = n;
+    }
+}
+
+// LugaruEX: dialogue scenes point at characters by number: only ones the level has
+static void exCheckDialogs()
+{
+    for (Dialog& d : Dialog::dialogs) {
+        for (DialogScene& s : d.scenes) {
+            if (s.participantfocus < 0 || s.participantfocus >= (int)Person::players.size()) {
+                s.participantfocus = 0;
+            }
+        }
+    }
+}
+
 bool Game::LoadLevel(const std::string& name, bool tutorial)
 {
     EX::InterpInvalidate(); // LugaruEX: no blending across level loads
     const bool ok = LoadLevelImpl(name, tutorial);
+    {
+        flashamount = 0; // no red flash over a level that just loaded
+    }
     if (ok) {
         if (!Person::players.empty()) {
             EX::NoteLevelLook(*Person::players[0]); // the launcher's "Default" skin
@@ -768,9 +823,21 @@ bool Game::LoadLevelImpl(const std::string& name, bool tutorial)
     int numclothes;
     float tintr, tintg, tintb;
     funpackf(tfile, "Bi", &numclothes);
+    // LugaruEX: levels can come from an online host, so every count and length read from a
+    // level file is kept within what the game's arrays hold (a broken or malicious file then
+    // loads wrong, but can't write past a buffer)
+    if (numclothes < 0 || numclothes > 64) {
+        numclothes = 0;
+    }
 
     if (mapvers >= 9) {
         funpackf(tfile, "Bi Bi", &Person::players[0]->whichskin, &Person::players[0]->creature);
+        if (Person::players[0]->creature != rabbittype && Person::players[0]->creature != wolftype) {
+            Person::players[0]->creature = rabbittype;
+        }
+        if (Person::players[0]->whichskin < 0 || Person::players[0]->whichskin >= (int)PersonType::types[Person::players[0]->creature].skins.size()) {
+            Person::players[0]->whichskin = 0;
+        }
     } else {
         Person::players[0]->whichskin = 0;
         Person::players[0]->creature = rabbittype;
@@ -792,6 +859,7 @@ bool Game::LoadLevelImpl(const std::string& name, bool tutorial)
     for (int k = 0; k < numclothes; k++) {
         char clothespath[256];
         funpackf(tfile, "Bi", &templength);
+        templength = std::max(0, std::min(templength, 255)); // LugaruEX: never past the buffer
         for (int l = 0; l < templength; l++) {
             funpackf(tfile, "Bb", &clothespath[l]);
         }
@@ -815,7 +883,7 @@ bool Game::LoadLevelImpl(const std::string& name, bool tutorial)
     if (mapvers >= 7) {
         int numhotspots;
         funpackf(tfile, "Bi", &numhotspots);
-        if (numhotspots < 0) {
+        if (numhotspots < 0 || numhotspots > 1000) {
             cerr << "Map " << name << " has an invalid number of hotspots" << endl;
             numhotspots = 0;
         }
@@ -824,6 +892,7 @@ bool Game::LoadLevelImpl(const std::string& name, bool tutorial)
             funpackf(tfile, "Bi Bf Bf Bf Bf", &Hotspot::hotspots[i].type, &Hotspot::hotspots[i].size, &Hotspot::hotspots[i].position.x, &Hotspot::hotspots[i].position.y, &Hotspot::hotspots[i].position.z);
             char temptext[256];
             funpackf(tfile, "Bi", &templength);
+            templength = std::max(0, std::min(templength, 255)); // LugaruEX: never past the buffer
             if (templength) {
                 for (int l = 0; l < templength; l++) {
                     funpackf(tfile, "Bb", &temptext[l]);
@@ -853,6 +922,7 @@ bool Game::LoadLevelImpl(const std::string& name, bool tutorial)
     if (numplayers > maxplayers) {
         cout << "Warning: this level contains more players than allowed" << endl;
     }
+    numplayers = std::min(numplayers, 256); // LugaruEX: (a broken file can't make thousands)
     unsigned j = 1;
     for (int i = 1; i < numplayers; i++) {
         try {
@@ -870,10 +940,12 @@ bool Game::LoadLevelImpl(const std::string& name, bool tutorial)
     }
     for (int j = 0; j < numpathpoints; j++) {
         funpackf(tfile, "Bf Bf Bf Bi", &pathpoint[j].x, &pathpoint[j].y, &pathpoint[j].z, &numpathpointconnect[j]);
+        numpathpointconnect[j] = std::max(0, std::min(numpathpointconnect[j], 30)); // LugaruEX: the array holds 30
         for (int k = 0; k < numpathpointconnect[j]; k++) {
             funpackf(tfile, "Bi", &pathpointconnect[j][k]);
         }
     }
+    exCheckPathPoints();
     Game::LoadingScreen();
 
     funpackf(tfile, "Bf Bf Bf Bf", &mapcenter.x, &mapcenter.y, &mapcenter.z, &mapradius);
@@ -889,6 +961,7 @@ bool Game::LoadLevelImpl(const std::string& name, bool tutorial)
     }
 
     fclose(tfile);
+    exCheckDialogs();
 
     for (unsigned i = 0; i < Person::players.size(); i++) {
         Game::LoadingScreen();
@@ -1162,14 +1235,15 @@ bool Game::LoadJsonLevel(const std::string& name, bool tutorial)
 
     Game::LoadingScreen();
 
-    numpathpoints = map_data["map"]["pathpoints"].size();
-    for (unsigned j = 0; j < map_data["map"]["pathpoints"].size(); j++) {
+    numpathpoints = std::min(30, (int)map_data["map"]["pathpoints"].size()); // LugaruEX: the arrays hold 30
+    for (int j = 0; j < numpathpoints; j++) {
         pathpoint[j] = map_data["map"]["pathpoints"][j]["pos"];
-        numpathpointconnect[j] = map_data["map"]["pathpoints"][j]["connect"].size();
-        for (unsigned k = 0; k < map_data["map"]["pathpoints"][j]["connect"].size(); k++) {
+        numpathpointconnect[j] = std::min(30, (int)map_data["map"]["pathpoints"][j]["connect"].size());
+        for (int k = 0; k < numpathpointconnect[j]; k++) {
             pathpointconnect[j][k] = map_data["map"]["pathpoints"][j]["connect"][k].asInt();
         }
     }
+    exCheckPathPoints();
 
     Game::LoadingScreen();
 
@@ -1185,6 +1259,7 @@ bool Game::LoadJsonLevel(const std::string& name, bool tutorial)
         Object::DoShadows();
         Game::LoadingScreen();
     }
+    exCheckDialogs();
 
     for (unsigned i = 0; i < Person::players.size(); i++) {
         Game::LoadingScreen();
@@ -3317,7 +3392,20 @@ void doPlayerCollisions()
     static float collisionradius;
     if (Person::players.size() > 1) {
         for (unsigned k = 0; k < Person::players.size(); k++) {
+            const Person* pk = Person::players[k].get();
             for (unsigned i = k + 1; i < Person::players.size(); i++) {
+                // LugaruEX: the cheap tests of the chain below first (same patch, within 3
+                // units; the very same comparisons): with many characters most pairs are far
+                // apart and this loop runs for every pair, several times a step
+                {
+                    const Person* pi = Person::players[i].get();
+                    if (pi->whichpatchx != pk->whichpatchx || pi->whichpatchz != pk->whichpatchz ||
+                        !(pi->coords.y > pk->coords.y - 3) || !(pi->coords.y < pk->coords.y + 3) ||
+                        !(pi->coords.x > pk->coords.x - 3) || !(pi->coords.x < pk->coords.x + 3) ||
+                        !(pi->coords.z > pk->coords.z - 3) || !(pi->coords.z < pk->coords.z + 3)) {
+                        continue;
+                    }
+                }
                 //neither player is part of a reversal
                 if ((Animation::animations[Person::players[i]->animTarget].attack != reversed &&
                      Animation::animations[Person::players[i]->animTarget].attack != reversal &&
@@ -3840,7 +3928,9 @@ void Game::Tick()
                 }
             }
 
+            EX_PROF("s misc");
             doAerialAcrobatics();
+            EX_PROF("s acrobatics");
 
             static XYZ oldviewer;
 
@@ -4104,10 +4194,13 @@ void Game::Tick()
             }
 
             doAttacks();
+            EX_PROF("s attacks");
 
             doPlayerCollisions();
+            EX_PROF("s people collide");
 
             doJumpReversals();
+            EX_PROF("s reversals");
 
             for (unsigned k = 0; k < Person::players.size(); k++) {
                 if (k != 0 && Person::players[k]->immobile) {
@@ -4897,8 +4990,9 @@ void Game::Tick()
                             movekey = 1;
                         }
                         // LugaruEX: players can walk (Ctrl, or a light push of the stick), the walk
-                        // the game's characters use; rabbits only (wolves have no walk)
-                        if (movekey && Person::players[i]->isPlayerControlled() && Person::players[i]->creature == rabbittype) {
+                        // the game's characters use (wolves walk upright with it, like the original's
+                        // calm wolves on patrol: the wolf skeleton plays the same animations)
+                        if (movekey && Person::players[i]->isPlayerControlled()) {
                             if (Person::players[i]->exWalk && Person::players[i]->isRun()) {
                                 Person::players[i]->setTargetAnimation(walkanim);
                             } else if (!Person::players[i]->exWalk && Person::players[i]->animTarget == walkanim) {
@@ -5032,6 +5126,7 @@ void Game::Tick()
                 }
             }
 
+            EX_PROF("s ai + control");
             //Rotation
             for (unsigned k = 0; k < Person::players.size(); k++) {
                 if (fabs(Person::players[k]->yaw - Person::players[k]->targetyaw) > 180) {
@@ -5083,6 +5178,7 @@ void Game::Tick()
                 Person::players[k]->whichpatchz = Person::players[k]->coords.z / (terrain.size / subdivision * terrain.scale);
             }
 
+            EX_PROF("s animations");
             //do stuff
             Object::DoStuff();
 

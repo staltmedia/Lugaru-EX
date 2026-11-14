@@ -83,6 +83,21 @@ bool NetStatsShown();
 void NetShowStats(bool on);
 /** guest: "Waiting for host..." etc. over the menu */
 void NetDrawOverlay();
+/** hosting or connected to a host */
+bool NetOnline();
+/** chat: send a line from this PC's player (shown to everyone, this PC too) */
+void NetChatSend(const std::string& text);
+/** host console: kick (mode 0), ban (1) or unban (2) a player by name (whole name or its
+    start, any case); bans last for this hosting session. Returns the line to show. */
+std::string NetConsoleKick(const std::string& who, int mode);
+
+/** Chat (ExChat.cpp): T opens a line to type (when T isn't bound to anything); messages
+    go to the console log as "name: text" and float over the speaker's head, fading out. */
+bool ChatHandleEvent(const void* sdlEvent); // true = the event was the chat's (typing)
+bool ChatBlocksKeys();                      // typing (or Enter / Escape still held after it)
+void ChatReceived(int person, const std::string& name, const std::string& text);
+void ChatCapture3D(); // in each view, with the 3D camera still set: remember it for the bubbles
+void ChatDraw();      // in each view, after the world: bubbles; typing line on the shared HUD
 }
 
 #endif

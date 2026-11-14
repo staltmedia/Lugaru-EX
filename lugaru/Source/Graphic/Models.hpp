@@ -94,6 +94,19 @@ public:
 
     bool flat;
 
+    // LugaruEX: indexed drawing for models that change shape every frame (characters).
+    // Each distinct triangle corner (vertex + texture coordinate) is stored once in exV
+    // (same T2F_N3F_V3F layout and values as vArray) and the triangles index it, so a pose
+    // update writes and uploads about a fifth of the data. vArray is then only kept up to
+    // date by the full UpdateVertexArray (texture coordinate changes), not per frame.
+    bool exIndexed = false;
+    std::vector<unsigned short> exIdx; // 3 per triangle
+    std::vector<short> exCorner;       // distinct corner -> vertex
+    std::vector<GLfloat> exV;          // 8 floats per distinct corner
+    void exMakeIndexed();
+    void exBoundingSphere();
+    static int exSphereDefer; // > 0: exBoundingSphere waits (see Models.cpp)
+
     Model();
     ~Model();
     void DeleteDecal(int which);
@@ -128,6 +141,9 @@ public:
 
 private:
     void deallocate();
+    void exBuildCorners();
+    void exUpdateCorners(bool withNormals);
+    void exDraw();
     /* indices of triangles that might collide */
     std::vector<unsigned int> possible;
 };

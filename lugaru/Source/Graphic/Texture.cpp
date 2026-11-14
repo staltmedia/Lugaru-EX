@@ -22,6 +22,8 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "Utils/Folders.hpp"
 #include "Utils/ImageIO.hpp"
+
+#include <cstring>
 #include "EX/ExConfig.hpp"
 #include "EX/ExGraphics.hpp"
 
@@ -34,14 +36,15 @@ void TextureRes::load()
     ImageRec texture;
 
     //load image into 'texture'
-    if (!load_image(filename.c_str(), texture)) {
+    // (skins: decoded once per level load for everyone wearing them, see load_image_sized)
+    if (!(isSkin ? load_image_sized(filename.c_str(), 512, 512, texture) : load_image(filename.c_str(), texture))) {
         cerr << "Texture " << filename << " loading failed" << endl;
         return;
     }
 
     if (isSkin) {
-        // Skins are painted on the CPU (blood) in fixed 512x512 buffers.
-        image_resize(texture, 512, 512); // always square 512, like the paint buffers
+        // Skins are painted on the CPU (blood) in fixed 512x512 buffers: always square 512
+        // (load_image_sized resized it), like the paint buffers
     } else if (EX::cfg.textureQuality == 0 && texture.sizeX >= 256 && texture.sizeY >= 256) {
         image_halve(texture); // "Low" texture quality in the launcher
     }
@@ -72,9 +75,20 @@ void TextureRes::load()
         const int nb = texture.sizeY * texture.sizeX * (texture.bpp / 8);
         data = (GLubyte*)malloc(nb * sizeof(GLubyte));
         datalen = 0;
-        for (int i = 0; i < nb; i++) {
-            if ((i + 1) % 4 || type == GL_RGB) {
+        if (type == GL_RGB) {
+            memcpy(data, texture.data, nb); // (every byte, as the loop below did)
+            datalen = nb;
+        } else {
+            // every byte but each fourth (alpha), as the original per-byte loop
+            for (int i = 0; i + 3 < nb; i += 4) {
                 data[datalen++] = texture.data[i];
+                data[datalen++] = texture.data[i + 1];
+                data[datalen++] = texture.data[i + 2];
+            }
+            for (int i = nb - nb % 4; i < nb; i++) {
+                if ((i + 1) % 4) {
+                    data[datalen++] = texture.data[i];
+                }
             }
         }
         glTexImage2D(GL_TEXTURE_2D, 0, type, texture.sizeX, texture.sizeY, 0, GL_RGB, GL_UNSIGNED_BYTE, data);

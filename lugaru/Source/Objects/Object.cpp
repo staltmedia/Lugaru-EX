@@ -573,8 +573,12 @@ void Object::LoadObjectsFromFile(FILE* tfile, bool skip)
     if (!skip) {
         objects.clear();
     }
+    numobjects = std::max(0, std::min(numobjects, 20000)); // LugaruEX: (levels can come from an online host)
     for (int i = 0; i < numobjects; i++) {
         funpackf(tfile, "Bi Bf Bf Bf Bf Bf Bf", &type, &yaw, &pitch, &position.x, &position.y, &position.z, &scale);
+        if (type < boxtype || type > firetype || type == 10) {
+            continue; // (not an object the game has)
+        }
         if (!skip) {
             if (type == treeleavestype) {
                 scale = lastscale;
@@ -589,7 +593,11 @@ void Object::LoadObjectsFromJson(Json::Value values)
 {
     objects.clear();
     float lastscale = 1.0f;
-    for (unsigned i = 0; i < values.size(); i++) {
+    for (unsigned i = 0; i < values.size() && i < 20000; i++) {
+        const int t = values[i][0].asInt();
+        if (t < boxtype || t > firetype || t == 10) {
+            continue; // LugaruEX: (levels can come from an online host) not an object the game has
+        }
         objects.emplace_back(new Object(values[i], lastscale));
         lastscale = objects.back()->scale;
     }

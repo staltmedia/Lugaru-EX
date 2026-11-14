@@ -24,6 +24,12 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Game.hpp"
 #include "Utils/Folders.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <map>
+#include <tuple>
+
 extern float multiplier;
 extern float viewdistance;
 extern XYZ viewer;
@@ -339,11 +345,18 @@ void Model::UpdateVertexArray()
             vArray[j + 23] = vertex[Triangles[i].vertex[2]].z;
         }
     }
+    if (exIndexed) {
+        exBuildCorners(); // (texture coordinates may have changed)
+    }
 }
 
 void Model::UpdateVertexArrayNoTex()
 {
     if (type != normaltype && type != decalstype) {
+        return;
+    }
+    if (exIndexed) {
+        exUpdateCorners(true);
         return;
     }
 
@@ -401,6 +414,10 @@ void Model::UpdateVertexArrayNoTex()
 void Model::UpdateVertexArrayNoTexNoNorm()
 {
     if (type != normaltype && type != decalstype) {
+        return;
+    }
+    if (exIndexed) {
+        exUpdateCorners(false);
         return;
     }
 
@@ -468,16 +485,7 @@ bool Model::loadnotex(const std::string& filename)
         owner[i] = -1;
     }
 
-    boundingsphereradius = 0;
-    for (i = 0; i < vertexNum; i++) {
-        for (int j = 0; j < vertexNum; j++) {
-            if (j != i && distsq(&vertex[j], &vertex[i]) / 2 > boundingsphereradius) {
-                boundingsphereradius = distsq(&vertex[j], &vertex[i]) / 2;
-                boundingspherecenter = (vertex[i] + vertex[j]) / 2;
-            }
-        }
-    }
-    boundingsphereradius = fast_sqrt(boundingsphereradius);
+    exBoundingSphere();
 
     return true;
 }
@@ -539,17 +547,7 @@ bool Model::load(const std::string& filename)
         owner[i] = -1;
     }
 
-    static int j;
-    boundingsphereradius = 0;
-    for (i = 0; i < vertexNum; i++) {
-        for (j = 0; j < vertexNum; j++) {
-            if (j != i && distsq(&vertex[j], &vertex[i]) / 2 > boundingsphereradius) {
-                boundingsphereradius = distsq(&vertex[j], &vertex[i]) / 2;
-                boundingspherecenter = (vertex[i] + vertex[j]) / 2;
-            }
-        }
-    }
-    boundingsphereradius = fast_sqrt(boundingsphereradius);
+    exBoundingSphere();
 
     return true;
 }
@@ -557,7 +555,7 @@ bool Model::load(const std::string& filename)
 bool Model::loaddecal(const std::string& filename)
 {
     FILE* tfile;
-    long i, j;
+    long i;
     short triangleNum;
 
     LOGFUNC;
@@ -610,16 +608,7 @@ bool Model::loaddecal(const std::string& filename)
         owner[i] = -1;
     }
 
-    boundingsphereradius = 0;
-    for (i = 0; i < vertexNum; i++) {
-        for (j = 0; j < vertexNum; j++) {
-            if (j != i && distsq(&vertex[j], &vertex[i]) / 2 > boundingsphereradius) {
-                boundingsphereradius = distsq(&vertex[j], &vertex[i]) / 2;
-                boundingspherecenter = (vertex[i] + vertex[j]) / 2;
-            }
-        }
-    }
-    boundingsphereradius = fast_sqrt(boundingsphereradius);
+    exBoundingSphere();
 
     return true;
 }
@@ -723,18 +712,8 @@ void Model::Scale(float xscale, float yscale, float zscale)
     }
     UpdateVertexArray();
 
-    static int j;
 
-    boundingsphereradius = 0;
-    for (i = 0; i < vertexNum; i++) {
-        for (j = 0; j < vertexNum; j++) {
-            if (j != i && distsq(&vertex[j], &vertex[i]) / 2 > boundingsphereradius) {
-                boundingsphereradius = distsq(&vertex[j], &vertex[i]) / 2;
-                boundingspherecenter = (vertex[i] + vertex[j]) / 2;
-            }
-        }
-    }
-    boundingsphereradius = fast_sqrt(boundingsphereradius);
+    exBoundingSphere();
 }
 
 void Model::ScaleNormals(float xscale, float yscale, float zscale)
@@ -766,17 +745,7 @@ void Model::Translate(float xtrans, float ytrans, float ztrans)
     }
     UpdateVertexArray();
 
-    static int j;
-    boundingsphereradius = 0;
-    for (i = 0; i < vertexNum; i++) {
-        for (j = 0; j < vertexNum; j++) {
-            if (j != i && distsq(&vertex[j], &vertex[i]) / 2 > boundingsphereradius) {
-                boundingsphereradius = distsq(&vertex[j], &vertex[i]) / 2;
-                boundingspherecenter = (vertex[i] + vertex[j]) / 2;
-            }
-        }
-    }
-    boundingsphereradius = fast_sqrt(boundingsphereradius);
+    exBoundingSphere();
 }
 
 void Model::Rotate(float xang, float yang, float zang)
@@ -787,17 +756,7 @@ void Model::Rotate(float xang, float yang, float zang)
     }
     UpdateVertexArray();
 
-    static int j;
-    boundingsphereradius = 0;
-    for (i = 0; i < vertexNum; i++) {
-        for (j = 0; j < vertexNum; j++) {
-            if (j != i && distsq(&vertex[j], &vertex[i]) / 2 > boundingsphereradius) {
-                boundingsphereradius = distsq(&vertex[j], &vertex[i]) / 2;
-                boundingspherecenter = (vertex[i] + vertex[j]) / 2;
-            }
-        }
-    }
-    boundingsphereradius = fast_sqrt(boundingsphereradius);
+    exBoundingSphere();
 }
 
 void Model::CalculateNormals(bool facenormalise)
@@ -883,6 +842,13 @@ void Model::draw()
         return;
     }
 
+    if (exIndexed) {
+        textureptr.bind();
+        EX::LightingRecordDraw(exV.data(), (int)exIdx.size(), false, textureptr.exId(), exIdx.data());
+        exDraw();
+        return;
+    }
+
     glEnableClientState(GL_NORMAL_ARRAY);
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -908,6 +874,14 @@ void Model::draw()
 
 void Model::drawdifftex(Texture texture)
 {
+    if (exIndexed) {
+        texture.bind();
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        EX::LightingRecordDraw(exV.data(), (int)exIdx.size(), false, texture.exId(), exIdx.data());
+        exDraw();
+        return;
+    }
     glEnableClientState(GL_NORMAL_ARRAY);
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -1239,6 +1213,11 @@ void Model::deallocate()
     }
     vArray = 0;
 
+    exIndexed = false;
+    exIdx.clear();
+    exCorner.clear();
+    exV.clear();
+
     decals.clear();
 }
 
@@ -1255,4 +1234,143 @@ Model::Model()
     , flat(false)
 {
     memset(&modelTexture, 0, sizeof(modelTexture));
+}
+
+// LugaruEX: indexed drawing (see Models.hpp). Same triangles, corners and values as vArray.
+void Model::exMakeIndexed()
+{
+    static const bool off = getenv("LUGARUEX_TEST_NOINDEX") != nullptr; // test hook: draw as before (A/B pictures)
+    if (off || type != normaltype || flat || color || Triangles.empty() || !vertex || !normals) {
+        return;
+    }
+    exIndexed = true;
+    exBuildCorners();
+}
+
+void Model::exBuildCorners()
+{
+    std::map<std::tuple<short, uint32_t, uint32_t>, unsigned> seen;
+    exIdx.resize(Triangles.size() * 3);
+    exCorner.clear();
+    std::vector<float> uv;
+    for (size_t i = 0; i < Triangles.size(); i++) {
+        for (int c = 0; c < 3; c++) {
+            uint32_t gx, gy;
+            memcpy(&gx, &Triangles[i].gx[c], 4);
+            memcpy(&gy, &Triangles[i].gy[c], 4);
+            auto key = std::make_tuple(Triangles[i].vertex[c], gx, gy);
+            auto it = seen.find(key);
+            unsigned id;
+            if (it == seen.end()) {
+                id = (unsigned)exCorner.size();
+                seen[key] = id;
+                exCorner.push_back(Triangles[i].vertex[c]);
+                uv.push_back(Triangles[i].gx[c]);
+                uv.push_back(Triangles[i].gy[c]);
+            } else {
+                id = it->second;
+            }
+            exIdx[i * 3 + c] = (unsigned short)id;
+        }
+    }
+    if (exCorner.size() > 65535) { // (too big for 16-bit indices: draw as before)
+        exIndexed = false;
+        exIdx.clear();
+        exCorner.clear();
+        exV.clear();
+        return;
+    }
+    exV.assign(exCorner.size() * 8, 0.f);
+    for (size_t k = 0; k < exCorner.size(); k++) {
+        exV[k * 8 + 0] = uv[k * 2];
+        exV[k * 8 + 1] = uv[k * 2 + 1];
+    }
+    exUpdateCorners(true);
+}
+
+void Model::exUpdateCorners(bool withNormals)
+{
+    GLfloat* o = exV.data();
+    const size_t n = exCorner.size();
+    if (withNormals) {
+        for (size_t k = 0; k < n; k++, o += 8) {
+            const XYZ& nv = normals[exCorner[k]];
+            const XYZ& v = vertex[exCorner[k]];
+            o[2] = nv.x, o[3] = nv.y, o[4] = nv.z;
+            o[5] = v.x, o[6] = v.y, o[7] = v.z;
+        }
+    } else {
+        for (size_t k = 0; k < n; k++, o += 8) {
+            const XYZ& v = vertex[exCorner[k]];
+            o[5] = v.x, o[6] = v.y, o[7] = v.z;
+        }
+    }
+}
+
+void Model::exDraw()
+{
+    glInterleavedArrays(GL_T2F_N3F_V3F, 8 * sizeof(GLfloat), exV.data());
+    glDrawElements(GL_TRIANGLES, (GLsizei)exIdx.size(), GL_UNSIGNED_SHORT, exIdx.data());
+    glDisableClientState(GL_NORMAL_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+}
+
+// LugaruEX: the model's bounding sphere - the same pair of vertices and the same numbers as
+// the original all-pairs search (the first pair, in its order, at the largest distance),
+// found faster: each pair is measured once (j > i; the distance is symmetric and the
+// original only replaced on a strictly larger value, so its first maximum is always such a
+// pair) and a vertex whose farthest possible partner (a corner of the model's box, with a
+// margin for rounding) can't beat the best so far is skipped. While exSphereDefer is set
+// (a model being loaded and then rotated / scaled at once) only the last call counts, so the
+// earlier ones are skipped.
+int Model::exSphereDefer = 0;
+
+void Model::exBoundingSphere()
+{
+    if (exSphereDefer > 0) {
+        return;
+    }
+    boundingsphereradius = 0;
+    if (vertexNum > 1 && vertex) {
+        XYZ lo = vertex[0], hi = vertex[0];
+        for (int i = 1; i < vertexNum; i++) {
+            lo.x = std::min(lo.x, vertex[i].x), lo.y = std::min(lo.y, vertex[i].y), lo.z = std::min(lo.z, vertex[i].z);
+            hi.x = std::max(hi.x, vertex[i].x), hi.y = std::max(hi.y, vertex[i].y), hi.z = std::max(hi.z, vertex[i].z);
+        }
+        for (int i = 0; i < vertexNum; i++) {
+            const double dx = std::max(fabs((double)vertex[i].x - lo.x), fabs((double)hi.x - vertex[i].x));
+            const double dy = std::max(fabs((double)vertex[i].y - lo.y), fabs((double)hi.y - vertex[i].y));
+            const double dz = std::max(fabs((double)vertex[i].z - lo.z), fabs((double)hi.z - vertex[i].z));
+            if ((dx * dx + dy * dy + dz * dz) / 2 * (1 + 1e-4) + 1e-20 <= boundingsphereradius) {
+                continue; // nothing in this row can be strictly larger
+            }
+            for (int j = i + 1; j < vertexNum; j++) {
+                if (distsq(&vertex[j], &vertex[i]) / 2 > boundingsphereradius) {
+                    boundingsphereradius = distsq(&vertex[j], &vertex[i]) / 2;
+                    boundingspherecenter = (vertex[i] + vertex[j]) / 2;
+                }
+            }
+        }
+    }
+    static const bool check = getenv("LUGARUEX_TEST_SPHERECHECK") != nullptr; // test hook: compare with the original search
+    if (check) {
+        float r = 0;
+        XYZ c = boundingspherecenter;
+        for (int i = 0; i < vertexNum; i++) {
+            for (int j = 0; j < vertexNum; j++) {
+                if (j != i && distsq(&vertex[j], &vertex[i]) / 2 > r) {
+                    r = distsq(&vertex[j], &vertex[i]) / 2;
+                    c = (vertex[i] + vertex[j]) / 2;
+                }
+            }
+        }
+        static long checked = 0, wrong = 0;
+        checked++;
+        if (r != boundingsphereradius || memcmp(&c, &boundingspherecenter, sizeof(XYZ)) != 0) {
+            wrong++;
+        }
+        printf("EXTEST sphere check %ld, wrong %ld (%d vertices)\n", checked, wrong, vertexNum);
+    }
+    boundingsphereradius = fast_sqrt(boundingsphereradius);
 }

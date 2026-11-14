@@ -40,6 +40,7 @@ void Dialog::loadDialogs(FILE* tfile)
 {
     int numdialogues;
     funpackf(tfile, "Bi", &numdialogues);
+    numdialogues = std::max(0, std::min(numdialogues, 500)); // LugaruEX: (levels can come from an online host)
     for (int k = 0; k < numdialogues; k++) {
         dialogs.push_back(Dialog(tfile));
     }
@@ -71,6 +72,7 @@ Dialog::Dialog(FILE* tfile)
 {
     int numdialogscenes;
     funpackf(tfile, "Bi", &numdialogscenes);
+    numdialogscenes = std::max(0, std::min(numdialogscenes, 500)); // LugaruEX
     funpackf(tfile, "Bi", &type);
     for (int l = 0; l < 10; l++) {
         funpackf(tfile, "Bf Bf Bf", &participantlocation[l].x, &participantlocation[l].y, &participantlocation[l].z);
@@ -89,7 +91,7 @@ std::string funpackf_string(FILE* tfile, int maxlength)
         templength = maxlength;
     }
     int m;
-    char* text = new char[maxlength];
+    char* text = new char[maxlength + 1]; // LugaruEX: + 1 for the end (a full-length text wrote past it)
     for (m = 0; m < templength; m++) {
         funpackf(tfile, "Bb", &text[m]);
         if (text[m] == '\0') {

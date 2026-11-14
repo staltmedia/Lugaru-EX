@@ -27,6 +27,7 @@ cp "$ROOT/lugaru/Dist/Linux/lugaru.png" "$EX/lugaruex.png"
 cp "$ROOT/lugaru/COPYING.txt" "$EX/COPYING.txt"
 cp "$ROOT/lugaru/CONTENT-LICENSE.txt" "$EX/CONTENT-LICENSE.txt"
 cp "$ROOT/tools/README-LugaruEX.txt" "$EX/README.txt"
+echo "$VER" > "$EX/version.txt" # (the installer shows which version a game folder has)
 # license texts of the libraries built into the programs
 SHARE="$ROOT/vcpkg/installed/x64-linux/share"
 for p in sdl2 libpng libjpeg-turbo libogg libvorbis zlib jsoncpp; do
@@ -38,6 +39,14 @@ fi
 cp "$ROOT/launcher-sdl/thirdparty/imgui/LICENSE.txt" "$EX/licenses/dear-imgui.txt"
 cp "$ROOT/launcher-sdl/thirdparty/stb/LICENSE" "$EX/licenses/stb.txt"
 cp "$ROOT/shared/miniz/LICENSE" "$EX/licenses/miniz.txt"
+# Steam play: the helper (MIT, a separate program) and Valve's libsteam_api.so (Steamworks
+# SDK redistributable) - only when the build had the SDK
+if [ -x "$B/steam/lugaruex-steam" ]; then
+    cp "$B/steam/lugaruex-steam" "$B/steam/libsteam_api.so" "$EX/"
+    cp "$ROOT/steam/LICENSE.txt" "$EX/licenses/lugaruex-steam.txt"
+else
+    echo "warning: no Steam helper in $B/steam: this package has no Steam play"
+fi
 
 cat > "$EX/SOURCE.txt" <<EOF
 LugaruEX $VER is built from the OSS Lugaru source code (GPLv2 or later):

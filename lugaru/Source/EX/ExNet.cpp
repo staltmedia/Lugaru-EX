@@ -25,6 +25,8 @@ typedef int socklen_t;
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <signal.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 typedef int SOCKET;
@@ -34,6 +36,8 @@ typedef int SOCKET;
 
 #include "EX/ExNet.hpp"
 
+#include <cctype>
+
 #include "Audio/Sounds.hpp"
 #include "EX/ExConfig.hpp"
 #include "EX/ExInterp.hpp"
@@ -41,6 +45,9 @@ typedef int SOCKET;
 #include "EX/ExMods.hpp"
 #include "fsutil.h"
 #include "modpack.h"
+#include "netinfo.h"
+#include "lanaddr.h"
+#include "ex_build_id.h" // EX_BUILD_ID: hash of the sources (made by the build)
 #include "Tutorial.hpp"
 #include "EX/ExPad.hpp"
 #include "Game.hpp"
@@ -82,11 +89,11 @@ extern float damagedealt; // (damagetaken comes from Level/Awards.hpp)
 namespace EX
 {
 // ------------------------------------------------------------------ protocol
-static const uint32_t kMagic = 0x3858474C; // "LGX8" (0.4.7: mod sharing)
+static const uint32_t kMagic = netinfo::kMagic; // "LGX9" (0.4.13: names, passwords, server list, chat)
 enum : uint8_t
 {
-    T_DISCOVER = 1, // guest -> broadcast: any host here?
-    T_HERE,         // host -> guest
+    T_DISCOVER = 1, // guest / launcher -> host (or broadcast): who are you? (padded to netinfo::kQueryLen)
+    T_HERE,         // host -> asker: netinfo::ServerInfo
     T_HELLO,        // guest -> host: token, character
     T_WELCOME,      // host -> guest
     T_LEVEL,        // host -> guest: level + who is who (resent until acknowledged)
@@ -103,6 +110,21 @@ enum : uint8_t
     T_MODREADY, // guest -> host: has every mod (or plays without them)
     T_FILEGET,  // guest -> host: a piece of the host's copy of the level (or terrain) - 0.4.11
     T_FILEDATA, // host -> guest: that piece
+    T_CHAT,     // guest -> host: a chat line (its own number, text)
+    T_CHATMSG,  // host -> guests: a chat line for everyone (number, person, name, text)
+    T_KICK,     // host -> guest: removed (u8: 1 = banned)
+};
+static_assert(T_DISCOVER == netinfo::kDiscover && T_HERE == netinfo::kHere, "the launchers' server list uses these numbers");
+// WELCOME status
+enum : uint8_t
+{
+    W_FULL_WATCH = 0, // (old) no seat: watching
+    W_PLAYING = 1,
+    W_PASSWORD = 2, // a password is needed (or was wrong): the session number for the proof follows
+    W_FULL = 3,     // the server has its maximum of players
+    W_VERSION = 4,  // another LugaruEX version or build (modified / rebuilt): can't play together
+    W_KICKED = 5,   // removed by the host a little while ago
+    W_BANNED = 6,   // banned by the host
 };
 static const int kMaxPacket = 1200;    // stays under every MTU, no IP fragmentation
 static const double kSendRate = 60;    // snapshots and inputs per second
@@ -250,6 +272,7 @@ enum Role
     R_GUEST
 };
 static Role g_role = R_NONE;
+static bool g_steam = false; // this session goes through Steam (see "Steam" below)
 static SOCKET g_sock = INVALID_SOCKET;
 static int g_port = 27015;
 static bool g_lan = false;
@@ -259,6 +282,17 @@ static double g_bytesOut = 0, g_packetsOut = 0; // for the bandwidth line at exi
 static double now()
 {
     return (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency() - g_t0;
+}
+
+// another PC's address for the log, half hidden ("203.0.x.x"): logs get shared in bug reports
+static void maskedIp(const sockaddr_in& a, char* out, size_t n)
+{
+    const uint8_t* b = (const uint8_t*)&a.sin_addr.s_addr;
+    if (b[0] == 127) {
+        snprintf(out, n, g_steam ? "Steam" : "this PC");
+    } else {
+        snprintf(out, n, "%u.%u.x.x", b[0], b[1]);
+    }
 }
 
 static bool sameAddr(const sockaddr_in& a, const sockaddr_in& b)
@@ -275,7 +309,7 @@ static void sendTo(const Writer& w, const sockaddr_in& to)
     }
 }
 
-static bool openSocket(int port, bool broadcast)
+static bool openSocket(int port, bool broadcast, bool thisPcOnly = false)
 {
 #ifdef _WIN32
     WSADATA wsa;
@@ -295,7 +329,8 @@ static bool openSocket(int port, bool broadcast)
     setsockopt(g_sock, SOL_SOCKET, SO_RCVBUF, (const char*)&buf, sizeof(buf));
     sockaddr_in a = {};
     a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    // through Steam the game only talks to its helper on this PC: nothing else can reach it
+    a.sin_addr.s_addr = htonl(thisPcOnly ? INADDR_LOOPBACK : INADDR_ANY);
     a.sin_port = htons((uint16_t)port);
     if (bind(g_sock, (const sockaddr*)&a, sizeof(a)) != 0) {
         fprintf(stderr, "LugaruEX net: can't use UDP port %d (another program on it?)\n", port);
@@ -317,6 +352,7 @@ struct Client
 {
     sockaddr_in addr;
     uint64_t token = 0;
+    uint64_t seatKey = 0;   // what its seats are kept under (the first token: a restarted game gets them back)
     std::vector<int> slots; // one ExLocal remote slot per player on that PC (split screen there)
     double lastHeard = 0, lastLevelSent = -10;
     uint32_t ackLevel = 0, ackRoster = 0;
@@ -327,6 +363,12 @@ struct Client
     bool infoSent = false;
     bool modsReady = false; // the guest has the host's mods (or plays without them)
     double lastModList = -10;
+    std::string name = "User"; // the player's name (cleaned)
+    uint32_t lastChat = 0;     // newest chat line number heard from them
+    double lastChatAt = -10;
+    uint32_t id = 0;           // for the launcher's kick / ban
+    std::string ident;         // who it is for bans: "steam:<id>" (through Steam) or "ip:<address>"
+    double blockedUntil = 0;   // kicked: refused until then
 };
 static std::vector<Client> g_clients;
 static uint32_t g_levelSeq = 0, g_rosterVer = 0, g_snapSeq = 0;
@@ -483,8 +525,16 @@ static uint32_t groundPrint()
 static void writeInfo(Writer& w)
 {
     w.head(T_INFO);
-    const char* gpu = (const char*)glGetString(GL_RENDERER);
-    w.str(gpu ? gpu : "unknown graphics");
+    // only the graphics maker (NVIDIA / AMD / Intel...): enough to spot a laptop running on
+    // its slow built-in chip, without telling the other PC the exact hardware
+    const char* vendor = (const char*)glGetString(GL_VENDOR);
+    std::string v = vendor ? vendor : "unknown";
+    v = v.substr(0, v.find_first_of(" ,/"));
+    const char* rend = (const char*)glGetString(GL_RENDERER);
+    const std::string r = rend ? netinfo::StripColours(rend) : "";
+    const bool integrated = r.find("Intel") != std::string::npos || r.find("Radeon(TM) Graphics") != std::string::npos ||
+                            r.find("Vega") != std::string::npos || r.find("llvmpipe") != std::string::npos;
+    w.str(v + (integrated ? " (built-in graphics)" : ""));
     w.u16(RefreshRate());
     w.u16(SimRate());
     w.u16((int)screenwidth);
@@ -580,9 +630,267 @@ static std::unordered_set<uint32_t> g_seenSet;
 static int g_score = 0, g_slomo = 0, g_winfreeze = 0;
 static std::string g_status;
 
+// ------------------------------------------------------------------ names, passwords, chat
+static uint64_t g_nonce = 0;               // host: this session's number for password proofs
+static uint64_t g_hostNonce = 0;           // guest: the host's (from a W_PASSWORD welcome)
+static bool g_proofSent = false;           // guest: the last hello carried a password proof
+static std::string g_reject;               // guest: why the host said no (shown while waiting)
+static bool g_needPassword = false;        // guest: the host wants a (better) password - the launcher asks
+static bool g_kicked = false;              // guest: removed or banned by the host - stops asking
+static double g_rejectAt = -10;
+static std::string g_serverName;           // guest: the host's server name (from its welcome)
+static std::map<uint32_t, double> g_askers; // host: when each IP last got a server-list answer
+static uint32_t g_chatSeq = 0;             // this PC's chat line numbers
+static std::deque<uint32_t> g_chatSeen;    // guest: host chat lines already shown
+struct Repeat                              // a packet sent a few times (chat: losing one is noticed)
+{
+    std::vector<uint8_t> data;
+    sockaddr_in to;
+    double at;
+    int left;
+};
+static std::vector<Repeat> g_repeats;
+
+static std::string myName()
+{
+    return netinfo::CleanName(cfg.mpName);
+}
+
+// ------------------------------------------------------------------ Steam (the lugaruex-steam helper)
+// Through Steam the game binds only 127.0.0.1 and starts the helper (a separate program,
+// see steam/): it makes or finds the Steam lobby and carries packets over Valve's relays,
+// so no player sees another's IP address. Its control packets start with "LGXS".
+static const uint32_t kSteamCtl = 0x5358474C;
+static sockaddr_in g_helperAddr;      // the helper's control socket
+static bool g_helperUp = false;
+static double g_lastKeep = 0;
+static std::map<uint16_t, std::string> g_steamIdents; // host: helper port -> "steam:<id>" of that guest
+static std::string g_steamCode;       // host: the lobby code to give friends
+static std::string g_steamError;      // the helper couldn't (Steam not running, bad code...)
+#ifdef _WIN32
+static HANDLE g_helperJob = NULL;
+#endif
+
+static bool startHelper(const std::vector<std::string>& args)
+{
+#ifdef _WIN32
+    const std::string exe = ExFolder() + "lugaruex-steam.exe";
+    if (!fsu::IsFile(exe)) {
+        g_steamError = "Steam play isn't in this build (lugaruex-steam.exe is missing)";
+        return false;
+    }
+    std::wstring cmd = L"\"" + std::wstring(exe.begin(), exe.end()) + L"\"";
+    for (const std::string& a : args) {
+        cmd += L" \"" + std::wstring(a.begin(), a.end()) + L"\"";
+    }
+    std::vector<wchar_t> cl(cmd.begin(), cmd.end());
+    cl.push_back(0);
+    // its output stays out of LugaruEX.log (Steam's library prints the player's Steam ID)
+    STARTUPINFOW si = { sizeof(si) };
+    si.dwFlags = STARTF_USESTDHANDLES;
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(NULL, cl.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
+        g_steamError = "Couldn't start lugaruex-steam.exe";
+        return false;
+    }
+    // it ends with the game, whatever happens to the game
+    g_helperJob = CreateJobObjectW(NULL, NULL);
+    if (g_helperJob) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(g_helperJob, JobObjectExtendedLimitInformation, &li, sizeof(li));
+        AssignProcessToJobObject(g_helperJob, pi.hProcess);
+    }
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+#else
+    const std::string exe = ExFolder() + "lugaruex-steam";
+    if (access(exe.c_str(), X_OK) != 0) {
+        g_steamError = "Steam play isn't in this build (lugaruex-steam is missing)";
+        return false;
+    }
+    const pid_t parent = getpid();
+    const pid_t pid = fork();
+    if (pid < 0) {
+        g_steamError = "Couldn't start lugaruex-steam";
+        return false;
+    }
+    if (pid == 0) {
+        prctl(PR_SET_PDEATHSIG, SIGTERM); // it ends with the game
+        if (getppid() != parent) {
+            _exit(0);
+        }
+        // its output stays out of the log (Steam's library prints the player's Steam ID)
+        const int null = open("/dev/null", O_WRONLY);
+        if (null >= 0) {
+            dup2(null, 1);
+            dup2(null, 2);
+        }
+        std::vector<char*> av;
+        av.push_back((char*)exe.c_str());
+        for (const std::string& a : args) {
+            av.push_back((char*)a.c_str());
+        }
+        av.push_back(nullptr);
+        execv(exe.c_str(), av.data());
+        _exit(127);
+    }
+    return true;
+#endif
+}
+
+static int boundPort()
+{
+    sockaddr_in a = {};
+    socklen_t l = sizeof(a);
+    getsockname(g_sock, (sockaddr*)&a, &l);
+    return ntohs(a.sin_port);
+}
+
+static void helperSend(char type)
+{
+    if (!g_helperUp) {
+        return;
+    }
+    uint8_t p[5];
+    for (int k = 0; k < 4; k++) {
+        p[k] = (uint8_t)(kSteamCtl >> (8 * k));
+    }
+    p[4] = (uint8_t)type;
+    sendto(g_sock, (const char*)p, 5, 0, (const sockaddr*)&g_helperAddr, sizeof(g_helperAddr));
+}
+
+// a control packet from the helper (true = it was one)
+static bool helperPacket(const uint8_t* d, int n, const sockaddr_in& from)
+{
+    if (!g_steam || n < 5 || from.sin_addr.s_addr != htonl(INADDR_LOOPBACK)) {
+        return false;
+    }
+    uint32_t magic = 0;
+    for (int k = 0; k < 4; k++) {
+        magic |= (uint32_t)d[k] << (8 * k);
+    }
+    if (magic != kSteamCtl) {
+        return false;
+    }
+    const std::string text = netinfo::CleanText(std::string((const char*)d + 5, n - 5), 160, false);
+    switch (d[4]) {
+        case 'H':
+            g_helperAddr = from;
+            g_helperUp = true;
+            break;
+        case 'C':
+            if (g_steamCode != text) {
+                g_steamCode = text; // (players join from the server list)
+                printf("LugaruEX net: Steam lobby ready\n");
+            }
+            break;
+        case 'E':
+            if (g_steamError != text) {
+                g_steamError = text;
+                printf("LugaruEX net: Steam: %s\n", text.c_str());
+            }
+            break;
+        case 'P': { // (host) which Steam account a helper port carries: "port steamid" (for bans)
+            const size_t sp = text.find(' ');
+            if (sp != std::string::npos) {
+                const int port = atoi(text.substr(0, sp).c_str());
+                const std::string id = text.substr(sp + 1);
+                if (port > 0 && port < 65536 && !id.empty() && id.find_first_not_of("0123456789") == std::string::npos) {
+                    g_steamIdents[(uint16_t)port] = "steam:" + id;
+                }
+            }
+            break;
+        }
+        case 'A': // (join) the helper's socket for the host
+            if (g_role == R_GUEST && !g_haveHost) {
+                g_hostAddr = from;
+                g_haveHost = true;
+                printf("LugaruEX net: found the game on Steam\n");
+            }
+            break;
+    }
+    return true;
+}
+
+static void sendRepeated(const Writer& w, const sockaddr_in& to)
+{
+    sendTo(w, to);
+    g_repeats.push_back({ std::vector<uint8_t>(w.b, w.b + w.n), to, now() + 0.12, 2 });
+}
+
+static void pumpRepeats()
+{
+    const double t = now();
+    for (size_t i = 0; i < g_repeats.size();) {
+        Repeat& r = g_repeats[i];
+        if (t < r.at) {
+            i++;
+            continue;
+        }
+        if (g_sock != INVALID_SOCKET) {
+            sendto(g_sock, (const char*)r.data.data(), (int)r.data.size(), 0, (const sockaddr*)&r.to, sizeof(r.to));
+        }
+        if (--r.left <= 0) {
+            g_repeats.erase(g_repeats.begin() + i);
+        } else {
+            r.at = t + 0.15;
+            i++;
+        }
+    }
+}
+
+// host: a chat line for everyone (from a guest, or this PC's player); shown here too
+static void hostChat(int person, const std::string& name, const std::string& text)
+{
+    Writer w;
+    w.head(T_CHATMSG);
+    w.u32(++g_chatSeq);
+    w.u8(person >= 0 && person < 255 ? person : 255);
+    w.str(name);
+    w.str(text);
+    for (auto& c : g_clients) {
+        if (c.connected) {
+            sendRepeated(w, c.addr);
+        }
+    }
+    ChatReceived(person, name, text);
+}
+
+bool NetOnline()
+{
+    return g_role == R_HOST || (g_role == R_GUEST && g_welcomed);
+}
+
+void NetChatSend(const std::string& raw)
+{
+    const std::string text = netinfo::CleanText(raw, netinfo::kMaxChat, false);
+    if (text.empty()) {
+        return;
+    }
+    if (g_role == R_HOST) {
+        hostChat(0, myName(), text);
+    } else if (g_role == R_GUEST && g_haveHost && g_welcomed) {
+        // the host sends it back to everyone, this PC included (so all see the same order)
+        Writer w;
+        w.head(T_CHAT);
+        w.u32(++g_chatSeq);
+        w.str(text);
+        sendRepeated(w, g_hostAddr);
+    }
+}
+
 // ------------------------------------------------------------------ init
 static void hostPrepareMods(); // (mod sharing, below)
 static void guestModsForget();
+static void computeMyPrints();
+
+static std::string maxPlayersText()
+{
+    return cfg.mpMaxPlayers > 0 ? "up to " + std::to_string(cfg.mpMaxPlayers) + " players" : std::string("no player limit");
+}
 
 void NetInit()
 {
@@ -593,10 +901,54 @@ void NetInit()
     }
     g_port = cfg.mpPort > 0 && cfg.mpPort < 65536 ? cfg.mpPort : 27015;
     g_lan = cfg.mpLan != 0;
+    g_steam = cfg.mpSteam != 0 && !g_lan && (cfg.mpMode == "host" || cfg.mpMode == "join");
+    if (cfg.mpMode == "host" || cfg.mpMode == "join") {
+        computeMyPrints(); // (which mods are on here: compared with the other side's)
+    }
+    if (g_steam) {
+        // through Steam: a port on this PC only (any free one), and the helper does the rest
+        if (!openSocket(0, false, true)) {
+            fprintf(stderr, "LugaruEX net: can't open a local port for Steam\n");
+            return;
+        }
+        std::random_device rd;
+        if (cfg.mpMode == "host") {
+            g_role = R_HOST;
+            g_nonce = ((uint64_t)rd() << 32) ^ rd() ^ (uint64_t)SDL_GetPerformanceCounter();
+            printf("LugaruEX net: hosting through Steam as \"%s\"%s, %s%s\n", netinfo::StripColours(cfg.mpServerName).c_str(),
+                   cfg.mpHostPassword.empty() ? "" : " (password)", maxPlayersText().c_str(), cfg.mpListed ? " (in the server list)" : " (unlisted)");
+            hostPrepareMods();
+            startHelper({ "host", std::to_string(boundPort()), cfg.mpListed ? "1" : "0" });
+        } else {
+            g_role = R_GUEST;
+            guestModsForget();
+            g_syncDir = ModsFolder() + ".net/sync";
+            fsu::RemoveTree(g_syncDir);
+            if (fsu::MakeDirs(g_syncDir + "/Maps")) {
+                ModsSetSyncRoot(g_syncDir);
+            } else {
+                g_syncDir.clear();
+            }
+            g_token = ((uint64_t)rd() << 32) ^ rd() ^ (uint64_t)SDL_GetPerformanceCounter();
+            const std::string code = netinfo::CleanText(cfg.mpCode, 40, false);
+            if (code.empty()) {
+                g_steamError = "No code to join - paste the host's code in the launcher";
+            } else {
+                printf("LugaruEX net: joining through Steam\n");
+                startHelper({ "join", code, std::to_string(boundPort()) });
+            }
+        }
+        g_lastKeep = 0;
+        return;
+    }
     if (cfg.mpMode == "host") {
         if (openSocket(g_port, true)) {
             g_role = R_HOST;
-            printf("LugaruEX net: hosting on UDP port %d%s\n", g_port, g_lan ? " (LAN: answering searches)" : "");
+            std::random_device rd;
+            g_nonce = ((uint64_t)rd() << 32) ^ rd() ^ (uint64_t)SDL_GetPerformanceCounter();
+            printf("LugaruEX net: hosting on UDP port %d as \"%s\"%s, %s%s\n", g_port,
+                   netinfo::StripColours(cfg.mpServerName).c_str(), cfg.mpHostPassword.empty() ? "" : " (password)", maxPlayersText().c_str(),
+                   g_lan ? " (LAN)" : "");
             hostPrepareMods(); // pack the mods that are on, for guests to download
         }
     } else if (cfg.mpMode == "join") {
@@ -613,7 +965,7 @@ void NetInit()
             }
             std::random_device rd;
             g_token = ((uint64_t)rd() << 32) ^ rd() ^ (uint64_t)SDL_GetPerformanceCounter();
-            if (!g_lan) {
+            if (!g_lan || !cfg.mpAddress.empty()) { // (LAN with an address: that one; without: the first found)
                 std::string a = cfg.mpAddress;
                 int port = g_port;
                 const size_t c = a.rfind(':');
@@ -657,6 +1009,7 @@ void NetShutdown()
     } else if (g_role == R_HOST) {
         printf("LugaruEX net: host sent %ld effects\n", g_fxSent);
     }
+    helperSend('Q'); // (the Steam helper closes the lobby and ends)
     Writer w;
     w.head(T_BYE);
     w.u64(g_token);
@@ -1266,6 +1619,20 @@ static void hostPrepareMods()
     }
 }
 
+// this PC's mods that are on, as fingerprints of their game files (sorted): both sides
+// compare them - different mods with Mod share off on either side can't play together
+static std::vector<uint64_t> g_myPrints;
+static std::string g_modDenied; // guest: why the host's game can't be joined (mods)
+
+static void computeMyPrints()
+{
+    g_myPrints.clear();
+    for (const std::string& folder : ModsLocalEnabled()) {
+        g_myPrints.push_back(Mod_Fingerprint(ModsFolder() + folder));
+    }
+    std::sort(g_myPrints.begin(), g_myPrints.end());
+}
+
 static void hostSendModList(Client& c)
 {
     Writer w;
@@ -1276,6 +1643,12 @@ static void hostSendModList(Client& c)
         w.u64(m.hash);
         w.u32(m.size);
         w.str(m.folder);
+    }
+    // every mod that is on here, shared or not (fingerprints only)
+    const int n = std::min(64, (int)g_myPrints.size());
+    w.u8(n);
+    for (int k = 0; k < n; k++) {
+        w.u64(g_myPrints[k]);
     }
     sendTo(w, c.addr);
     c.lastModList = now();
@@ -1595,7 +1968,7 @@ static void guestModList(Reader& r)
         GetMod m;
         m.hash = r.u64();
         m.size = r.u32();
-        m.name = r.str();
+        m.name = netinfo::CleanText(r.str(), 64, false); // (shown in the log only)
         sig = (sig ^ m.hash) * 1099511628211ull;
         total += m.size;
         list.push_back(m);
@@ -1603,6 +1976,14 @@ static void guestModList(Reader& r)
     if (!r.ok) {
         return;
     }
+    // every mod the host has on (fingerprints)
+    std::vector<uint64_t> hostPrints;
+    const int np = r.u8();
+    for (int k = 0; k < np && r.ok && k < 64; k++) {
+        hostPrints.push_back(r.u64());
+        sig = (sig ^ hostPrints.back()) * 1099511628211ull;
+    }
+    std::sort(hostPrints.begin(), hostPrints.end());
     if (sig == g_modListSig) {
         if (g_modsReady) {
             guestSendModReady(); // the host didn't hear it yet
@@ -1611,10 +1992,30 @@ static void guestModList(Reader& r)
     }
     g_modListSig = sig;
     g_get.clear();
-    if (!sharing || cfg.mpShareMods == 0) {
-        // the host keeps its mods to itself, or this PC said no: play with this PC's own
-        printf("LugaruEX net: %s\n", !sharing ? "the host doesn't share mods" : "not downloading the host's mods (Mod share is off)");
+    g_modDenied.clear();
+    if (r.ok && hostPrints == g_myPrints) {
+        // the same mods on both PCs (or none): play with this PC's own copies
+        printf("LugaruEX net: the host has the same mods as this PC (%d)\n", (int)hostPrints.size());
         guestModsReady(false);
+        return;
+    }
+    if (!sharing || cfg.mpShareMods == 0) {
+        // different mods and Mod share off on a side: the two games would differ - no
+        const char* who = !sharing && cfg.mpShareMods == 0 ? "on both sides" : !sharing ? "on the host's side" : "on your side";
+        g_modDenied = std::string("Different mods than the host and Mod share is off ") + who;
+        printf("LugaruEX net: can't join: the mods differ (this PC %d, host %d) and Mod share is off %s\n", (int)g_myPrints.size(),
+               (int)hostPrints.size(), who);
+        g_modsReady = false;
+        // leave the server (the host frees the seat) and stop asking this session
+        Writer w;
+        w.head(T_BYE);
+        w.u64(g_token);
+        if (g_haveHost) {
+            sendTo(w, g_hostAddr);
+        }
+        g_kicked = true;
+        g_welcomed = false;
+        g_reject = g_modDenied; // (the waiting screen and the launcher show why)
         return;
     }
     if (total > kModMaxTotal) {
@@ -1780,6 +2181,156 @@ static void guestModsForget()
     ModsSetSession({}, false);
 }
 
+// a guest who is playing the host's current level (else waiting: menu, loading, mods)
+static bool clientInGame(const Client& c)
+{
+    return c.connected && c.modsReady && hostInLevel() && c.ackLevel == g_levelSeq;
+}
+
+static int humansHere()
+{
+    int n = std::max(1, LocalPlayersHere());
+    for (const Client& c : g_clients) {
+        if (c.connected) {
+            n += (int)c.slots.size();
+        }
+    }
+    return n;
+}
+
+// what the server list shows: never addresses; no names when a password is set
+static netinfo::ServerInfo hostInfo()
+{
+    netinfo::ServerInfo i;
+    i.id = (uint32_t)((g_nonce * 0x9E3779B97F4A7C15ull) >> 32); // (not the password number itself)
+    i.version = EX_VERSION_STRING;
+    i.name = netinfo::CleanText(cfg.mpServerName, netinfo::kMaxServerName, true);
+    if (i.name.empty()) {
+        i.name = myName() + "'s game";
+    }
+    i.password = !cfg.mpHostPassword.empty();
+    i.shareMods = g_shareOn && !g_share.empty();
+    i.mods = g_shareOn ? (int)g_share.size() : 0;
+    i.players = humansHere();
+    i.maxPlayers = cfg.mpMaxPlayers;
+    i.inGame = hostInLevel();
+    const int mine = std::max(1, LocalPlayersHere());
+    for (int k = 0; k < mine; k++) {
+        i.list.push_back({ k == 0 ? myName() : myName() + " " + std::to_string(k + 1), (uint8_t)(i.inGame ? netinfo::PS_INGAME : netinfo::PS_WAITING) });
+    }
+    for (const Client& c : g_clients) {
+        if (!c.connected) {
+            continue;
+        }
+        for (size_t k = 0; k < c.slots.size(); k++) {
+            i.list.push_back({ k == 0 ? c.name : c.name + " " + std::to_string(k + 1),
+                               (uint8_t)(clientInGame(c) ? netinfo::PS_INGAME : netinfo::PS_WAITING) });
+        }
+    }
+    return i;
+}
+
+// ------------------------------------------------------------------ kick / ban (host)
+// For this hosting session only (a new game starts with nobody banned): a kick keeps the
+// player out for 5 minutes, a ban until the host quits. Either way their character
+// becomes an enemy. From the launcher's player list or the console (kick / ban / unban).
+static std::set<std::string> g_bans; // Steam accounts or addresses
+
+static void kickClient(Client& c, bool ban)
+{
+    if (ban && !c.ident.empty() && c.ident.back() != '?') {
+        g_bans.insert(c.ident);
+    }
+    c.blockedUntil = now() + (ban ? 1e12 : 300);
+    if (!c.connected) {
+        printf("LugaruEX net: %s was %s\n", c.name.c_str(), ban ? "banned" : "kicked");
+        return; // (left already: only keep them out)
+    }
+    Writer w;
+    w.head(T_KICK);
+    w.u8(ban ? 1 : 0);
+    sendRepeated(w, c.addr);
+    c.connected = false;
+    for (int s : c.slots) {
+        LocalRemoteToEnemy(s); // their character turns on everyone
+    }
+    c.slots.clear();
+    printf("LugaruEX net: %s was %s\n", c.name.c_str(), ban ? "banned" : "kicked");
+    ChatReceived(-1, "", c.name + (ban ? " was banned" : " was kicked"));
+}
+
+// a name to compare: lower case, without colour codes (^0-^9) and outer spaces
+static std::string plainName(const std::string& s)
+{
+    std::string o;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '^' && i + 1 < s.size() && s[i + 1] >= '0' && s[i + 1] <= '9') {
+            i++;
+            continue;
+        }
+        o += (char)tolower((unsigned char)s[i]);
+    }
+    while (!o.empty() && o.back() == ' ') {
+        o.pop_back();
+    }
+    size_t a = o.find_first_not_of(' ');
+    return a == std::string::npos ? std::string() : o.substr(a);
+}
+
+std::string NetConsoleKick(const std::string& who, int mode)
+{
+    static const char* verb[3] = { "kick", "ban", "unban" };
+    if (g_role != R_HOST) {
+        return "Only the host of an online game can do that";
+    }
+    const std::string want = plainName(who);
+    if (want.empty()) {
+        return std::string(verb[mode]) + " <player name>";
+    }
+    const double t = now();
+    auto fits = [&](const Client& c) {
+        const bool blocked = c.blockedUntil > t;
+        return mode == 0 ? c.connected : mode == 1 ? (c.connected || blocked) : blocked;
+    };
+    // the whole name first, else the start of one ("kick bo" for Bob)
+    std::vector<Client*> exact, start;
+    for (Client& c : g_clients) {
+        if (!fits(c)) {
+            continue;
+        }
+        const std::string n = plainName(c.name);
+        if (n == want) {
+            exact.push_back(&c);
+        } else if (n.compare(0, want.size(), want) == 0) {
+            start.push_back(&c);
+        }
+    }
+    std::vector<Client*>& hit = exact.empty() ? start : exact;
+    if (hit.empty()) {
+        return mode == 2 ? "Nobody called '" + who + "' is kicked or banned" : "No player called '" + who + "' in this game";
+    }
+    if (hit.size() > 1) {
+        std::string l = "Several players match:";
+        for (size_t k = 0; k < hit.size() && k < 6; k++) {
+            l += (k ? ", " : " ") + hit[k]->name;
+        }
+        return l;
+    }
+    Client& c = *hit[0];
+    if (mode == 2) {
+        g_bans.erase(c.ident);
+        for (Client& o : g_clients) { // (the same PC or Steam account under another record)
+            if (&o == &c || (!c.ident.empty() && c.ident.back() != '?' && o.ident == c.ident)) {
+                o.blockedUntil = 0;
+            }
+        }
+        printf("LugaruEX net: %s was unbanned\n", c.name.c_str());
+        return c.name + " can join again";
+    }
+    kickClient(c, mode == 1);
+    return c.name + (mode == 1 ? " is banned until you stop hosting" : " was kicked (can come back in 5 minutes)");
+}
+
 static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
 {
     Reader r(d, n);
@@ -1789,11 +2340,26 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
     const int type = r.u8();
     const double t = now();
     if (type == T_DISCOVER) {
-        if (g_lan) {
-            Writer w;
-            w.head(T_HERE);
-            sendTo(w, from);
+        // a server list (or a guest searching the LAN) asks who this is. The question is
+        // padded to netinfo::kQueryLen bytes and each address gets at most 5 answers a
+        // second, so this can't be used to flood someone else with bigger answers.
+        if (n < netinfo::kQueryLen) {
+            return;
         }
+        const uint32_t ip = from.sin_addr.s_addr;
+        auto it = g_askers.find(ip);
+        if (it != g_askers.end() && t - it->second < 0.2) {
+            return;
+        }
+        if (g_askers.size() > 4096) {
+            g_askers.clear();
+        }
+        g_askers[ip] = t;
+        const std::vector<uint8_t> info = netinfo::EncodeInfo(hostInfo());
+        Writer w;
+        w.head(T_HERE);
+        w.bytes(info.data(), (int)std::min<size_t>(info.size(), kMaxPacket - 8));
+        sendTo(w, from);
         return;
     }
     if (type == T_HELLO) {
@@ -1801,10 +2367,66 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
         const int count = std::max(1, std::min(4, r.u8())); // players on that PC (split screen there)
         std::vector<std::string> chars;
         for (int k = 0; k < count; k++) {
-            chars.push_back(r.str());
+            chars.push_back(netinfo::SafeLook(r.str())); // (they name texture files: only safe ones)
         }
+        const std::string name = netinfo::CleanName(r.str());
+        const int proofLen = r.u8();
+        std::vector<uint8_t> proof(std::max(0, std::min(64, proofLen)));
+        r.bytes(proof.data(), (int)proof.size());
+        const std::string gver = netinfo::CleanText(r.str(), 16, false), gbuild = netinfo::CleanText(r.str(), 32, false);
         if (!r.ok) {
             return;
+        }
+        auto answer = [&](int status) {
+            Writer w;
+            w.head(T_WELCOME);
+            w.u8(status);
+            w.u64(status == W_PASSWORD ? g_nonce : 0); // (the session number only when it is needed)
+            const std::string sname = netinfo::CleanText(cfg.mpServerName, netinfo::kMaxServerName, true);
+            w.str(sname.empty() ? myName() + "'s game" : sname); // (as the server list shows it)
+            w.str(EX_VERSION_STRING);
+            w.str(EX_BUILD_ID);
+            sendTo(w, from);
+        };
+        // the same release and the same build only: a modified or rebuilt game can't join
+        if (gver != EX_VERSION_STRING || gbuild != EX_BUILD_ID) {
+            static double lastLog = -10;
+            if (t - lastLog > 2) {
+                lastLog = t;
+                printf("LugaruEX net: %s can't join: LugaruEX %s build %s (this is %s build %s)\n", name.c_str(), gver.c_str(), gbuild.c_str(),
+                       EX_VERSION_STRING, EX_BUILD_ID);
+            }
+            answer(W_VERSION);
+            return;
+        }
+        if (!cfg.mpHostPassword.empty() && proof != netinfo::PasswordProof(g_nonce, cfg.mpHostPassword)) {
+            static double lastLog = -10;
+            if (!proof.empty() && t - lastLog > 2) {
+                lastLog = t;
+                printf("LugaruEX net: %s gave a wrong password\n", name.c_str());
+            }
+            answer(W_PASSWORD);
+            return;
+        }
+        // who it is, for bans: the Steam account (through Steam) or the address
+        std::string ident;
+        if (g_steam && from.sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
+            auto it = g_steamIdents.find(ntohs(from.sin_port));
+            ident = it != g_steamIdents.end() ? it->second : "steam:?";
+        } else {
+            char ip[64];
+            inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+            ident = std::string("ip:") + ip;
+        }
+        if (ident.back() != '?' && g_bans.count(ident)) {
+            answer(W_BANNED);
+            return;
+        }
+        for (auto& o : g_clients) {
+            if ((o.token == token || (!o.ident.empty() && o.ident == ident && ident.back() != '?')) && o.blockedUntil > t) {
+                answer(W_KICKED); // (kicked a little while ago)
+                return;
+            }
         }
         Client* c = nullptr;
         for (auto& o : g_clients) {
@@ -1813,17 +2435,56 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
             }
         }
         if (!c) {
+            // the same PC back (it restarted the game: a new token): its old seats, not new ones
+            for (auto& o : g_clients) {
+                // (through Steam every guest is at 127.0.0.1: there the helper's port is the player)
+                const bool same = o.addr.sin_addr.s_addr == from.sin_addr.s_addr && (!g_steam || o.addr.sin_port == from.sin_port);
+                if (!o.connected && same) {
+                    c = &o;
+                    c->token = token;
+                    break;
+                }
+            }
+        }
+        if (!c && g_clients.size() >= 64) {
+            answer(W_FULL); // (a flood of made-up guests can't grow this list for ever)
+            return;
+        }
+        // a new player (or more players from that PC) must fit under the maximum
+        const int already = (c && c->connected) ? (int)c->slots.size() : 0;
+        if (cfg.mpMaxPlayers > 0 && humansHere() - already + count > cfg.mpMaxPlayers) {
+            static double lastLog = -10;
+            if (t - lastLog > 2) {
+                lastLog = t;
+                printf("LugaruEX net: %s can't join: the server is full (%d players)\n", name.c_str(), cfg.mpMaxPlayers);
+            }
+            answer(W_FULL);
+            return;
+        }
+        if (!cfg.mpGuestCharacters) {
+            for (std::string& ch : chars) {
+                ch = "random"; // the host chose: guests get a look nobody else has
+            }
+        }
+        if (!c) {
             g_clients.push_back(Client());
             c = &g_clients.back();
             c->token = token;
+            c->seatKey = token;
         }
         c->addr = from;
         c->lastHeard = t;
+        c->name = name;
+        c->ident = ident;
+        if (c->id == 0) {
+            static uint32_t nextId = 0;
+            c->id = ++nextId;
+        }
         const bool wasConnected = c->connected;
         const size_t before = c->slots.size();
         // one seat per player there; the same token (+ player number) gets the same seat back
         for (int k = 0; k < count; k++) {
-            const int slot = LocalAddRemote(token + (uint64_t)k, chars[k]);
+            const int slot = LocalAddRemote(c->seatKey + (uint64_t)k, chars[k]);
             if (k < (int)c->slots.size()) {
                 c->slots[k] = slot;
             } else if (slot >= 0) {
@@ -1840,14 +2501,14 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
         c->lastModList = -10;
         if (!wasConnected || c->slots.size() != before) {
             char ip[64];
-            inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
-            printf("LugaruEX net: %s joined with %d player%s (%s)\n", ip, (int)c->slots.size(), c->slots.size() == 1 ? "" : "s",
+            maskedIp(from, ip, sizeof(ip));
+            printf("LugaruEX net: %s (%s) joined with %d player%s (%s)\n", name.c_str(), ip, (int)c->slots.size(), c->slots.size() == 1 ? "" : "s",
                    c->connected ? "playing" : "full");
+            if (c->connected && !wasConnected) {
+                ChatReceived(-1, "", name + " joined");
+            }
         }
-        Writer w;
-        w.head(T_WELCOME);
-        w.u8(c->connected ? 1 : 0);
-        sendTo(w, from);
+        answer(c->connected ? W_PLAYING : W_FULL_WATCH);
         return;
     }
     Client* c = clientByAddr(from);
@@ -1915,7 +2576,23 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
                 LocalRemoteInput(c->slots[k], in, yaw, pitch, c->connected);
             }
         }
+    } else if (type == T_CHAT) {
+        const uint32_t id = r.u32();
+        const std::string text = netinfo::CleanText(r.str(), netinfo::kMaxChat, false);
+        if (!r.ok || id <= c->lastChat || text.empty() || !c->connected) {
+            return; // (a repeat of a line already shown)
+        }
+        c->lastChat = id;
+        if (t - c->lastChatAt < 0.4) {
+            return; // too fast: dropped
+        }
+        c->lastChatAt = t;
+        const int person = c->slots.empty() ? -1 : LocalSlotPerson(c->slots[0]);
+        hostChat(person, c->name, text);
     } else if (type == T_BYE) {
+        if (c->connected) {
+            ChatReceived(-1, "", c->name + " left");
+        }
         c->connected = false;
         for (int s : c->slots) {
             LocalRemoteInput(s, PadInput(), 0, 0, false);
@@ -1959,10 +2636,25 @@ static void guestLevel(Reader& r)
         l.whichskin = r.u8();
         l.skin = r.str();
         l.outfit = r.str();
+        // (texture paths from the host: only plain ones under Textures/)
+        if (!l.skin.empty() && l.skin != "random" && l.skin != "default" && !netinfo::SafeDataPath(l.skin)) {
+            l.skin.clear();
+        }
+        if (netinfo::SafeLook("rabbit|" + l.outfit) == "rabbit") {
+            l.outfit.clear();
+        }
         roster.push_back(l);
     }
     if (!r.ok || name.empty()) {
         return;
+    }
+    if (!netinfo::SafeLevelName(name)) {
+        static std::string logged;
+        if (logged != name) {
+            logged = name;
+            printf("LugaruEX net: the host named a level this PC won't load (not a plain level name)\n");
+        }
+        return; // (a path: never opened, never written)
     }
     uint32_t hostMap = 0, hostTerrain = 0; // (hosts before 0.3.6 don't send them)
     if (r.p + 8 <= r.n) {
@@ -2316,7 +3008,7 @@ static void guestReceive(const uint8_t* d, int n, const sockaddr_in& from)
             g_hostAddr = from;
             g_haveHost = true;
             char ip[64];
-            inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+            maskedIp(from, ip, sizeof(ip));
             printf("LugaruEX net: found a host on the LAN at %s\n", ip);
         }
         return;
@@ -2326,12 +3018,90 @@ static void guestReceive(const uint8_t* d, int n, const sockaddr_in& from)
     }
     g_lastHeard = now();
     switch (type) {
-        case T_WELCOME:
+        case T_WELCOME: {
+            if (g_kicked) {
+                break; // (removed, banned or refused: a late welcome changes nothing)
+            }
+            const int status = r.u8();
+            const uint64_t nonce = r.u64();
+            const std::string server = netinfo::CleanText(r.str(), netinfo::kMaxServerName, true);
+            const std::string hostVer = netinfo::CleanText(r.str(), 16, false), hostBuild = netinfo::CleanText(r.str(), 32, false);
+            if (status == W_VERSION) {
+                g_welcomed = false;
+                if (g_reject.empty()) {
+                    printf("LugaruEX net: the host runs LugaruEX %s build %s (this is %s build %s)\n", hostVer.c_str(), hostBuild.c_str(), EX_VERSION_STRING,
+                           EX_BUILD_ID);
+                }
+                g_reject = hostVer != EX_VERSION_STRING ? "The host has LugaruEX " + hostVer + ", you have " EX_VERSION_STRING " - both need the same version"
+                                                        : "The host's LugaruEX is a different build (modified) - both need the same release";
+                g_rejectAt = now();
+                break;
+            }
+            if (status == W_PASSWORD) {
+                g_hostNonce = nonce;
+                g_welcomed = false;
+                if (g_proofSent || cfg.mpJoinPassword.empty()) {
+                    if (g_reject.empty()) {
+                        printf("LugaruEX net: the host needs a password%s\n", cfg.mpJoinPassword.empty() ? "" : " (the one set is wrong)");
+                    }
+                    g_reject = cfg.mpJoinPassword.empty() ? "This server needs a password" : "Wrong password";
+                    g_rejectAt = now();
+                    g_needPassword = true; // (the launcher asks for it)
+                }
+                break;
+            }
+            if (status == W_KICKED || status == W_BANNED) {
+                g_welcomed = false;
+                g_kicked = true; // (no more asking)
+                g_reject = status == W_BANNED ? "The host banned you from this game" : "The host removed you from this game - try again later";
+                printf("LugaruEX net: %s\n", g_reject.c_str());
+                break;
+            }
+            if (status == W_FULL) {
+                g_welcomed = false;
+                if (g_reject.empty()) {
+                    printf("LugaruEX net: the server is full\n");
+                }
+                g_reject = "The server is full - waiting for a free place";
+                g_rejectAt = now();
+                break;
+            }
+            g_reject.clear();
+            g_needPassword = false;
+            g_serverName = server;
             if (!g_welcomed) {
                 g_welcomed = true;
-                printf("LugaruEX net: connected (%s)\n", r.u8() ? "playing" : "the host is full - watching");
+                printf("LugaruEX net: connected to \"%s\" (%s)\n", netinfo::StripColours(server).c_str(),
+                       status == W_PLAYING ? "playing" : "the host is full - watching");
             }
             break;
+        }
+        case T_KICK: {
+            const bool banned = r.u8() == 1;
+            if (!g_kicked) {
+                g_kicked = true;
+                g_welcomed = false;
+                g_reject = banned ? "The host banned you from this game" : "The host removed you from this game";
+                printf("LugaruEX net: %s\n", g_reject.c_str());
+                guestLeaveLevel("removed by the host");
+            }
+            break;
+        }
+        case T_CHATMSG: {
+            const uint32_t id = r.u32();
+            const int person = r.u8();
+            const std::string name = netinfo::CleanName(r.str());
+            const std::string text = netinfo::CleanText(r.str(), netinfo::kMaxChat, false);
+            if (!r.ok || std::find(g_chatSeen.begin(), g_chatSeen.end(), id) != g_chatSeen.end()) {
+                break;
+            }
+            g_chatSeen.push_back(id);
+            if (g_chatSeen.size() > 128) {
+                g_chatSeen.pop_front();
+            }
+            ChatReceived(person == 255 ? -1 : person, name, text);
+            break;
+        }
         case T_LEVEL:
             g_welcomed = true;
             if (g_modsReady) { // (not before the host's mods are here: the host sends it again)
@@ -2379,9 +3149,154 @@ static void guestReceive(const uint8_t* d, int n, const sockaddr_in& from)
     }
 }
 
+// ------------------------------------------------------------------ the launcher link
+// The launcher stays open while the game runs. It starts the game with
+// LUGARUEX_ADMIN=<its port>:<32 hex secret>; once a second the game tells it how things
+// are (the lobby code, who is on the server, whether a password is wanted), and it sends
+// back kick / ban / password. Only on this PC (127.0.0.1), only with the secret.
+static const uint32_t kAdminMagic = 0x4158474C; // "LGXA"
+static SOCKET g_adminSock = INVALID_SOCKET;
+static sockaddr_in g_adminTo;
+static uint8_t g_adminToken[16];
+static bool g_adminTried = false;
+static double g_lastAdmin = -10;
+
+static void adminInit()
+{
+    g_adminTried = true;
+    const char* e = getenv("LUGARUEX_ADMIN");
+    if (!e) {
+        return;
+    }
+    const std::string s = e;
+    const size_t c = s.find(':');
+    if (c == std::string::npos || s.size() - c - 1 != 32) {
+        return;
+    }
+    const int port = atoi(s.substr(0, c).c_str());
+    for (int k = 0; k < 16; k++) {
+        g_adminToken[k] = (uint8_t)strtoul(s.substr(c + 1 + 2 * k, 2).c_str(), nullptr, 16);
+    }
+    SOCKET a = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (a == INVALID_SOCKET || port <= 0 || port > 65535) {
+        return;
+    }
+    sockaddr_in me = {};
+    me.sin_family = AF_INET;
+    me.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(a, (const sockaddr*)&me, sizeof(me)) != 0) {
+        closesocket(a);
+        return;
+    }
+#ifdef _WIN32
+    u_long nb = 1;
+    ioctlsocket(a, FIONBIO, &nb);
+#else
+    fcntl(a, F_SETFL, fcntl(a, F_GETFL, 0) | O_NONBLOCK);
+#endif
+    g_adminSock = a;
+    g_adminTo = {};
+    g_adminTo.sin_family = AF_INET;
+    g_adminTo.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    g_adminTo.sin_port = htons((uint16_t)port);
+}
+
+static void adminPump()
+{
+    if (!g_adminTried) {
+        adminInit();
+    }
+    if (g_adminSock == INVALID_SOCKET) {
+        return;
+    }
+    uint8_t buf[512];
+    for (int k = 0; k < 32; k++) {
+        sockaddr_in from;
+        socklen_t fl = sizeof(from);
+        const int n = (int)recvfrom(g_adminSock, (char*)buf, sizeof(buf), 0, (sockaddr*)&from, &fl);
+        if (n <= 0) {
+            break;
+        }
+        Reader r(buf, n);
+        if (from.sin_addr.s_addr != htonl(INADDR_LOOPBACK) || from.sin_port != g_adminTo.sin_port || r.u32() != kAdminMagic) {
+            continue;
+        }
+        uint8_t tok[16];
+        if (!r.bytes(tok, 16) || memcmp(tok, g_adminToken, 16) != 0) {
+            continue; // (not our launcher)
+        }
+        const int cmd = r.u8();
+        if ((cmd == 'K' || cmd == 'B') && g_role == R_HOST) {
+            const uint32_t id = r.u32();
+            for (Client& c : g_clients) {
+                if (r.ok && c.id == id && (c.connected || cmd == 'B')) {
+                    kickClient(c, cmd == 'B');
+                }
+            }
+        } else if (cmd == 'P' && g_role == R_GUEST) {
+            const std::string pw = r.str();
+            if (r.ok) {
+                cfg.mpJoinPassword = pw; // (kept in memory only)
+                g_needPassword = false;
+                g_reject.clear();
+                g_proofSent = false;
+                g_lastHello = -10; // ask again now
+            }
+        }
+    }
+    const double t = now();
+    if (t - g_lastAdmin < 1.0) {
+        return;
+    }
+    g_lastAdmin = t;
+    Writer w;
+    w.head(0);
+    w.n = 0;
+    w.u32(kAdminMagic);
+    w.bytes(g_adminToken, 16);
+    w.u8('S');
+    w.u8(g_role == R_HOST ? 1 : 2);
+    w.u8(g_steam ? 1 : 0);
+    w.str(g_steamCode);
+    w.u8(g_needPassword ? 1 : 0);
+    const std::string status = g_role == R_HOST ? (!g_steamError.empty() ? g_steamError : std::string())
+                                                : (!g_reject.empty() ? g_reject : g_inLevel ? std::string("Playing") : g_status);
+    w.str(status);
+    int n = 0;
+    for (const Client& c : g_clients) {
+        n += c.connected ? 1 : 0;
+    }
+    n = std::min(n, 40);
+    w.u8(n);
+    for (const Client& c : g_clients) {
+        if (!c.connected || n-- <= 0) {
+            continue;
+        }
+        w.u32(c.id);
+        w.str(c.name);
+        w.u8(clientInGame(c) ? 1 : 0);
+        w.u8((int)c.slots.size());
+    }
+    w.u32(g_role == R_HOST ? hostInfo().id : 0); // (the launcher finds this server in its list)
+    sendto(g_adminSock, (const char*)w.b, w.n, 0, (const sockaddr*)&g_adminTo, sizeof(g_adminTo));
+}
+
 // ------------------------------------------------------------------ per frame
 void NetFrame(double dt)
 {
+    // test hook LUGARUEX_TEST_CMD=sec:command|sec:command: type console commands at those times
+    static const char* tc = getenv("LUGARUEX_TEST_CMD");
+    if (tc) {
+        static double start = now();
+        static std::string rest = tc;
+        while (!rest.empty() && now() - start >= atof(rest.c_str())) {
+            size_t c = rest.find(':'), e = rest.find('|');
+            const std::string cmd = c < e ? rest.substr(c + 1, e == std::string::npos ? std::string::npos : e - c - 1) : "";
+            rest = e == std::string::npos ? "" : rest.substr(e + 1);
+            Game::cmd_dispatch(cmd);
+            printf("EXTEST console '%s' -> %s\n", cmd.c_str(), Game::consoletext[0].c_str());
+        }
+    }
     // frame rate for the stats display (also offline)
     {
         const double t = now();
@@ -2396,6 +3311,24 @@ void NetFrame(double dt)
     if (g_role == R_NONE || g_sock == INVALID_SOCKET) {
         return;
     }
+    adminPump(); // (the launcher, when it is open)
+    if (g_role == R_HOST) {
+        // test hook LUGARUEX_TEST_KICK=seconds[,ban]: kick (or ban) the first guest that long after a level starts
+        static const char* testKick = getenv("LUGARUEX_TEST_KICK");
+        static double since = -1;
+        if (testKick && hostInLevel()) {
+            since = since < 0 ? now() : since;
+            if (now() - since > atof(testKick)) {
+                for (Client& c : g_clients) {
+                    if (c.connected) {
+                        kickClient(c, strstr(testKick, "ban") != nullptr);
+                        break;
+                    }
+                }
+                testKick = nullptr;
+            }
+        }
+    }
     uint8_t buf[2048];
     for (int k = 0; k < 4096; k++) {
         sockaddr_in from;
@@ -2403,6 +3336,9 @@ void NetFrame(double dt)
         const int n = (int)recvfrom(g_sock, (char*)buf, sizeof(buf), 0, (sockaddr*)&from, &fl);
         if (n <= 0) {
             break;
+        }
+        if (helperPacket(buf, n, from)) {
+            continue; // (the Steam helper's own messages)
         }
         if (g_role == R_HOST) {
             hostReceive(buf, n, from);
@@ -2420,6 +3356,28 @@ void NetFrame(double dt)
             guestReceive(d.data.data(), (int)d.data.size(), d.from);
         } else {
             i++;
+        }
+    }
+    pumpRepeats();
+    if (g_steam && g_helperUp && now() - g_lastKeep >= 1.0) {
+        g_lastKeep = now();
+        helperSend('K'); // (the helper ends itself when the game stops saying this)
+    }
+    {
+        // test hook LUGARUEX_TEST_CHAT=seconds:text - say it that long after a level starts
+        static const char* testChat = getenv("LUGARUEX_TEST_CHAT");
+        static double since = -1;
+        static bool said = false;
+        const bool playing = g_role == R_HOST ? hostInLevel() : g_inLevel;
+        if (testChat && !said && playing) {
+            if (since < 0) {
+                since = now();
+            }
+            const char* colon = strchr(testChat, ':');
+            if (colon && now() - since > atof(testChat)) {
+                said = true;
+                NetChatSend(colon + 1);
+            }
         }
     }
     const double t = now();
@@ -2440,10 +3398,11 @@ void NetFrame(double dt)
                     LocalRemoteInput(s, PadInput(), 0, 0, false);
                 }
                 printf("LugaruEX net: a guest stopped responding\n");
+                ChatReceived(-1, "", c.name + " lost connection");
             }
             if (logNow && c.connected && hostInLevel()) {
                 char ip[64];
-                inet_ntop(AF_INET, &c.addr.sin_addr, ip, sizeof(ip));
+                maskedIp(c.addr, ip, sizeof(ip));
                 printf("LugaruEX net: guest %s: ping %d ms, snapshots lost %.1f%%, jitter %d ms, view %d ms behind, %d fps there, %ld inputs/s here\n",
                        ip, c.pingMs, c.lossPermille / 10.f, c.jitterMs, c.delayMs, c.fps, c.inputs / 10);
             }
@@ -2484,16 +3443,24 @@ void NetFrame(double dt)
 
     // guest
     if (!g_haveHost) {
-        g_status = g_lan ? "Looking for a host on your network..." : "Can't find the host - check the address in the launcher";
+        g_status = g_steam ? (!g_steamError.empty() ? g_steamError : "Finding the game on Steam...")
+                   : g_lan ? "Looking for a host on your network..."
+                           : "Can't find the host - check the address in the launcher";
         if (g_lan && t - g_lastDiscover > 1) {
             g_lastDiscover = t;
             Writer w;
             w.head(T_DISCOVER);
-            sockaddr_in b = {};
-            b.sin_family = AF_INET;
-            b.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-            b.sin_port = htons((uint16_t)g_port);
-            sendTo(w, b);
+            while (w.n < netinfo::kQueryLen) {
+                w.u8(0); // (hosts only answer full-size questions)
+            }
+            // every network this PC is on: the LAN and virtual ones (Radmin, Hamachi, ZeroTier)
+            for (uint32_t bc : LanBroadcasts()) {
+                sockaddr_in b = {};
+                b.sin_family = AF_INET;
+                b.sin_addr.s_addr = bc;
+                b.sin_port = htons((uint16_t)g_port);
+                sendTo(w, b);
+            }
         }
         return;
     }
@@ -2509,9 +3476,11 @@ void NetFrame(double dt)
     static int announced = 0;
     if (!g_welcomed || here != announced) {
         if (!g_welcomed) {
-            g_status = "Connecting to the host...";
+            g_status = !g_reject.empty() ? g_reject : "Connecting to the host...";
         }
-        if (t - g_lastHello > 0.5) {
+        // after a "no" (wrong password, full) ask again only every few seconds
+        const double every = g_reject.empty() ? 0.5 : 3.0;
+        if (!g_kicked && t - g_lastHello > every) { // (removed / banned: never again this session)
             g_lastHello = t;
             Writer w;
             w.head(T_HELLO);
@@ -2520,6 +3489,19 @@ void NetFrame(double dt)
             for (int k = 0; k < here; k++) {
                 w.str(LocalCharacterOf(k));
             }
+            w.str(myName());
+            g_proofSent = g_hostNonce != 0 && !cfg.mpJoinPassword.empty();
+            if (g_proofSent) {
+                const std::vector<uint8_t> proof = netinfo::PasswordProof(g_hostNonce, cfg.mpJoinPassword);
+                w.u8((int)proof.size());
+                w.bytes(proof.data(), (int)proof.size());
+            } else {
+                w.u8(0);
+            }
+            w.str(EX_VERSION_STRING);
+            // test hook LUGARUEX_TEST_BUILDID=x: say another build (the host must refuse it)
+            static const char* testBuild = getenv("LUGARUEX_TEST_BUILDID");
+            w.str(testBuild ? testBuild : EX_BUILD_ID);
             sendTo(w, g_hostAddr);
             if (g_welcomed) {
                 announced = here;
@@ -2529,7 +3511,7 @@ void NetFrame(double dt)
             return;
         }
     }
-    g_status = g_inLevel ? "" : "Waiting for host...";
+    g_status = g_inLevel ? "" : !g_modDenied.empty() ? g_modDenied : "Waiting for host...";
     guestModPump(t);
     guestSyncPump(t);
     g_inputAcc += dt;
@@ -2721,8 +3703,8 @@ void NetGuestStep()
         p.target = (a->animCur == b->animCur && a->frameCur == b->frameCur && a->frameTgt == b->frameTgt) ? a->target + (b->target - a->target) * f : s.target;
         p.currentoffset = s.curoff;
         p.targetoffset = s.tgtoff;
-        p.dead = s.dead;
-        p.aitype = s.aitype;
+        p.dead = std::min(2, s.dead);
+        p.aitype = std::min(getweapontype, s.aitype); // (the largest the game knows)
         const bool wasOnFire = p.onfire;
         p.onfire = (s.flags & 1) != 0;
         p.headless = (s.flags & 2) != 0;
@@ -2740,15 +3722,22 @@ void NetGuestStep()
         p.superpermanentdamage = s.superperm;
         p.damagetolerance = std::max(1.f, s.tol);
         p.blooddimamount = s.dim;
+        // (indices from the network: anything out of range means "none", never an array index)
         p.num_weapons = std::max(0, std::min(4, s.numw));
-        p.weaponactive = s.wactive;
-        p.weaponstuck = s.wstuck;
-        p.weaponstuckwhere = s.wstuckwhere;
+        p.weaponactive = (s.wactive >= 0 && s.wactive < p.num_weapons) ? s.wactive : -1;
+        p.weaponstuck = (s.wstuck >= 0 && s.wstuck < p.num_weapons) ? s.wstuck : -1;
+        p.weaponstuckwhere = s.wstuckwhere ? 1 : 0;
         for (int k = 0; k < 4; k++) {
-            p.weaponids[k] = s.w[k];
+            p.weaponids[k] = (s.w[k] >= 0 && s.w[k] < (int)weapons.size()) ? s.w[k] : -1;
+        }
+        if (p.weaponactive >= 0 && p.weaponids[p.weaponactive] < 0) {
+            p.weaponactive = -1;
+        }
+        if (p.weaponstuck >= 0 && p.weaponids[p.weaponstuck] < 0) {
+            p.weaponstuck = -1;
         }
         const int prevFree = p.skeleton.free;
-        p.skeleton.free = s.free;
+        p.skeleton.free = std::min(3, s.free);
         if (s.free) {
             if (s.hasJoints && s.joints.size() == p.skeleton.joints.size()) {
                 const bool blend = a->hasJoints && b->hasJoints && a->joints.size() == b->joints.size() && a->joints.size() == s.joints.size();
@@ -2969,6 +3958,22 @@ void NetDrawOverlay()
         glDisable(GL_FOG);
         const float x = screenwidth / 2 - g_warn.size() * 10.f * size / 2;
         Game::text->glPrintOutlined(1, .8f, .3f, 1, x, screenheight * 0.7f, g_warn, 1, size, screenwidth, screenheight);
+        glPopAttrib();
+    }
+    if (g_role == R_HOST && g_steam && mainmenu && (g_steamCode.empty() || !g_steamError.empty())) {
+        // until the server is in Steam's list (or why it isn't)
+        const std::string line = !g_steamError.empty() ? g_steamError : "Making a Steam lobby...";
+        const float size = 1.2f * screenheight / 768.f;
+        glPushAttrib(GL_ALL_ATTRIB_BITS);
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_LIGHTING);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_FOG);
+        const float x = screenwidth / 2 - line.size() * 10.f * size / 2;
+        Game::text->glPrintOutlined(1, .85f, .7f, 1, x, screenheight * 0.05f, line, 1, size, screenwidth, screenheight);
         glPopAttrib();
     }
     if (g_role != R_GUEST || g_status.empty() || !mainmenu) {

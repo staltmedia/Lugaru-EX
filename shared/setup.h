@@ -17,6 +17,8 @@ struct GameFolder
     bool steam = false;   // Steam's copy (its Play button can open LugaruEX)
     bool writable = true; // false: a system folder (Linux) or Program Files without admin rights
     bool hasLugaruEX = false;
+    std::string exVersion; // the LugaruEX version installed there ("" = none, "?" = unknown)
+    bool ownCopy = false;  // a free game copy LugaruEX downloaded: the whole folder may be deleted
 };
 
 bool Setup_IsGameFolder(const std::string& dir);            // has Data/Maps
@@ -40,6 +42,22 @@ bool Setup_Unpack(const std::string& package, const std::string& dir, std::strin
 bool Setup_UnpackFreeData(const std::string& zip, const std::string& dir, std::string& error);
 // Linux: a game folder for read-only (system) game data: dir/Data -> the system's data
 bool Setup_LinkSystemData(const std::string& systemData, const std::string& dir, std::string& error);
+
+// a free game copy LugaruEX downloaded (marks the folder, so it can be deleted later)
+void Setup_MarkOwnCopy(const std::string& dir);
+// remove LugaruEX from a game folder (<game>/LugaruEX: its settings, mods and screenshots go
+// too; on Windows Steam's Lugaru.exe comes back), or with wholeFolder a free copy entirely
+bool Setup_Remove(const GameFolder& game, bool wholeFolder, std::string& error);
+// compare "0.4.12" style versions: <0, 0, >0
+int Setup_CompareVersions(const std::string& a, const std::string& b);
+
+// Steam: the launcher as a non-Steam game in every Steam account on this PC.
+// 0 added, 1 already there, 2 Steam is running (it would overwrite the list: close it first), -1 error
+int Setup_AddToSteam(const std::string& launcher, const std::string& gameDir, std::string& error);
+bool Setup_InSteam(const std::string& launcher); // a Steam account here has it as a non-Steam game
+bool Setup_SteamRunning();
+bool Setup_CloseSteam(); // asks Steam to exit and waits (up to 30 s)
+void Setup_StartSteam();
 
 void Setup_CleanOld(const std::string& exePath); // removes <exe>.old left by an update
 std::string Setup_SelfPath();                    // this program's full path

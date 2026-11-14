@@ -5,6 +5,8 @@
 #include "miniz/miniz.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <set>
@@ -163,6 +165,103 @@ bool safeRel(const std::string& rel)
         }
     }
     return true;
+}
+
+// this user's LugaruEX folder (saves, logs; here: the list of installs)
+std::string userDir()
+{
+#ifdef _WIN32
+    return env("APPDATA") + "\\LugaruEX";
+#else
+    return (env("XDG_DATA_HOME").empty() ? env("HOME") + "/.local/share" : env("XDG_DATA_HOME")) + "/LugaruEX";
+#endif
+}
+
+// game folders LugaruEX was installed into (so a later run finds them, wherever they are)
+std::vector<std::string> knownInstalls()
+{
+    std::vector<std::string> out;
+    std::string t;
+    if (fsu::ReadAll(fsu::Join(userDir(), "installs.txt"), t)) {
+        size_t a = 0;
+        while (a < t.size()) {
+            size_t b = t.find('\n', a);
+            if (b == std::string::npos) {
+                b = t.size();
+            }
+            std::string l = t.substr(a, b - a);
+            while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) {
+                l.pop_back();
+            }
+            if (!l.empty()) {
+                out.push_back(l);
+            }
+            a = b + 1;
+        }
+    }
+    return out;
+}
+
+void writeInstalls(const std::vector<std::string>& list)
+{
+    std::string t;
+    for (const std::string& p : list) {
+        t += p + "\n";
+    }
+    fsu::MakeDirs(userDir());
+    fsu::WriteAll(fsu::Join(userDir(), "installs.txt"), t);
+}
+
+void rememberInstall(const std::string& dir)
+{
+    std::vector<std::string> l = knownInstalls();
+    for (const std::string& p : l) {
+        if (fsu::Lower(norm(p)) == fsu::Lower(norm(dir))) {
+            return;
+        }
+    }
+    l.push_back(norm(dir));
+    writeInstalls(l);
+}
+
+void forgetInstall(const std::string& dir)
+{
+    std::vector<std::string> l = knownInstalls(), keep;
+    for (const std::string& p : l) {
+        if (fsu::Lower(norm(p)) != fsu::Lower(norm(dir))) {
+            keep.push_back(p);
+        }
+    }
+    writeInstalls(keep);
+}
+
+const char* const kOwnCopyMark = ".lugaruex-free-game";
+
+// the LugaruEX version in a game folder: LugaruEX/version.txt, else the player README's
+// first line ("LugaruEX 0.4.12 - ..."); "?" when LugaruEX is there but says no version
+std::string installedVersion(const std::string& gameDir)
+{
+    const std::string ex = fsu::Join(gameDir, "LugaruEX");
+#ifdef _WIN32
+    const bool engine = fsu::IsFile(fsu::Join(ex, "LugaruEX.exe"));
+#else
+    const bool engine = fsu::IsFile(fsu::Join(ex, "lugaruex"));
+#endif
+    if (!engine) {
+        return "";
+    }
+    std::string t;
+    if (fsu::ReadAll(fsu::Join(ex, "version.txt"), t) || fsu::ReadAll(fsu::Join(ex, "README.txt"), t)) {
+        size_t a = t.find_first_of("0123456789");
+        if (a != std::string::npos && a < 40) {
+            size_t b = a;
+            while (b < t.size() && (isdigit((unsigned char)t[b]) || t[b] == '.')) {
+                b++;
+            }
+            return t.substr(a, b - a);
+        }
+    }
+    return "?";
 }
 
 // write src over dst; a file in use (the running launcher) is moved aside to dst.old first
@@ -335,8 +434,390 @@ GameFolder Setup_Describe(const std::string& dirIn)
         g.kind = "Lugaru (free open-source data)";
     }
     g.writable = writable(dir);
-    g.hasLugaruEX = fsu::IsDir(fsu::Join(dir, "LugaruEX"));
+    g.exVersion = installedVersion(dir);
+    g.hasLugaruEX = !g.exVersion.empty();
+    g.ownCopy = !g.steam && (fsu::IsFile(fsu::Join(dir, kOwnCopyMark)) || fsu::Lower(norm(dir)) == fsu::Lower(norm(Setup_FreeGameFolder())));
     return g;
+}
+
+void Setup_MarkOwnCopy(const std::string& dir)
+{
+    fsu::WriteAll(fsu::Join(dir, kOwnCopyMark), "A copy of the free Lugaru game data downloaded by LugaruEX (its installer may delete this folder).\n");
+    rememberInstall(dir);
+}
+
+int Setup_CompareVersions(const std::string& a, const std::string& b)
+{
+    size_t i = 0, j = 0;
+    while (i < a.size() || j < b.size()) {
+        long x = 0, y = 0;
+        while (i < a.size() && a[i] != '.') {
+            x = x * 10 + (isdigit((unsigned char)a[i]) ? a[i] - '0' : 0);
+            i++;
+        }
+        while (j < b.size() && b[j] != '.') {
+            y = y * 10 + (isdigit((unsigned char)b[j]) ? b[j] - '0' : 0);
+            j++;
+        }
+        if (x != y) {
+            return x < y ? -1 : 1;
+        }
+        i++;
+        j++;
+    }
+    return 0;
+}
+
+bool Setup_Remove(const GameFolder& game, bool wholeFolder, std::string& error)
+{
+    const std::string dir = norm(game.path);
+    if (dir.empty() || !Setup_IsGameFolder(dir)) {
+        error = "not a game folder";
+        return false;
+    }
+    if (wholeFolder) {
+        // only a free copy LugaruEX itself downloaded, never Steam's or anyone else's game
+        const GameFolder g = Setup_Describe(dir);
+        if (!g.ownCopy || g.steam) {
+            error = "only a copy LugaruEX downloaded can be deleted as a whole";
+            return false;
+        }
+        if (!fsu::RemoveTree(dir)) {
+            error = "can't delete " + dir + " (is the game running?)";
+            return false;
+        }
+        forgetInstall(dir);
+        return true;
+    }
+    const std::string ex = fsu::Join(dir, "LugaruEX");
+    if (!fsu::IsDir(ex)) {
+        error = "LugaruEX is not in " + dir;
+        return false;
+    }
+#ifdef _WIN32
+    // Steam's Play button: the game's own Lugaru.exe back
+    const std::string backup = fsu::Join(ex, "backup\\Lugaru.exe"), gameExe = fsu::Join(dir, "Lugaru.exe");
+    if (fsu::IsFile(backup) && !replaceFile(backup, gameExe)) {
+        error = "can't put the game's Lugaru.exe back (is it running?)";
+        return false;
+    }
+#else
+    // its app menu entry, when it points here
+    const std::string desk = (env("XDG_DATA_HOME").empty() ? env("HOME") + "/.local/share" : env("XDG_DATA_HOME")) + "/applications/lugaruex.desktop";
+    std::string d;
+    if (fsu::ReadAll(desk, d) && d.find(ex + "/") != std::string::npos) {
+        fsu::RemoveTree(desk);
+    }
+#endif
+    if (!fsu::RemoveTree(ex)) {
+        error = "can't delete " + ex + " (is the game running?)";
+        return false;
+    }
+    forgetInstall(dir);
+    return true;
+}
+
+// ---- Steam: non-Steam game shortcut (config/shortcuts.vdf, Valve's binary key-value format)
+namespace
+{
+struct VNode
+{
+    uint8_t type = 0; // 0 map, 1 string, 2 int32, 7 uint64, others kept as raw bytes
+    std::string name, str;
+    std::vector<uint8_t> raw;
+    std::vector<VNode> kids;
+};
+
+bool vRead(const std::string& d, size_t& p, std::vector<VNode>& out, int depth)
+{
+    if (depth > 16) {
+        return false;
+    }
+    while (p < d.size()) {
+        const uint8_t t = (uint8_t)d[p++];
+        if (t == 8) {
+            return true;
+        }
+        VNode n;
+        n.type = t;
+        const size_t z = d.find('\0', p);
+        if (z == std::string::npos) {
+            return false;
+        }
+        n.name = d.substr(p, z - p);
+        p = z + 1;
+        if (t == 0) {
+            if (!vRead(d, p, n.kids, depth + 1)) {
+                return false;
+            }
+        } else if (t == 1) {
+            const size_t e = d.find('\0', p);
+            if (e == std::string::npos) {
+                return false;
+            }
+            n.str = d.substr(p, e - p);
+            p = e + 1;
+        } else if (t == 2 || t == 3 || t == 4 || t == 6) {
+            if (p + 4 > d.size()) {
+                return false;
+            }
+            n.raw.assign(d.begin() + p, d.begin() + p + 4);
+            p += 4;
+        } else if (t == 7) {
+            if (p + 8 > d.size()) {
+                return false;
+            }
+            n.raw.assign(d.begin() + p, d.begin() + p + 8);
+            p += 8;
+        } else {
+            return false; // (wide strings: never in shortcuts.vdf)
+        }
+        out.push_back(n);
+    }
+    return false;
+}
+
+void vWrite(std::string& o, const std::vector<VNode>& list)
+{
+    for (const VNode& n : list) {
+        o += (char)n.type;
+        o += n.name;
+        o += '\0';
+        if (n.type == 0) {
+            vWrite(o, n.kids);
+        } else if (n.type == 1) {
+            o += n.str;
+            o += '\0';
+        } else {
+            o.append(n.raw.begin(), n.raw.end());
+        }
+    }
+    o += (char)8;
+}
+
+VNode vStr(const std::string& k, const std::string& v)
+{
+    VNode n;
+    n.type = 1;
+    n.name = k;
+    n.str = v;
+    return n;
+}
+
+VNode vInt(const std::string& k, uint32_t v)
+{
+    VNode n;
+    n.type = 2;
+    n.name = k;
+    for (int i = 0; i < 4; i++) {
+        n.raw.push_back((uint8_t)(v >> (8 * i)));
+    }
+    return n;
+}
+
+uint32_t crc32(const std::string& s)
+{
+    uint32_t c = 0xFFFFFFFFu;
+    for (unsigned char ch : s) {
+        c ^= ch;
+        for (int k = 0; k < 8; k++) {
+            c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1)));
+        }
+    }
+    return ~c;
+}
+
+std::vector<std::string> steamRootsHere()
+{
+    std::vector<std::string> roots;
+#ifdef _WIN32
+    roots.push_back(regString(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath"));
+#else
+    const std::string home = env("HOME");
+    std::set<std::string> seen;
+    for (const char* r : { "/.steam/steam", "/.local/share/Steam", "/.var/app/com.valvesoftware.Steam/.local/share/Steam" }) {
+        char real[4096];
+        const std::string p = home + r;
+        if (realpath(p.c_str(), real) && seen.insert(real).second) {
+            roots.push_back(real);
+        }
+    }
+#endif
+    return roots;
+}
+} // namespace
+
+bool Setup_InSteam(const std::string& launcher)
+{
+    const std::string exe = "\"" + launcher + "\"";
+    for (const std::string& root : steamRootsHere()) {
+        const std::string ud = fsu::Join(root, "userdata");
+        for (const std::string& id : fsu::List(ud, true)) {
+            std::string d;
+            if (!fsu::ReadAll(fsu::Join(fsu::Join(fsu::Join(ud, id), "config"), "shortcuts.vdf"), d)) {
+                continue;
+            }
+            size_t p = 0;
+            std::vector<VNode> top;
+            if (!vRead(d, p, top, 0) || top.empty()) {
+                continue;
+            }
+            for (const VNode& e : top[0].kids) {
+                for (const VNode& f : e.kids) {
+                    if (f.type == 1 && fsu::Lower(f.name) == "exe" && f.str == exe) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool Setup_SteamRunning()
+{
+#ifdef _WIN32
+    return FindWindowW(L"vguiPopupWindow", NULL) != NULL || FindWindowW(NULL, L"Steam") != NULL;
+#else
+    // a process named steam (or its web helper) - read from /proc, not a shell command
+    // (pgrep -f matched the shell that ran it)
+    for (const std::string& pid : fsu::List("/proc", true)) {
+        if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos) {
+            continue;
+        }
+        std::string comm;
+        if (fsu::ReadAll("/proc/" + pid + "/comm", comm)) {
+            while (!comm.empty() && (comm.back() == '\n' || comm.back() == ' ')) {
+                comm.pop_back();
+            }
+            if (comm == "steam" || comm == "steamwebhelper") {
+                return true;
+            }
+        }
+    }
+    return false;
+#endif
+}
+
+bool Setup_CloseSteam()
+{
+#ifndef _WIN32
+    if (system("command -v steam >/dev/null 2>&1") == 0) {
+        system("steam -shutdown >/dev/null 2>&1 &");
+    } else {
+        system("flatpak run com.valvesoftware.Steam -shutdown >/dev/null 2>&1 &");
+    }
+    for (int i = 0; i < 60 && Setup_SteamRunning(); i++) {
+        usleep(500000);
+    }
+    return !Setup_SteamRunning();
+#else
+    return false;
+#endif
+}
+
+void Setup_StartSteam()
+{
+#ifndef _WIN32
+    if (system("command -v steam >/dev/null 2>&1") == 0) {
+        system("setsid steam >/dev/null 2>&1 &");
+    } else {
+        system("setsid flatpak run com.valvesoftware.Steam >/dev/null 2>&1 &");
+    }
+#endif
+}
+
+int Setup_AddToSteam(const std::string& launcher, const std::string& gameDir, std::string& error)
+{
+    if (Setup_SteamRunning()) {
+        return 2;
+    }
+    const std::string appName = "Lugaru EX";
+    const std::string exe = "\"" + launcher + "\"", start = "\"" + fsu::Parent(launcher) + "\"";
+    int added = 0, already = 0, users = 0;
+    for (const std::string& root : steamRootsHere()) {
+        const std::string ud = fsu::Join(root, "userdata");
+        for (const std::string& id : fsu::List(ud, true)) {
+            if (id.empty() || id.find_first_not_of("0123456789") != std::string::npos || id == "0") {
+                continue; // (only real account folders)
+            }
+            users++;
+            const std::string cfg = fsu::Join(fsu::Join(ud, id), "config"), file = fsu::Join(cfg, "shortcuts.vdf");
+            std::string d;
+            std::vector<VNode> top;
+            if (fsu::ReadAll(file, d) && !d.empty()) {
+                size_t p = 0;
+                if (!vRead(d, p, top, 0) || top.empty() || top[0].type != 0) {
+                    error = "Steam's list of non-Steam games in " + cfg + " could not be read; it was left as it is";
+                    continue;
+                }
+            } else {
+                VNode root;
+                root.type = 0;
+                root.name = "shortcuts";
+                top.push_back(root);
+            }
+            std::vector<VNode>& list = top[0].kids;
+            bool have = false;
+            for (const VNode& e : list) {
+                for (const VNode& f : e.kids) {
+                    if (f.type == 1 && fsu::Lower(f.name) == "exe" && f.str == exe) {
+                        have = true;
+                    }
+                }
+            }
+            if (have) {
+                already++;
+                continue;
+            }
+            VNode e;
+            e.type = 0;
+            e.name = std::to_string(list.size());
+            e.kids.push_back(vInt("appid", crc32(exe + appName) | 0x80000000u));
+            e.kids.push_back(vStr("AppName", appName));
+            e.kids.push_back(vStr("Exe", exe));
+            e.kids.push_back(vStr("StartDir", start));
+            e.kids.push_back(vStr("icon", fsu::Join(fsu::Parent(launcher), "lugaruex.png")));
+            e.kids.push_back(vStr("ShortcutPath", ""));
+            e.kids.push_back(vStr("LaunchOptions", ""));
+            e.kids.push_back(vInt("IsHidden", 0));
+            e.kids.push_back(vInt("AllowDesktopConfig", 1));
+            e.kids.push_back(vInt("AllowOverlay", 1));
+            e.kids.push_back(vInt("OpenVR", 0));
+            e.kids.push_back(vInt("Devkit", 0));
+            e.kids.push_back(vStr("DevkitGameID", ""));
+            e.kids.push_back(vInt("DevkitOverrideAppID", 0));
+            e.kids.push_back(vInt("LastPlayTime", 0));
+            e.kids.push_back(vStr("FlatpakAppID", ""));
+            VNode tags;
+            tags.type = 0;
+            tags.name = "tags";
+            e.kids.push_back(tags);
+            list.push_back(e);
+            std::string o;
+            vWrite(o, top);
+            fsu::MakeDirs(cfg);
+            if (fsu::IsFile(file)) {
+                fsu::Copy(file, file + ".lugaruex-backup"); // (Steam's own list as it was)
+            }
+            if (!fsu::WriteAll(file + ".tmp", o) || !fsu::Rename(file + ".tmp", file)) {
+                error = "can't write " + file;
+                continue;
+            }
+            added++;
+        }
+    }
+    (void)gameDir;
+    if (added > 0) {
+        return 0;
+    }
+    if (already > 0) {
+        return 1;
+    }
+    if (users == 0 && error.empty()) {
+        error = "no Steam account found on this computer (start Steam and log in once)";
+    }
+    return -1;
 }
 
 std::string Setup_FreeGameFolder()
@@ -431,6 +912,10 @@ std::vector<GameFolder> Setup_FindGames()
     }
 #endif
     add(out, seen, Setup_FreeGameFolder(), "", false);
+    // every folder LugaruEX was installed into before (and free copies it downloaded)
+    for (const std::string& d : knownInstalls()) {
+        add(out, seen, d, "", false);
+    }
     // Steam's copy first: it's what most players have
     std::stable_sort(out.begin(), out.end(), [](const GameFolder& a, const GameFolder& b) { return a.steam > b.steam; });
     return out;
@@ -524,6 +1009,7 @@ bool Setup_Install(const std::string& packageDir, const GameFolder& game, const 
     if (opt.shortcut) {
         shortcut(launcher, game.path);
     }
+    rememberInstall(game.path); // (found again next time, wherever it is)
     return true;
 }
 
@@ -536,6 +1022,10 @@ bool Setup_Unpack(const std::string& package, const std::string& dir, std::strin
         return unzipTo(package, dir, "", error);
     }
 #ifndef _WIN32
+    if (package.find('\'') != std::string::npos || dir.find('\'') != std::string::npos) {
+        error = "unusual characters in the path"; // (never into a shell command)
+        return false;
+    }
     const std::string cmd = "tar -xzf '" + package + "' -C '" + dir + "' 2>/dev/null";
     if (system(cmd.c_str()) == 0) {
         return true;

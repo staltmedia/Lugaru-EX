@@ -83,6 +83,9 @@ Weapon::Weapon(int t, int o)
 
 void Weapon::setType(int t)
 {
+    if (t != knife && t != sword && t != staff) {
+        t = knife; // LugaruEX: (a level from an online host) only weapons the game has
+    }
     type = t;
     if (type == sword) {
         mass = 1.5;

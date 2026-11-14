@@ -80,6 +80,7 @@ struct Slot
     unsigned long long token = 0;
     PadInput net;
     bool netConnected = false;
+    bool removed = false; // kicked by the host: its character became an enemy, the seat is gone
     float lookYaw = 0, lookPitch = 0; // tutorial: camera at the last "looking around" check
 };
 
@@ -235,12 +236,23 @@ static void parseChar(const std::string& spec, std::string& model, std::string& 
     }
 }
 
-static int g_levelCreature = -1, g_levelSkin = 0; // the look the level gives its player
+// the look the level gives its player, noted as it loads (before anyone's launcher choice is
+// applied): "Default" for any player - player 1, local players 2+, online guests - is this
+static int g_levelCreature = -1, g_levelSkin = 0;
+static float g_levelScale = .2f, g_levelTolerance = 200;
+static std::vector<std::string> g_levelClothes;
+static std::vector<float> g_levelTintR, g_levelTintG, g_levelTintB;
 
 void NoteLevelLook(const Person& p1)
 {
     g_levelCreature = p1.creature;
     g_levelSkin = p1.whichskin;
+    g_levelScale = p1.scale;
+    g_levelTolerance = p1.damagetolerance;
+    g_levelClothes = p1.clothes;
+    g_levelTintR = p1.clothestintr;
+    g_levelTintG = p1.clothestintg;
+    g_levelTintB = p1.clothestintb;
 }
 
 void ApplyCharacter(Person& p, const std::string& model, const std::string& skinIn, bool tutorial)
@@ -500,9 +512,13 @@ static void spawn(Slot& s, int slotIndex, bool tutorial)
     std::shared_ptr<Person> np(new Person());
     Person& p = *np;
     p.id = Person::players.size();
-    p.creature = p1.creature;
-    p.whichskin = p1.whichskin;
-    p.scale = p1.scale;
+    // starts with the look the level gives its player (the "Default" look; the slot's own
+    // choice goes on top in applySlotCharacter) - not player 1's, which may be player 1's
+    // own launcher choice
+    const bool lvl = g_levelCreature >= 0;
+    p.creature = lvl ? (person_type)g_levelCreature : p1.creature;
+    p.whichskin = lvl ? g_levelSkin : p1.whichskin;
+    p.scale = lvl ? g_levelScale : p1.scale;
 
     // next to player 1: right, left, behind - or the first other spot around that isn't
     // inside, under or behind something (a level starting player 1 on a platform or by a
@@ -540,10 +556,10 @@ static void spawn(Slot& s, int slotIndex, bool tutorial)
     Person::players.push_back(np);
     p.skeletonLoad();
     if (p.creature != wolftype) {
-        p.clothes = p1.clothes;
-        p.clothestintr = p1.clothestintr;
-        p.clothestintg = p1.clothestintg;
-        p.clothestintb = p1.clothestintb;
+        p.clothes = lvl ? g_levelClothes : p1.clothes;
+        p.clothestintr = lvl ? g_levelTintR : p1.clothestintr;
+        p.clothestintg = lvl ? g_levelTintG : p1.clothestintg;
+        p.clothestintb = lvl ? g_levelTintB : p1.clothestintb;
     }
     p.addClothes();
 
@@ -555,7 +571,7 @@ static void spawn(Slot& s, int slotIndex, bool tutorial)
     p.headless = 0;
     p.currentoffset = 0;
     p.targetoffset = 0;
-    p.damagetolerance = p1.damagetolerance;
+    p.damagetolerance = lvl ? g_levelTolerance : p1.damagetolerance; // (the level's player, as for its look)
     p.power = p1.power;
     p.speedmult = p1.speedmult;
     p.speed = p1.speed;
@@ -632,7 +648,9 @@ void LocalLevelLoaded(const std::string& levelName, bool tutorial)
     }
     { // every player is in the level, the tutorial too (each one does every step)
         for (size_t i = 1; i < g_slots.size(); i++) {
-            spawn(g_slots[i], (int)i, tutorial);
+            if (!g_slots[i].removed) { // (kicked players don't come back)
+                spawn(g_slots[i], (int)i, tutorial);
+            }
         }
     }
     for (auto& p : Person::players) {
@@ -1351,6 +1369,28 @@ void LocalRemoteInput(int slot, const PadInput& in, float yaw, float pitch, bool
         s.cam.yaw = yaw;
         s.cam.pitch = std::max(-70.f, std::min(90.f, pitch));
     }
+}
+
+bool LocalRemoteToEnemy(int slot)
+{
+    if (slot < 0 || slot >= (int)g_slots.size() || !g_slots[slot].remote || g_slots[slot].removed) {
+        return false;
+    }
+    Slot& s = g_slots[slot];
+    if (personValid(s)) {
+        // the kicked player's character turns on everyone: the game's own AI takes it over
+        Person& p = *Person::players[s.person];
+        p.aitype = attacktypecutoff;
+        p.exTarget = 0;
+        printf("LugaruEX: person %d (a kicked player) is an enemy now\n", s.person);
+    }
+    s.person = -1;
+    s.who = nullptr;
+    s.removed = true;
+    s.token = 0; // (a later join gets a new seat)
+    s.netConnected = false;
+    s.net = PadInput();
+    return true;
 }
 
 int LocalSlotPerson(int slot)

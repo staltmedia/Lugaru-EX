@@ -613,6 +613,7 @@ static bool g_haveCam = false;
 struct DrawRec
 {
     const float* v;
+    const unsigned short* idx; // indexed (Model::exIndexed), else nullptr
     int n;
     bool colorLayout, lit;
     int kind;
@@ -668,7 +669,7 @@ void LightingNextDraw(const float* world, bool lit)
     g_nextValid = true;
 }
 
-void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout, unsigned tex)
+void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout, unsigned tex, const unsigned short* idx)
 {
     const bool given = g_nextValid;
     g_nextValid = false;
@@ -677,6 +678,7 @@ void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout, uns
     }
     DrawRec r;
     r.v = vArray;
+    r.idx = idx;
     r.n = vertices;
     r.colorLayout = colorLayout;
     r.kind = g_drawKind;
@@ -987,10 +989,14 @@ static XYZ xyz(float x, float y, float z)
     return v;
 }
 
-static void drawArrays(const float* v, int n, bool colorLayout)
+static void drawArrays(const float* v, int n, bool colorLayout, const unsigned short* idx = nullptr)
 {
     glInterleavedArrays(colorLayout ? GL_T2F_C3F_V3F : GL_T2F_N3F_V3F, 8 * sizeof(GLfloat), v);
-    glDrawArrays(GL_TRIANGLES, 0, n);
+    if (idx) {
+        glDrawElements(GL_TRIANGLES, n, GL_UNSIGNED_SHORT, idx);
+    } else {
+        glDrawArrays(GL_TRIANGLES, 0, n);
+    }
     glDisableClientState(GL_NORMAL_ARRAY);
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
@@ -1120,7 +1126,7 @@ static void enginePasses(int w, int h, const float* proj, const float* mv, Engin
                 mat4Mul(ef.invView, r.mv, wm);
                 mat4Mul(lightView[i], wm, m);
                 glLoadMatrixf(m);
-                drawArrays(r.v, r.n, r.colorLayout);
+                drawArrays(r.v, r.n, r.colorLayout, r.idx);
             }
         }
         glDisable(GL_POLYGON_OFFSET_FILL);
@@ -1156,7 +1162,7 @@ static void enginePasses(int w, int h, const float* proj, const float* mv, Engin
             glBindTexture(GL_TEXTURE_2D, r.tex);
         }
         glLoadMatrixf(r.mv);
-        drawArrays(r.v, r.n, r.colorLayout);
+        drawArrays(r.v, r.n, r.colorLayout, r.idx);
     }
     ex_glUseProgram(0);
     glBindTexture(GL_TEXTURE_2D, 0);

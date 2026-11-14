@@ -35,6 +35,7 @@ Lighting=1
 Shaders=1
 [Multiplayer]
 Mode=$2
+Steam=0
 Port=27015
 Address=127.0.0.1:27015
 EOF
@@ -84,6 +85,35 @@ grep -q "host loaded" "$OUT/guest.log" || { echo "FAIL: the guest was not pulled
 grep -n "net:" "$OUT/host.log" | head -20
 grep -n "net:" "$OUT/guest.log" | head -20
 grep -n "WARNING\|CRASH" "$OUT/host.log" "$OUT/guest.log" | head
+
+# 3b. a guest of another build (modified / rebuilt) must be refused
+run host2 120 /tmp/host/LugaruEX/lugaruex --exlevel=$LEVEL --exquit=30 &
+sleep 8
+LUGARUEX_TEST_BUILDID=0000modified0000 run guest2 120 /tmp/guest/LugaruEX/lugaruex --exquit=15
+wait
+grep -q "can't join: LugaruEX" "$OUT/host2.log" && grep -q "the host runs LugaruEX" "$OUT/guest2.log" &&
+    ! grep -q "connected to" "$OUT/guest2.log" && echo "version lock: a modified build was refused" ||
+    { echo "FAIL: a guest of another build was not refused"; fail=1; }
+
+# 3c. Steam: the installed launcher adds itself as a non-Steam game (a pretend Steam account)
+FAKEHOME=/tmp/fakehome
+rm -rf $FAKEHOME && mkdir -p $FAKEHOME/.local/share/Steam/userdata/12345/config
+for n in 1 2; do
+    (cd /tmp/game/LugaruEX && HOME=$FAKEHOME XDG_DATA_HOME=$FAKEHOME/.local/share XDG_CONFIG_HOME=$FAKEHOME/.config LUGARUEX_TEST_ADDTOSTEAM=1 \
+        LUGARUEX_LAUNCHER_SHOT=$OUT/steam-$n.png,0 LIBGL_ALWAYS_SOFTWARE=1 timeout 60 xvfb-run -a ./lugaruex-launcher > "$OUT/steam-$n.log" 2>&1)
+    grep "add to Steam" "$OUT/steam-$n.log"
+done
+grep -q "add to Steam -> 0.*in Steam: 1" "$OUT/steam-1.log" && grep -q "add to Steam -> 1.*in Steam: 1" "$OUT/steam-2.log" &&
+    grep -aq "/tmp/game/LugaruEX/lugaruex-launcher" $FAKEHOME/.local/share/Steam/userdata/12345/config/shortcuts.vdf &&
+    echo "steam: added once, found again" || { echo "FAIL: Add to Steam"; fail=1; }
+
+# 3d. the unpacked release again: it finds the install (no reinstall needed) - picture of it
+(HOME=$FAKEHOME XDG_DATA_HOME=$FAKEHOME/.local/share XDG_CONFIG_HOME=$FAKEHOME/.config LUGARUEX_LAUNCHER_SHOT=$OUT/setup-found.png \
+    LIBGL_ALWAYS_SOFTWARE=1 timeout 60 xvfb-run -a "$DIST/LugaruEX/lugaruex-launcher" > "$OUT/setup-found.log" 2>&1)
+mkdir -p $FAKEHOME/.local/share/LugaruEX && echo /tmp/game > $FAKEHOME/.local/share/LugaruEX/installs.txt
+(HOME=$FAKEHOME XDG_DATA_HOME=$FAKEHOME/.local/share XDG_CONFIG_HOME=$FAKEHOME/.config LUGARUEX_LAUNCHER_SHOT=$OUT/setup-found2.png \
+    LIBGL_ALWAYS_SOFTWARE=1 timeout 60 xvfb-run -a "$DIST/LugaruEX/lugaruex-launcher" > "$OUT/setup-found2.log" 2>&1)
+[ -f "$OUT/setup-found2.png" ] && echo "setup: picture of the install list saved" || echo "note: no setup picture"
 
 # 4. launcher update: pretend to be 0.4.10, answer OK, the public release goes in and the new
 #    launcher starts (pictures of the question and of the launcher after it)

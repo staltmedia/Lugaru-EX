@@ -10,6 +10,8 @@ Lugaru engine update for Lugaru HD and the free open-source game.
 - Shaders
 - Native controller support and vibration
 - Local split screen, split screen online and online co-op with uncapped players
+- Online through Steam (relay only, no IP addresses shared), LAN or VPN, with a server list,
+  passwords, chat and kick / ban
 - Mod loader and multiplayer mod sharing
 - Launcher
 - Windows, Linux and Steam Deck
@@ -42,5 +44,7 @@ No game? The installer can download the free version.
 
 ## License
 
-GPL v2 or later. No Lugaru HD game data is included. Lugaru is a trademark of Wolfire Games;
+GPL v2 or later. The Steam helper (`steam/`) is a separate program under the MIT licence; it
+needs Valve's Steamworks SDK, which is not included (without it the game builds without Steam
+play). No Lugaru HD game data is included. Lugaru is a trademark of Wolfire Games;
 this is a fan project.

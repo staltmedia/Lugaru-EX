@@ -435,6 +435,13 @@ bool Terrain::load(const std::string& fileName)
     if (!load_image(Folders::getResourcePath(fileName).c_str(), texture)) {
         return false;
     }
+    // LugaruEX: a square image no bigger than the ground grid (a heightmap can come from an
+    // online host; a bigger or oblong one wrote past the grid and read past the image)
+    if (texture.sizeX != texture.sizeY || texture.sizeX < 2 || texture.sizeX > max_terrain_size || texture.bpp < 24) {
+        fprintf(stderr, "LugaruEX: %s is %ux%u - a heightmap must be square, at most %d pixels\n", fileName.c_str(), texture.sizeX, texture.sizeY,
+                max_terrain_size);
+        return false;
+    }
 
     //Is it valid?
     if (texture.bpp > 24) {

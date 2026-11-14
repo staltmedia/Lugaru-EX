@@ -19,6 +19,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "Utils/Input.hpp"
+#include "EX/ExNet.hpp"
 #include "EX/ExPad.hpp"
 #include "Game.hpp"
 #include <cstdlib>
@@ -97,6 +98,9 @@ void Input::Tick()
     Uint8 mb = SDL_GetMouseState(NULL, NULL);
     for (int i = 1; i < 6; i++) {
         now[SDL_NUM_SCANCODES + i] = (mb & SDL_BUTTON(i)) != 0;
+    }
+    if (EX::ChatBlocksKeys()) {
+        memset(now, 0, SDL_NUM_SCANCODES); // typing a chat line: the keyboard is the chat's (mouse and pads still play)
     }
     EX::PadContribute(now, SDL_NUM_SCANCODES + 6);
     static const bool noInput = getenv("LUGARUEX_TEST_NOINPUT") != nullptr; // test hook: ignore real keys/buttons

@@ -25,6 +25,9 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Game.hpp"
 #include "Tutorial.hpp"
 #include "Utils/Folders.hpp"
+#include "EX/ExMath.hpp"
+
+#include <vector>
 
 extern float multiplier;
 extern float gravity;
@@ -649,7 +652,6 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
                     const std::string& model7filename, const std::string& modellowfilename,
                     const std::string& modelclothesfilename, bool clothes)
 {
-    GLfloat M[16];
     FILE* tfile;
     float lSize;
     int j, num_joints, num_muscles;
@@ -661,22 +663,39 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
     // load various models
     // rotate, scale, do normals, do texcoords for each as needed
 
-    model[0].loadnotex(modelfilename);
-    model[1].loadnotex(model2filename);
-    model[2].loadnotex(model3filename);
-    model[3].loadnotex(model4filename);
-    model[4].loadnotex(model5filename);
-    model[5].loadnotex(model6filename);
-    model[6].loadnotex(model7filename);
+    // LugaruEX: a model's bounding sphere is measured again by each load / Rotate / Scale;
+    // only the one after Scale is ever used, so the others wait (same result, less loading)
+    struct SphereWait
+    {
+        SphereWait() { Model::exSphereDefer++; }
+        ~SphereWait() { Model::exSphereDefer--; }
+    };
+
+    {
+        SphereWait w;
+        model[0].loadnotex(modelfilename);
+        model[1].loadnotex(model2filename);
+        model[2].loadnotex(model3filename);
+        model[3].loadnotex(model4filename);
+        model[4].loadnotex(model5filename);
+        model[5].loadnotex(model6filename);
+        model[6].loadnotex(model7filename);
+    }
 
     for (int i = 0; i < num_models; i++) {
-        model[i].Rotate(180, 0, 0);
+        {
+            SphereWait w;
+            model[i].Rotate(180, 0, 0);
+        }
         model[i].Scale(.04, .04, .04);
         model[i].CalculateNormals(0);
     }
 
-    drawmodel.load(modelfilename);
-    drawmodel.Rotate(180, 0, 0);
+    {
+        SphereWait w;
+        drawmodel.load(modelfilename);
+        drawmodel.Rotate(180, 0, 0);
+    }
     drawmodel.Scale(.04, .04, .04);
     drawmodel.FlipTexCoords();
     if (Tutorial::IsGhost(id)) {
@@ -684,14 +703,21 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
         drawmodel.ScaleTexCoords(0.1);
     }
     drawmodel.CalculateNormals(0);
+    drawmodel.exMakeIndexed(); // LugaruEX: posed every frame - indexed drawing
 
-    modellow.loadnotex(modellowfilename);
-    modellow.Rotate(180, 0, 0);
+    {
+        SphereWait w;
+        modellow.loadnotex(modellowfilename);
+        modellow.Rotate(180, 0, 0);
+    }
     modellow.Scale(.04, .04, .04);
     modellow.CalculateNormals(0);
 
-    drawmodellow.load(modellowfilename);
-    drawmodellow.Rotate(180, 0, 0);
+    {
+        SphereWait w;
+        drawmodellow.load(modellowfilename);
+        drawmodellow.Rotate(180, 0, 0);
+    }
     drawmodellow.Scale(.04, .04, .04);
     drawmodellow.FlipTexCoords();
     if (Tutorial::IsGhost(id)) {
@@ -701,18 +727,26 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
         drawmodellow.ScaleTexCoords(0.1);
     }
     drawmodellow.CalculateNormals(0);
+    drawmodellow.exMakeIndexed();
 
     if (clothes) {
-        modelclothes.loadnotex(modelclothesfilename);
-        modelclothes.Rotate(180, 0, 0);
+        {
+            SphereWait w;
+            modelclothes.loadnotex(modelclothesfilename);
+            modelclothes.Rotate(180, 0, 0);
+        }
         modelclothes.Scale(.041, .04, .041);
         modelclothes.CalculateNormals(0);
 
-        drawmodelclothes.load(modelclothesfilename);
-        drawmodelclothes.Rotate(180, 0, 0);
+        {
+            SphereWait w;
+            drawmodelclothes.load(modelclothesfilename);
+            drawmodelclothes.Rotate(180, 0, 0);
+        }
         drawmodelclothes.Scale(.04, .04, .04);
         drawmodelclothes.FlipTexCoords();
         drawmodelclothes.CalculateNormals(0);
+        drawmodelclothes.exMakeIndexed();
     }
 
     // FIXME: three similar blocks follow, one for each of:
@@ -770,22 +804,25 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
     for (int i = 0; i < num_muscles; i++) {
         FindRotationMuscle(i, -1);
     }
-    // this seems to use opengl purely for matrix calculations
+    // each vertex into its muscle's rest frame. LugaruEX: the matrix math on the CPU, one
+    // matrix per muscle (was the GL matrix stack + glGetFloatv per vertex, which made the
+    // driver stop and catch up thousands of times per character while a level loaded)
+    std::vector<EX::Mat4> rest(num_muscles);
+    for (int i = 0; i < num_muscles; i++) {
+        rest[i].rotate(muscles[i].rotate3, 0, 1, 0);
+        rest[i].rotate(muscles[i].rotate2 - 90, 0, 0, 1);
+        rest[i].rotate(muscles[i].rotate1 - 90, 0, 1, 0);
+    }
+    auto toRest = [&](XYZ& v, int owner) {
+        if (owner < 0 || owner >= num_muscles) {
+            return; // (a vertex no muscle owns)
+        }
+        v = v - (muscles[owner].parent1->position + muscles[owner].parent2->position) / 2;
+        rest[owner].point(v.x, v.y, v.z, v.x, v.y, v.z);
+    };
     for (int k = 0; k < num_models; k++) {
         for (int i = 0; i < model[k].vertexNum; i++) {
-            model[k].vertex[i] = model[k].vertex[i] - (muscles[model[k].owner[i]].parent1->position + muscles[model[k].owner[i]].parent2->position) / 2;
-            glMatrixMode(GL_MODELVIEW);
-            glPushMatrix();
-            glLoadIdentity();
-            glRotatef(muscles[model[k].owner[i]].rotate3, 0, 1, 0);
-            glRotatef(muscles[model[k].owner[i]].rotate2 - 90, 0, 0, 1);
-            glRotatef(muscles[model[k].owner[i]].rotate1 - 90, 0, 1, 0);
-            glTranslatef(model[k].vertex[i].x, model[k].vertex[i].y, model[k].vertex[i].z);
-            glGetFloatv(GL_MODELVIEW_MATRIX, M);
-            model[k].vertex[i].x = M[12] * 1;
-            model[k].vertex[i].y = M[13] * 1;
-            model[k].vertex[i].z = M[14] * 1;
-            glPopMatrix();
+            toRest(model[k].vertex[i], model[k].owner[i]);
         }
         model[k].CalculateNormals(0);
     }
@@ -835,21 +872,8 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
         }
     }
 
-    // use opengl for its matrix math
     for (int i = 0; i < modellow.vertexNum; i++) {
-        modellow.vertex[i] = modellow.vertex[i] - (muscles[modellow.owner[i]].parent1->position + muscles[modellow.owner[i]].parent2->position) / 2;
-        glMatrixMode(GL_MODELVIEW);
-        glPushMatrix();
-        glLoadIdentity();
-        glRotatef(muscles[modellow.owner[i]].rotate3, 0, 1, 0);
-        glRotatef(muscles[modellow.owner[i]].rotate2 - 90, 0, 0, 1);
-        glRotatef(muscles[modellow.owner[i]].rotate1 - 90, 0, 1, 0);
-        glTranslatef(modellow.vertex[i].x, modellow.vertex[i].y, modellow.vertex[i].z);
-        glGetFloatv(GL_MODELVIEW_MATRIX, M);
-        modellow.vertex[i].x = M[12];
-        modellow.vertex[i].y = M[13];
-        modellow.vertex[i].z = M[14];
-        glPopMatrix();
+        toRest(modellow.vertex[i], modellow.owner[i]);
     }
 
     modellow.CalculateNormals(0);
@@ -901,21 +925,8 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
             }
         }
 
-        // use opengl for its matrix math
         for (int i = 0; i < modelclothes.vertexNum; i++) {
-            modelclothes.vertex[i] = modelclothes.vertex[i] - (muscles[modelclothes.owner[i]].parent1->position + muscles[modelclothes.owner[i]].parent2->position) / 2;
-            glMatrixMode(GL_MODELVIEW);
-            glPushMatrix();
-            glLoadIdentity();
-            glRotatef(muscles[modelclothes.owner[i]].rotate3, 0, 1, 0);
-            glRotatef(muscles[modelclothes.owner[i]].rotate2 - 90, 0, 0, 1);
-            glRotatef(muscles[modelclothes.owner[i]].rotate1 - 90, 0, 1, 0);
-            glTranslatef(modelclothes.vertex[i].x, modelclothes.vertex[i].y, modelclothes.vertex[i].z);
-            glGetFloatv(GL_MODELVIEW_MATRIX, M);
-            modelclothes.vertex[i].x = M[12];
-            modelclothes.vertex[i].y = M[13];
-            modelclothes.vertex[i].z = M[14];
-            glPopMatrix();
+            toRest(modelclothes.vertex[i], modelclothes.owner[i]);
         }
 
         modelclothes.CalculateNormals(0);

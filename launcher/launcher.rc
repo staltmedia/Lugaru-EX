@@ -8,8 +8,8 @@ IDI_APP ICON "../lugaru/Dist/Windows/Lugaru.ico"
 1 RT_MANIFEST "launcher.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,4,12,0
-PRODUCTVERSION 0,4,12,0
+FILEVERSION 0,5,0,0
+PRODUCTVERSION 0,5,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -19,7 +19,7 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "LugaruEX Launcher"
             VALUE "ProductName", "LugaruEX"
-            VALUE "FileVersion", "0.4.12"
+            VALUE "FileVersion", "0.5.0"
             VALUE "LegalCopyright", "GPLv2+ (based on OSS Lugaru)"
         END
     END
@@ -88,16 +88,46 @@ IDD_PAGE_MP DIALOGEX 0, 0, 282, 204
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    CONTROL         "Single player", IDC_MP_OFF, "Button", BS_RADIOBUTTON | WS_GROUP | WS_TABSTOP, 8, 8, 120, 10
-    CONTROL         "Host a co-op game", IDC_MP_HOST, "Button", BS_RADIOBUTTON, 8, 24, 120, 10
-    LTEXT           "UDP port:", -1, 24, 40, 50, 9
-    EDITTEXT        IDC_PORT, 80, 38, 50, 12, ES_NUMBER | WS_TABSTOP
-    CONTROL         "Join a co-op game", IDC_MP_JOIN, "Button", BS_RADIOBUTTON, 8, 58, 120, 10
-    LTEXT           "Host IP:", -1, 24, 74, 50, 9
-    EDITTEXT        IDC_ADDR, 80, 72, 120, 12, ES_AUTOHSCROLL | WS_TABSTOP
-    CONTROL         "LAN - host on this network / find the host automatically", IDC_LAN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 92, 260, 10
-    CONTROL         "Mod share", IDC_SHAREMODS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 106, 268, 10
-    LTEXT           "", IDC_MPNOTE, 8, 122, 268, 76
+    LTEXT           "Name:", -1, 8, 8, 24, 9
+    EDITTEXT        IDC_MP_NAME, 34, 6, 100, 12, ES_AUTOHSCROLL | WS_TABSTOP
+    CONTROL         "Solo", IDC_MP_OFF, "Button", BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_GROUP | WS_TABSTOP, 8, 22, 60, 14
+    CONTROL         "Host", IDC_MP_HOST, "Button", BS_AUTORADIOBUTTON | BS_PUSHLIKE, 72, 22, 60, 14
+    CONTROL         "Connect", IDC_MP_JOIN, "Button", BS_AUTORADIOBUTTON | BS_PUSHLIKE, 136, 22, 60, 14
+    LTEXT           "", IDC_MP_HOSTSTATUS, 8, 42, 268, 9
+    CONTROL         "Host options  >", IDC_MP_ADVANCED, "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 8, 54, 64, 12
+    LTEXT           "Server name:", IDC_MP_SNAMELBL, 18, 74, 44, 9
+    EDITTEXT        IDC_MP_SERVERNAME, 62, 72, 92, 12, ES_AUTOHSCROLL | WS_TABSTOP
+    CONTROL         "Allow custom players", IDC_MP_GUESTCHARS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 162, 73, 110, 10
+    CONTROL         "Password", IDC_MP_PWON, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 18, 88, 44, 10
+    EDITTEXT        IDC_MP_HOSTPW, 62, 86, 60, 12, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    CONTROL         "Show", IDC_MP_HOSTPW_SHOW, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 126, 87, 30, 10
+    LTEXT           "Max players:", IDC_MP_MAXLBL, 162, 88, 42, 9
+    EDITTEXT        IDC_MP_MAXPLAYERS, 204, 86, 22, 12, ES_NUMBER | WS_TABSTOP
+    LTEXT           "(0 = no limit)", IDC_MP_MAXHINT, 230, 88, 50, 9
+    CONTROL         "LAN / VPN (no Steam)", IDC_LAN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 18, 102, 90, 10
+    LTEXT           "UDP port:", IDC_MP_PORTLBL, 162, 103, 34, 9
+    EDITTEXT        IDC_PORT, 204, 101, 34, 12, ES_NUMBER | WS_TABSTOP
+    LTEXT           "Host IP:", IDC_MP_ADDRLBL, 8, 42, 30, 9
+    EDITTEXT        IDC_ADDR, 40, 40, 90, 12, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "LAN / VPN only. Steam servers: pick below.", IDC_MP_ADDRHINT, 136, 42, 142, 9
+    CONTROL         "Mod share", IDC_SHAREMODS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 74, 48, 10
+    LTEXT           "(Only use with players you trust)", IDC_MP_MODWARN, 58, 75, 160, 9
+    LTEXT           "Servers", IDC_MP_SERVERSLBL, 8, 90, 200, 9
+    PUSHBUTTON      "Refresh", IDC_MP_REFRESH, 232, 87, 44, 13
+    CONTROL         "", IDC_MP_SERVERS, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 6, 102, 270, 82
+    LTEXT           "", IDC_MPNOTE, 8, 187, 268, 16
+END
+
+IDD_PASSWORD DIALOGEX 0, 0, 200, 70
+STYLE DS_SETFONT | DS_CENTER | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Password"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_PW_TEXT, 8, 8, 184, 18
+    EDITTEXT        IDC_PW_EDIT, 8, 28, 150, 12, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    CONTROL         "Show", IDC_PW_SHOW, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 162, 29, 32, 10
+    DEFPUSHBUTTON   "OK", IDOK, 88, 50, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 142, 50, 50, 14
 END
 
 IDD_PAGE_CHAR DIALOGEX 0, 0, 282, 204
@@ -140,19 +170,23 @@ IDD_PAGE_LOCAL DIALOGEX 0, 0, 282, 204
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    LTEXT           "No controllers connected yet - plug one in and it joins as a player.", IDC_LC_EMPTY, 6, 8, 112, 30
-    LTEXT           "", IDC_LC_LABEL1, 6, 8, 112, 10
-    COMBOBOX        IDC_LC_CHAR1, 6, 19, 96, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "x", IDC_LC_REMOVE1, 104, 18, 14, 13
-    LTEXT           "", 1501, 6, 44, 112, 10
-    COMBOBOX        1511, 6, 55, 96, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "x", 1521, 104, 54, 14, 13
-    LTEXT           "", 1502, 6, 80, 112, 10
-    COMBOBOX        1512, 6, 91, 96, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "x", 1522, 104, 90, 14, 13
-    LTEXT           "", 1503, 6, 116, 112, 10
-    COMBOBOX        1513, 6, 127, 96, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "x", 1523, 104, 126, 14, 13
+    LTEXT           "1 player (keyboard and mouse). Each controller you switch on joins as a player.", IDC_LC_EMPTY, 6, 8, 112, 30
+    LTEXT           "", IDC_LC_LABEL1, 6, 8, 14, 10
+    COMBOBOX        IDC_LC_DEV1, 20, 6, 98, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        IDC_LC_CHAR1, 20, 21, 98, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "x", IDC_LC_REMOVE1, 104, 18, 14, 13, NOT WS_VISIBLE
+    LTEXT           "", 1501, 6, 44, 14, 10
+    COMBOBOX        1531, 20, 42, 98, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        1511, 20, 57, 98, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "x", 1521, 104, 54, 14, 13, NOT WS_VISIBLE
+    LTEXT           "", 1502, 6, 80, 14, 10
+    COMBOBOX        1532, 20, 78, 98, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        1512, 20, 93, 98, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "x", 1522, 104, 90, 14, 13, NOT WS_VISIBLE
+    LTEXT           "", 1503, 6, 116, 14, 10
+    COMBOBOX        1533, 20, 114, 98, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        1513, 20, 129, 98, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "x", 1523, 104, 126, 14, 13, NOT WS_VISIBLE
     CONTROL         "", IDC_LC_CANVAS, "LugaruEXLayout", WS_CHILD | WS_VISIBLE, 124, 4, 154, 104
     LTEXT           "", IDC_LC_NOTE, 124, 112, 154, 90
 END

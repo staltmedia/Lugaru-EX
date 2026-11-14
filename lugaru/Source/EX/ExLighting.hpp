@@ -47,7 +47,7 @@ enum
     LK_STATIC = 8,  // flag: drawn by Object::draw (the sun pass draws all objects itself)
 };
 void LightingDrawKind(int kind); // what the next models drawn are (LK_NONE = not recorded)
-void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout, unsigned tex); // Model::draw / drawdifftex
+void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout, unsigned tex, const unsigned short* idx = nullptr); // Model::draw / drawdifftex (idx: vertices = index count)
 bool LightingRecording(); // models drawn now are recorded (Enhanced)
 // the next recorded draw's world matrix and whether the game lights it (saves asking the driver)
 void LightingNextDraw(const float* world, bool lit);

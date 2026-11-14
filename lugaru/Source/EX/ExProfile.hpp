@@ -24,6 +24,8 @@ void ProfMark(const char* name);  // the time since the previous mark belongs to
 void ProfFrameEnd();              // after the swap
 // switch on from the next frame (a game running slowly: its log then shows why)
 void ProfAuto(const char* why);
+void SamplerStart();  // test hook LUGARUEX_TEST_SAMPLE (Windows): sampling profiler
+void SamplerReport();
 }
 
 #define EX_PROF(name)          \

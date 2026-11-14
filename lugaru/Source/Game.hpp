@@ -141,6 +141,7 @@ void InitGame();
 void LoadStuff();
 void LoadScreenTexture();
 void LoadingScreen();
+void exDrawLoadingText(); // LugaruEX: "Loading..." in the middle (loading screens, death restart)
 int DrawGLScene(StereoSide side);
 void playdialoguescenesound();
 int findClosestPlayer();
@@ -186,13 +187,19 @@ void AfterSwap();
 void ColorblindApply();
 void CaptureFrame();
 }
-static __forceinline void swap_gl_buffers(void)
+static __forceinline void swap_gl_buffers(bool filter = true)
 {
     extern SDL_Window* sdlwindow;
-    EX::ColorblindApply(); // LugaruEX: red-green filter (does nothing when off)
-    EX::CaptureFrame();    // LugaruEX: F12 screenshot / F11 recording, then their notice
+    extern bool exPresented, exOverlayThisFrame, exLoadOverlayDrawn;
+    if (filter) {
+        EX::ColorblindApply(); // LugaruEX: red-green filter (does nothing when off)
+    }
+    EX::CaptureFrame(); // LugaruEX: F12 screenshot / F11 recording, then their notice
     SDL_GL_SwapWindow(sdlwindow);
     EX::AfterSwap();
+    exPresented = true; // (a loading screen starts from this picture)
+    exLoadOverlayDrawn = exOverlayThisFrame;
+    exOverlayThisFrame = false;
 
     // LugaruEX: the original spun here to cap at 60 fps. Frame pacing is now
     // handled by vsync / the FPS cap (EX::LimitFrameRate) and gameplay runs on

@@ -1,7 +1,7 @@
 # Assemble dist\LugaruEX (exactly what goes into the game folder) and the release zip.
 # Layout: Lugaru.exe (the launcher, so Steam's Play button opens it) + one LugaruEX\ folder.
 $ErrorActionPreference = 'Stop'
-$version = '0.4.12'
+$version = '0.5.0'
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist\LugaruEX'
 $ex = Join-Path $dist 'LugaruEX'
@@ -22,12 +22,22 @@ Copy-Item "$root\lugaru\Data\Textures\FontMono.png" "$ex\Data\Textures\"   # fre
 Copy-Item "$root\lugaru\COPYING.txt" "$ex\COPYING.txt"
 Copy-Item "$root\lugaru\CONTENT-LICENSE.txt" "$ex\CONTENT-LICENSE.txt"
 Copy-Item "$root\tools\README-LugaruEX.txt" "$ex\README.txt"
+Set-Content "$ex\version.txt" -Value $version -Encoding ascii # (the installer shows which version a game folder has)
 # license texts of the libraries built into the programs
 $share = Join-Path $root 'vcpkg\installed\x64-windows-static\share'
 foreach ($p in 'sdl2', 'openal-soft', 'fmt', 'libpng', 'libjpeg-turbo', 'libogg', 'libvorbis', 'zlib', 'jsoncpp') {
     Copy-Item "$share\$p\copyright" "$ex\licenses\$p.txt"
 }
 Copy-Item "$root\shared\miniz\LICENSE" "$ex\licenses\miniz.txt" # (mods, installer, updates)
+# Steam play: the helper (MIT, a separate program) and Valve's steam_api64.dll (Steamworks
+# SDK redistributable) - only when the build had the SDK
+$steam = Join-Path $root 'build\steam'
+if (Test-Path "$steam\lugaruex-steam.exe") {
+    Copy-Item "$steam\lugaruex-steam.exe", "$steam\steam_api64.dll" $ex
+    Copy-Item "$root\steam\LICENSE.txt" "$ex\licenses\lugaruex-steam.txt"
+} else {
+    Write-Warning "no Steam helper in build\steam: this package has no Steam play"
+}
 
 @"
 LugaruEX $version is built from the OSS Lugaru source code (GPLv2 or later):

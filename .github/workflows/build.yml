@@ -83,6 +83,28 @@ jobs:
           path: deps
           key: openal-${{ env.OPENAL_VERSION }}-static-v1
 
+      # Valve's Steamworks SDK is kept in a private release of this (private) repository,
+      # never in the source (Valve's licence); without it the build has no Steam play
+      - name: Steamworks SDK (private)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release download steamworks-sdk -R ${{ github.repository }} -p steamworks_sdk.zip -D /tmp; then
+            unzip -q /tmp/steamworks_sdk.zip -d thirdparty && echo "Steamworks SDK ready"
+          else
+            echo "no Steamworks SDK: building without Steam play"
+          fi
+
+      - name: Steam helper
+        run: |
+          if [ -f thirdparty/steamworks_sdk/public/steam/steam_api.h ]; then
+            mkdir -p build/steam
+            g++ -O2 -std=c++17 -fmacro-prefix-map=$PWD/= -I thirdparty/steamworks_sdk/public steam/lugaruex_steam.cpp \
+              -L thirdparty/steamworks_sdk/redistributable_bin/linux64 -lsteam_api -Wl,-rpath,'$ORIGIN' \
+              -static-libstdc++ -static-libgcc -o build/steam/lugaruex-steam
+            cp thirdparty/steamworks_sdk/redistributable_bin/linux64/libsteam_api.so build/steam/
+          fi
+
       - name: Engine
         run: |
           export PKG_CONFIG_PATH=$PWD/deps/lib/pkgconfig:$PWD/vcpkg/installed/x64-linux/lib/pkgconfig
@@ -151,6 +173,15 @@ jobs:
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT }}-v2
+
+      - name: Steamworks SDK (private)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download steamworks-sdk -R ${{ github.repository }} -p steamworks_sdk.zip -D $env:RUNNER_TEMP
+          if ($LASTEXITCODE -eq 0) { Expand-Archive "$env:RUNNER_TEMP\steamworks_sdk.zip" -DestinationPath thirdparty; "Steamworks SDK ready" }
+          else { "no Steamworks SDK: building without Steam play"; $global:LASTEXITCODE = 0 }
 
       - name: Build
         shell: cmd

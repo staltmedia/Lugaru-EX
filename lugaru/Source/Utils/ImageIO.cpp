@@ -30,6 +30,11 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include <jpeglib.h>
 #include <png.h>
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
 #include <stdio.h>
 
 #ifndef WIN32
@@ -419,4 +424,64 @@ save_png_done:
         unlink(file_name);
     }
     return retval;
+}
+
+// LugaruEX: images that many characters load (skins, clothes) are decoded and resized once
+// per level load and copied from here after that; the copy is exactly what load_image +
+// image_resize gave. Cleared before each level load (a synced or modded file may change).
+namespace
+{
+struct CachedImage
+{
+    std::vector<GLubyte> data;
+    GLuint bpp, sizeX, sizeY;
+};
+std::map<std::string, CachedImage> g_imageCache;
+size_t g_imageCacheBytes = 0;
+}
+
+bool load_image_sized(const char* file_name, unsigned w, unsigned h, ImageRec& tex)
+{
+    const std::string key = std::string(file_name) + "|" + std::to_string(w) + "x" + std::to_string(h);
+    static const bool off = getenv("LUGARUEX_TEST_NOIMAGECACHE") != nullptr; // test hook (A/B)
+    if (off) {
+        if (!load_image(file_name, tex)) {
+            return false;
+        }
+        image_resize(tex, w, h);
+        return true;
+    }
+    auto it = g_imageCache.find(key);
+    if (it == g_imageCache.end()) {
+        ImageRec t;
+        if (!load_image(file_name, t)) {
+            return false;
+        }
+        image_resize(t, w, h);
+        CachedImage c;
+        c.bpp = t.bpp, c.sizeX = t.sizeX, c.sizeY = t.sizeY;
+        c.data.assign(t.data, t.data + (size_t)t.sizeX * t.sizeY * (t.bpp / 8));
+        if (g_imageCacheBytes + c.data.size() > ((size_t)96 << 20)) {
+            image_cache_clear(); // (a level with very many different skins: keep memory bounded)
+        }
+        g_imageCacheBytes += c.data.size();
+        it = g_imageCache.emplace(key, std::move(c)).first;
+    }
+    const CachedImage& c = it->second;
+    free(tex.data);
+    tex.data = (GLubyte*)malloc(c.data.size() ? c.data.size() : 1);
+    if (!tex.data) {
+        return false;
+    }
+    if (!c.data.empty()) {
+        memcpy(tex.data, c.data.data(), c.data.size());
+    }
+    tex.bpp = c.bpp, tex.sizeX = c.sizeX, tex.sizeY = c.sizeY;
+    return true;
+}
+
+void image_cache_clear()
+{
+    g_imageCache.clear();
+    g_imageCacheBytes = 0;
 }

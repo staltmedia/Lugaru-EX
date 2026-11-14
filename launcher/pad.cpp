@@ -100,7 +100,12 @@ bool Pad_Init()
 static void animateFakePads()
 {
     static bool fake = GetEnvironmentVariableA("LUGARUEX_FAKE_PADS", NULL, 0) > 0;
-    if (!fake) {
+    static bool still = [] { // LUGARUEX_FAKE_PADS=N,still: they stay idle (screenshots: no tab switching)
+        char v[32] = {};
+        GetEnvironmentVariableA("LUGARUEX_FAKE_PADS", v, sizeof(v));
+        return strstr(v, "still") != nullptr;
+    }();
+    if (!fake || still) {
         return;
     }
     const float t = GetTickCount() / 1000.f;

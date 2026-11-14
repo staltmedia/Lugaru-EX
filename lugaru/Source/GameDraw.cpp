@@ -83,6 +83,7 @@ extern bool invertmouse;
 
 extern bool campaign;
 extern bool winfreeze;
+extern bool exOverlayThisFrame; // (GameInitDispose.cpp: this frame shows the loading dim)
 
 extern bool gamestart;
 
@@ -682,7 +683,9 @@ int Game::DrawGLScene(StereoSide side)
         // LugaruEX: lighting looks (AO, fire light, bloom, shafts, grading) on the
         // finished 3D world, before any HUD/text is drawn on top
         EX_PROF("misc");
+        EX::ChatCapture3D(); // (this view's camera, for chat over heads)
         EX::LightingApply();
+        EX::ChatDraw();
 
         EX_PROF("lighting");
         //Text
@@ -1375,10 +1378,8 @@ int Game::DrawGLScene(StereoSide side)
             //Minimap
 
             if (loading != 4) {
-                glEnable(GL_TEXTURE_2D);
-                glColor4f(1, 1, 1, 1);
-                string = "Loading...";
-                text->glPrint(1024 / 2 - 90, 768 / 2, string, 1, 2, 1024, 768);
+                Game::exDrawLoadingText(); // (the same as the loading screen that follows)
+                exOverlayThisFrame = true;
             }
             loading = 2;
             drawmode = normalmode;

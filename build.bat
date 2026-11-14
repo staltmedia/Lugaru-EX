@@ -23,4 +23,6 @@ cmake -S "%ROOT%lugaru" -B "%ROOT%build\engine" -G Ninja ^
   -DPKG_CONFIG_EXECUTABLE="%VCPKG%\installed\x64-windows\tools\pkgconf\pkgconf.exe" || exit /b 1
 cmake --build "%ROOT%build\engine" || exit /b 1
 if exist "%ROOT%launcher\build_launcher.bat" call "%ROOT%launcher\build_launcher.bat" || exit /b 1
+rem the Steam helper (only with Valve's Steamworks SDK in thirdparty\steamworks_sdk)
+if exist "%ROOT%steam\build.bat" call "%ROOT%steam\build.bat" || exit /b 1
 echo BUILD OK

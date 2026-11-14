@@ -35,6 +35,7 @@ bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::
 // zip a mod folder for sending (files in name order, no dates: same folder = same bytes)
 bool Mod_PackFolder(const std::string& folder, const std::string& zipPath);
 uint64_t Mod_HashFile(const std::string& path); // FNV-1a 64 of the bytes, 0 if unreadable
+uint64_t Mod_Fingerprint(const std::string& folder); // the mod's game files (names + bytes): same mod, same number
 
 std::vector<ModInfo> Mod_List(const std::string& modsDir); // installed mods (folders not starting with '.')
 bool Mod_Delete(const std::string& modsDir, const std::string& folder);

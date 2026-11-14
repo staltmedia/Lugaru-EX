@@ -564,6 +564,35 @@ uint64_t Mod_HashFile(const std::string& path)
     return h ? h : 1;
 }
 
+uint64_t Mod_Fingerprint(const std::string& folder)
+{
+    // the files sharing would send (Mod_PackFolder's), names and bytes: the same mod gives
+    // the same number on every PC, any change another
+    std::vector<std::string> files;
+    listFiles(folder, "", files);
+    std::sort(files.begin(), files.end());
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const void* d, size_t n) {
+        const unsigned char* p = (const unsigned char*)d;
+        for (size_t i = 0; i < n; i++) {
+            h = (h ^ p[i]) * 1099511628211ull;
+        }
+    };
+    for (const std::string& rel : files) {
+        if (rel.find('/') == std::string::npos || !isDataFile(fsu::BaseName(rel))) {
+            continue;
+        }
+        std::string data;
+        if (!fsu::ReadAll(fsu::Join(folder, rel), data)) {
+            continue;
+        }
+        const std::string name = fsu::Lower(rel);
+        mix(name.data(), name.size() + 1);
+        mix(data.data(), data.size());
+    }
+    return h ? h : 1;
+}
+
 std::vector<ModInfo> Mod_List(const std::string& modsDir)
 {
     std::vector<ModInfo> v;

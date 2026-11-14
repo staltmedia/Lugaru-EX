@@ -14,7 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <string>
 
-#define EX_VERSION_STRING "0.4.12" // also tools/package.ps1, launcher.rc, the launcher label and launcher-sdl/main.cpp
+#define EX_VERSION_STRING "0.5.0" // also tools/package.ps1, launcher.rc, the launcher label and launcher-sdl/main.cpp
 
 namespace EX
 {
@@ -57,6 +57,15 @@ struct Config
     std::string mpAddress; // host IP:port to join (empty = none given)
     int mpLan = 0;       // 1 = LAN: the host announces itself, join finds it
     int mpShareMods = 1; // 1 = online: the host sends its mods, guests download and use them
+    std::string mpName = "User";     // this player's name (server list, chat)
+    std::string mpServerName;        // host: shown in server lists (colour codes ^0-^9)
+    std::string mpHostPassword;      // host: guests need it (empty = open)
+    std::string mpJoinPassword;      // guest: the host's password
+    int mpMaxPlayers = 0;            // host: everyone, the host's own players included (0 = no limit)
+    int mpGuestCharacters = 1;       // host: 0 = guests get a random look instead of their own choice
+    int mpSteam = 1;                 // 1 = through Steam (lobby codes, Valve's relay: no IP addresses shown); 0 = direct (IP / LAN)
+    std::string mpCode;              // join through Steam: the host's lobby code
+    int mpListed = 1;                // host through Steam: shown in the server list (else code only)
 
     // [Player] character chosen in the launcher
     int playerDefault = 1;              // 1 = use whatever the level defines

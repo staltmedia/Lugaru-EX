@@ -42,7 +42,7 @@ static PFNQUERYCOUNTER p_glQueryCounter;
 static PFNGETQUERYOBJECTUI64V p_glGetQueryObjectui64v;
 static PFNGETQUERYOBJECTIV p_glGetQueryObjectiv;
 
-static const int kMaxMarks = 48; // per frame
+static const int kMaxMarks = 192; // per frame
 static const int kRing = 6;      // frames of GPU queries in flight (read 5 frames late)
 
 struct FrameQ
@@ -210,3 +210,105 @@ void ProfFrameEnd()
     g_harvested = 0;
 }
 }
+
+// Test-only sampling profiler (LUGARUEX_TEST_SAMPLE=<folder with the PDB>): a thread looks at
+// where the main thread is 2000 times a second; SamplerReport prints the busiest functions.
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <dbghelp.h>
+#include <mmsystem.h>
+#include <algorithm>
+#include <map>
+#include <thread>
+#include <atomic>
+#pragma comment(lib, "dbghelp.lib")
+#pragma comment(lib, "winmm.lib")
+
+namespace EX
+{
+static std::map<unsigned long long, long> g_samples;
+static std::atomic<bool> g_sampling(false);
+static long g_sampleCount = 0;
+static HANDLE g_mainThread = nullptr;
+
+void SamplerStart()
+{
+    if (!getenv("LUGARUEX_TEST_SAMPLE") || g_sampling) {
+        return;
+    }
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_mainThread, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    g_sampling = true;
+    std::thread([] {
+        timeBeginPeriod(1);
+        while (g_sampling) {
+            if (SuspendThread(g_mainThread) != (DWORD)-1) {
+                CONTEXT c;
+                c.ContextFlags = CONTEXT_CONTROL;
+                if (GetThreadContext(g_mainThread, &c)) {
+                    g_samples[c.Rip]++;
+                    g_sampleCount++;
+                }
+                ResumeThread(g_mainThread);
+            }
+            Sleep(0);
+            const DWORD until = GetTickCount() + 1;
+            while (GetTickCount() < until && g_sampling) {
+                Sleep(0);
+            }
+        }
+    }).detach();
+}
+
+void SamplerReport()
+{
+    if (!g_sampling) {
+        return;
+    }
+    g_sampling = false;
+    Sleep(20);
+    HANDLE proc = GetCurrentProcess();
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+    SymInitialize(proc, getenv("LUGARUEX_TEST_SAMPLE"), TRUE);
+    std::map<std::string, long> byFunc;
+    char buf[sizeof(SYMBOL_INFO) + 256];
+    for (auto& s : g_samples) {
+        SYMBOL_INFO* si = (SYMBOL_INFO*)buf;
+        memset(buf, 0, sizeof(buf));
+        si->SizeOfStruct = sizeof(SYMBOL_INFO);
+        si->MaxNameLen = 255;
+        DWORD64 disp = 0;
+        std::string name;
+        IMAGEHLP_MODULE64 mi;
+        memset(&mi, 0, sizeof(mi));
+        mi.SizeOfStruct = sizeof(mi);
+        const bool mod = SymGetModuleInfo64(proc, s.first, &mi) != 0;
+        if (SymFromAddr(proc, s.first, &disp, si)) {
+            name = si->Name;
+        } else {
+            name = "?";
+        }
+        if (mod) {
+            name = std::string(mi.ModuleName) + "!" + name;
+        }
+        byFunc[name] += s.second;
+    }
+    std::vector<std::pair<long, std::string>> v;
+    for (auto& f : byFunc) {
+        v.push_back({ f.second, f.first });
+    }
+    std::sort(v.rbegin(), v.rend());
+    printf("EXTEST samples: %ld\n", g_sampleCount);
+    for (size_t i = 0; i < v.size() && i < 45; i++) {
+        printf("EXTEST sample %5.1f%% %s\n", 100.0 * v[i].first / std::max(1L, g_sampleCount), v[i].second.c_str());
+    }
+    fflush(stdout);
+}
+}
+#else
+namespace EX
+{
+void SamplerStart() {}
+void SamplerReport() {}
+}
+#endif

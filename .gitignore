@@ -11,3 +11,6 @@
 !/lugaru/Data/Textures/
 /lugaru/Data/Textures/*
 !/lugaru/Data/Textures/FontMono.png
+
+# Valve's Steamworks SDK (its licence: only redistributable_bin may be shipped, never published as source)
+/thirdparty/steamworks_sdk/

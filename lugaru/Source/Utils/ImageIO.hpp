@@ -62,6 +62,9 @@ void image_halve(ImageRec& tex);
 /** LugaruEX: halve until both sides are <= maxdim (for fixed-size CPU buffers). */
 void image_fit(ImageRec& tex, unsigned maxdim);
 void image_resize(ImageRec& tex, unsigned w, unsigned h);
+/** LugaruEX: load_image + image_resize(w, h), decoded once per level load (see ImageIO.cpp). */
+bool load_image_sized(const char* fname, unsigned w, unsigned h, ImageRec& tex);
+void image_cache_clear();
 bool save_screenshot(const char* fname);
 
 #endif

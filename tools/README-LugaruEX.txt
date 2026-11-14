@@ -1,4 +1,4 @@
-LugaruEX 0.4.12 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.5.0 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -17,9 +17,19 @@ Install (Windows)
 
 Install (Linux, Steam Deck)
   Unpack LugaruEX-<version>-linux-x64.tar.gz anywhere and run
-  LugaruEX/install.sh: the same installer as on Windows. For Steam's Play
-  button it shows a launch option to paste into Steam (right-click Lugaru HD >
-  Properties > General). Uninstall: LugaruEX/uninstall.sh in the game folder.
+  LugaruEX/install.sh: the same installer as on Windows. It lists your game
+  folders and which LugaruEX version each one has:
+  - Play starts a folder's LugaruEX as it is (nothing is installed again).
+  - Install / Update copies this version in (settings, mods and saves stay).
+  - Add to Steam puts "Lugaru EX" in your Steam library (Non-Steam): it opens
+    the launcher, which keeps LugaruEX up to date. Steam closes for a moment
+    while it is added and starts again by itself. The launcher has the same
+    button until it is in Steam.
+  - Remove... takes LugaruEX out of a folder (its settings, mods and
+    screenshots go with it), or deletes a whole free copy of the game that
+    LugaruEX downloaded.
+  For Steam's own Play button on Lugaru HD, paste the launch option it shows
+  into Steam (right-click Lugaru HD > Properties > General).
   Saves and the log: ~/.local/share/LugaruEX/.
   If Steam runs your Lugaru HD with Proton, install this Linux version into
   it the same way. Linux and Windows PCs play online together.
@@ -82,7 +92,10 @@ Launcher
   The HUD and menus always keep their proportions on wide screens.
   Character: Random (the default: a skin nobody else in the level wears), a
     skin of your choice for Rabbit or Wolf (a wolf plays as a real wolf), or
-    Default (the level's own character).
+    Default (the level's own character). Your choices apply on every level -
+    campaign, mod campaigns and online too; anything left on Default (the
+    whole character, the skin or the clothes) is what the level gives its
+    player. Other players set to Default get the level's character too.
     "New skin..." lets you pick your own image (PNG, JPG, BMP, GIF, TIFF or
     WebP). It is copied as a PNG into LugaruEX\Data\Textures\Custom\ and
     shows up in the skin lists. It has to follow the same layout as the
@@ -104,12 +117,16 @@ Launcher
     "Shaders (next look)" is the key / button that switches the look.
     Vibration on/off and look speed.
     Walking: hold Ctrl (unless Ctrl is bound to something), or push the left
-    stick only part way (push it all the way to run).
+    stick only part way (push it all the way to run). Rabbits and wolves.
     F12 takes a screenshot, F11 starts and stops recording a video. Both
     go to LugaruEX\Screenshots & Recording. Videos are MP4 with the game's
     sound (Windows 10 2004 or newer; older Windows records without sound).
     On Linux, recording needs ffmpeg installed and has no sound yet.
-  Local: one player per connected controller (plug one in to add a player).
+  Local: 1 player by default; each controller switched on adds a player and
+    switching it off removes them (their character choice is remembered).
+    Each player's first list is their input: player 1 is "Keyboard + <your
+    controller>", or "Keyboard and mouse" alone (then the controller is
+    player 2). Picking another player's controller swaps the two.
     Player 1 looks as set on the Character tab; the others each pick Default
     / Random / Rabbit - skin / Wolf - skin, or "New rabbit/wolf skin...". The screen picture shows who gets which part of
     the screen; each box only reacts to its own controller so you can tell
@@ -117,9 +134,34 @@ Launcher
     side (drag a screen toward a side or toward the top / bottom), 3 = two
     on top and one wide at the bottom,
     4 = the four corners. With 3 or 4, drop one box onto another to swap.
-    A player whose controller unplugs stays and waits for that same
-    controller (remove them with the x button).
-  Multiplayer: Single player, Host (UDP port) or Join (IP:port), and LAN.
+  Multiplayer: your Name (User if empty), then Solo, Host or Connect; Play
+    starts the game that way. Online play goes through Steam (see Online
+    co-op below).
+    Host: Host options (the arrow) has the Server name (^1 red, ^2 green,
+    ^3 yellow, ^4 blue, ^5 cyan, ^6 magenta, ^7 white, ^8 orange, ^9 purple,
+    ^0 grey colour the text after them), Password (tick it and type one;
+    Show reveals it), Allow custom players (else guests get a random look),
+    Max players (yours included, 0 = no limit) and LAN / VPN (no Steam: your
+    network or a virtual one like Radmin, Hamachi, ZeroTier) with its UDP
+    port.
+    Connect: pick a server in the list, or type the host's IP for LAN / VPN.
+    A password protected server asks for its password in a small window.
+    Mod share: (Only use with players you trust), for hosts and guests.
+    Joining a server that shares mods asks first. If the two PCs have
+    different mods and either one has Mod share off, the guest can't join
+    (it says why).
+    Servers: one list of servers on Steam, on your network / VPN, and the
+    ones you joined before, with players, status (In game / In menu, locked,
+    mods) and ping. Double click a server to see who is there (a password
+    protected server hides its players).
+    While an online game runs the launcher stays open. Your own server is
+    at the top of the list with everyone on it: right click a player to
+    Kick them (they can't come back for 5 minutes) or Ban them (until you
+    stop hosting: every new game starts with nobody banned). Their
+    character stays behind as an enemy. Play works again when the game ends.
+    In the game the host can do the same in the console (~): kick <name>,
+    ban <name>, unban <name> (the start of a name is enough). Only the host
+    can use console commands in an online game.
   With a controller: D-pad / left stick move between the settings, A
   selects (opens a list, ticks a box), B closes a list, LB / RB switch tabs,
   Start plays.
@@ -135,6 +177,8 @@ Local split-screen co-op (up to 4 players)
   - Plug a controller in during play and that player drops in next to
     player 1. Unplug one and that player just stops until the same
     controller comes back.
+  - Player 1 can play on keyboard and mouse alone (Local tab): then every
+    controller is a player of its own, for couch co-op with one keyboard.
   - While you are down, press attack to watch the next player (alive or a
     body), and again to come back to yourself. Your own look controls turn
     the camera. The view cuts straight to the next player. The dark "dead"
@@ -158,14 +202,30 @@ Local split-screen co-op (up to 4 players)
     like "Click to talk to friends!" wait until the scene is over. Partners who are not in the scene are
     hidden until it ends, so nobody stands in the middle of the shot.
 
-Online co-op (first version)
-  Host: pick "Host a co-op game" in the launcher's Multiplayer tab, press
-  Play and start any level as usual. Everyone who joins - also in the middle
-  of a level - drops in next to you and follows you to every level after
-  that. There is no player limit.
-  Join: pick "Join a co-op game" and type the host's IP:port, or tick LAN to
-  find a host on the same network by itself. You wait in the menu ("Waiting
-  for host...") until the host is in a level.
+Online co-op
+  Online play goes through Steam: Steam must be running and logged in on
+  every PC (the game itself doesn't have to be on Steam - the free version
+  works too). It shows in Steam as "Spacewar", Valve's free test app.
+  Nobody sees anyone's IP address: everything goes through Valve's relay
+  servers, and nobody has to open ports. The host's Steam profile can be
+  found by people who join or browse the server list; guests' profiles only
+  by the host.
+  Host: pick Host in the launcher's Multiplayer tab, press Play and start
+  any level as usual. Your server shows in everyone's server list; set a
+  Password to keep it to your friends. Everyone who joins - also in the
+  middle of a level - drops in next to you and follows you to every level
+  after that, up to Max players (no limit by default).
+  Connect: pick Connect (or just click a server in the list) and press
+  Play. You wait in the menu ("Waiting for host...") until the host is in
+  a level. A wrong password asks again; a full server or different mods
+  show on that screen.
+  Without Steam: the host ticks LAN / VPN under Host options; the others
+  find the server in the list (same network or VPN) or type the host's IP
+  (then the people you play with know your address).
+  - Chat: press T in a level (unless T is bound to an action), type, Enter
+    sends, Escape cancels. The line floats over your character's head for
+    everyone for a few seconds and fades; nearer players' text is bigger.
+    The console (~) keeps the log as "name: text", with who joined / left.
   - The host's PC runs the game; yours shows it and sends your buttons. Your
     camera, menus, sound and screen are your own, like single player.
   - Escape opens your own menu only: the game keeps going for everyone.
@@ -179,7 +239,7 @@ Online co-op (first version)
   - Your Character tab choice is your look online (Random = a skin nobody
     in the level is wearing). A skin you made yourself shows only
     if the other PC has the same file.
-  - Connecting over the internet: the host forwards the UDP port (27015 by
+  - LAN / VPN over the internet: the host forwards the UDP port (27015 by
     default) on their router, or everyone joins the same virtual LAN (Radmin
     VPN, Hamachi, ZeroTier, Tailscale...) and uses the host's VPN IP. Windows
     asks to allow LugaruEX through the firewall the first time: allow it.
@@ -196,8 +256,18 @@ Online co-op (first version)
     along if online play feels off. Rough guide: ping under 80 ms and jitter
     under 20 ms feel smooth; with a virtual LAN, a "relayed" connection (in
     Radmin VPN: not a direct one) is usually the cause of high numbers.
-  - The host and every guest need the same LugaruEX version. Windows and
-    Linux (native or Proton) PCs can play together.
+  - The host and every guest need the same LugaruEX version, and the same
+    build: a modified or rebuilt game can't join (both get told why).
+    Windows and Linux (native or Proton) PCs can play together.
+  - Safety: the server list never shows anyone's address; names, chat and
+    server names are plain text only; passwords are never sent as they are;
+    everything that arrives over the network (levels, looks, names, numbers)
+    is checked before it is used. Through Steam nobody sees your address;
+    with LAN / VPN the people you play with do (that's how the game
+    reaches you). Logs only show the first half of other players' addresses.
+  - Steam play uses lugaruex-steam, a small separate program (MIT licence)
+    with Valve's steam_api library next to it. LugaruEX is not made or
+    endorsed by Valve; Steam is a trademark of Valve Corporation.
   - Alt-tab is fine online: the game keeps running in the background.
   - Each PC writes the other's graphics card, screen and frame rate to its
     log. A guest whose copy of a level differs from the host's (Lugaru HD and

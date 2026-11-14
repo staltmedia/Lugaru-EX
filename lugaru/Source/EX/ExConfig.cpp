@@ -230,6 +230,26 @@ void LoadConfig()
     gets("multiplayer.address", cfg.mpAddress);
     geti("multiplayer.lan", cfg.mpLan);
     geti("multiplayer.sharemods", cfg.mpShareMods);
+    gets("multiplayer.name", cfg.mpName);
+    gets("multiplayer.servername", cfg.mpServerName);
+    gets("multiplayer.hostpassword", cfg.mpHostPassword);
+    {
+        int use = 1; // the launcher's Password checkbox (the typed password is kept while it is off)
+        geti("multiplayer.usepassword", use);
+        if (!use) {
+            cfg.mpHostPassword.clear();
+        }
+    }
+    gets("multiplayer.joinpassword", cfg.mpJoinPassword);
+    if (const char* pw = getenv("LUGARUEX_JOIN_PASSWORD")) {
+        cfg.mpJoinPassword = pw; // the launcher's password window (not saved anywhere)
+    }
+    geti("multiplayer.maxplayers", cfg.mpMaxPlayers);
+    cfg.mpMaxPlayers = cfg.mpMaxPlayers <= 0 ? 0 : std::max(2, std::min(250, cfg.mpMaxPlayers)); // 0 = no limit
+    geti("multiplayer.guestcharacters", cfg.mpGuestCharacters);
+    geti("multiplayer.steam", cfg.mpSteam);
+    gets("multiplayer.code", cfg.mpCode);
+    geti("multiplayer.listed", cfg.mpListed);
     geti("player.default", cfg.playerDefault);
     gets("player.model", cfg.playerModel);
     cfg.playerModel = lower(cfg.playerModel);

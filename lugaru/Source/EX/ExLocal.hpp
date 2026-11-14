@@ -108,6 +108,8 @@ int LocalAddRemote(unsigned long long token, const std::string& character);
 void LocalRemoteInput(int slot, const PadInput& in, float yaw, float pitch, bool connected);
 /** host: the character of a slot in the current level (-1 = none) */
 int LocalSlotPerson(int slot);
+/** host: a kicked guest's seat goes, and its character becomes an enemy */
+bool LocalRemoteToEnemy(int slot);
 /** an online guest's player here on the host (no camera on this PC) */
 bool RemotePerson(int person);
 /** vibrate the controller of whoever plays this person (local pad, or sent to an online guest) */

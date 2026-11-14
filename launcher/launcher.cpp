@@ -15,6 +15,8 @@ embedded in this program.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
@@ -33,6 +35,7 @@ embedded in this program.
 #include <vector>
 #include <atomic>
 #include <thread>
+#include <random>
 #include <shobjidl.h>
 
 #include "resource.h"
@@ -50,10 +53,13 @@ embedded in this program.
 #include "../shared/fsutil.h"
 #include "../shared/setup.h"
 #include "../shared/update.h"
+#include "../shared/netinfo.h"
+#include "../shared/serverquery.h"
+#include "../shared/adminlink.h"
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.4.12" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.5.0" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
@@ -87,6 +93,16 @@ struct Settings
     int lan = 0; // LAN: hosts announce themselves, joiners find them automatically
     int port = 27015;
     std::string addr; // join address: empty until the player types the host's
+    std::string name = "User";        // shown in server lists and chat
+    std::string serverName;           // host: the name in server lists (colour codes ^0-^9)
+    std::string hostPassword;
+    int usePassword = -1;             // host: the Password box (-1: on when a password was saved before)
+    int maxPlayers = 0;               // host: everyone, the host's own players too (0 = no limit)
+    int guestChars = 1;               // host: guests choose their own character
+    int mpAdvanced = 0;               // the Advanced options are open
+    int steam = 1;                    // through Steam (codes, Valve's relay) - 0 = direct (IP / LAN)
+    std::string code;                 // join through Steam: the host's code
+    std::string recent;               // servers joined before: addr|addr|... (server list)
     int chDefault = 0; // new installs: Random (a skin nobody else in the level wears)
     std::string chModel = "rabbit";
     std::string chSkin = "random"; // engine path, e.g. Textures/FurBrown.jpg, or "random"
@@ -242,6 +258,19 @@ static void LoadIni(Settings& s)
     gi("multiplayer.port", s.port);
     gi("multiplayer.lan", s.lan);
     gs("multiplayer.address", s.addr);
+    gs("multiplayer.name", s.name);
+    gs("multiplayer.servername", s.serverName);
+    gs("multiplayer.hostpassword", s.hostPassword);
+    gi("multiplayer.usepassword", s.usePassword);
+    if (s.usePassword < 0) {
+        s.usePassword = s.hostPassword.empty() ? 0 : 1;
+    }
+    gi("multiplayer.maxplayers", s.maxPlayers);
+    gi("multiplayer.guestcharacters", s.guestChars);
+    gi("multiplayer.advanced", s.mpAdvanced);
+    gi("multiplayer.steam", s.steam);
+    gs("multiplayer.code", s.code);
+    gs("multiplayer.recent", s.recent);
     gi("player.default", s.chDefault);
     gs("player.model", s.chModel);
     s.chModel = lower(s.chModel);
@@ -300,6 +329,23 @@ static bool SaveIni(const Settings& s)
       << "LAN=" << s.lan << "\r\n"
       << "; 1 = share mods online: send yours when hosting, download the host's when joining\r\n"
       << "ShareMods=" << s.shareMods << "\r\n"
+      << "; your name (server lists, chat)\r\n"
+      << "Name=" << s.name << "\r\n"
+      << "; host: the name in server lists (^0-^9 colour the text after them)\r\n"
+      << "ServerName=" << s.serverName << "\r\n"
+      << "HostPassword=" << s.hostPassword << "\r\n"
+      << "; 0 = the server has no password (HostPassword is kept for later)\r\n"
+      << "UsePassword=" << s.usePassword << "\r\n"
+      << "; host: players at most (yours included, 0 = no limit), and whether guests choose their character\r\n"
+      << "MaxPlayers=" << s.maxPlayers << "\r\n"
+      << "GuestCharacters=" << s.guestChars << "\r\n"
+      << "Advanced=" << s.mpAdvanced << "\r\n"
+      << "; 1 = play through Steam (Steam server list, Valve's relay: nobody sees anyone's IP address); 0 = direct (IP / LAN)\r\n"
+      << "Steam=" << s.steam << "\r\n"
+      << "Listed=1\r\n"
+      << "Code=" << s.code << "\r\n"
+      << "; servers joined before (the launcher's server list asks them)\r\n"
+      << "Recent=" << s.recent << "\r\n"
       << "\r\n[Player]\r\n"
       << "; Default=1 keeps the character each level defines\r\n"
       << "Default=" << s.chDefault << "\r\n"
@@ -1318,16 +1364,633 @@ static void UpdateFovLabel()
     SetDlgItemTextW(g_gfx, IDC_FOVLBL, b);
 }
 
-static void UpdateMpEnable()
+// ---- Multiplayer page: Solo / Host / Connect, host options, one server list (Steam +
+// LAN / VPN + servers joined before). The launcher stays open while an online game runs:
+// it shows who is on your server (right click: kick / ban) and asks for passwords.
+static ServerQuery g_servers;
+static int g_advShift = 0;            // pixels the lower part moves down when Host options are open
+static std::map<int, RECT> g_mpRects; // the lower part's places with Host options closed
+
+static std::vector<std::string> RecentServers()
 {
-    const bool host = IsDlgButtonChecked(g_mp, IDC_MP_HOST) == BST_CHECKED;
-    const bool join = IsDlgButtonChecked(g_mp, IDC_MP_JOIN) == BST_CHECKED;
-    const bool lan = IsDlgButtonChecked(g_mp, IDC_LAN) == BST_CHECKED;
-    EnableWindow(GetDlgItem(g_mp, IDC_PORT), host);
-    EnableWindow(GetDlgItem(g_mp, IDC_ADDR), join && !lan); // LAN finds the host by itself
-    EnableWindow(GetDlgItem(g_mp, IDC_LAN), host || join);
+    std::vector<std::string> out;
+    std::stringstream ss(g_set.recent);
+    std::string a;
+    while (std::getline(ss, a, '|')) {
+        a = trim(a);
+        if (!a.empty() && std::find(out.begin(), out.end(), a) == out.end()) {
+            out.push_back(a);
+        }
+    }
+    return out;
 }
 
+static void RememberServer(const std::string& addr)
+{
+    std::vector<std::string> r = RecentServers();
+    r.erase(std::remove(r.begin(), r.end(), addr), r.end());
+    r.insert(r.begin(), addr);
+    r.resize(std::min<size_t>(r.size(), 8));
+    std::string s;
+    for (auto& a : r) {
+        s += (s.empty() ? "" : "|") + a;
+    }
+    g_set.recent = s;
+}
+
+// Steam lobbies (asked through the helper on a thread; the page timer picks them up)
+static std::vector<ServerEntry> g_steamServers;
+static std::string g_steamListError;
+static bool g_steamAnswered = false; // (re-asking quietly after the first answer)
+static std::atomic<int> g_steamListState(0); // 0 idle, 1 asking, 2 answer waiting
+static std::vector<ServerEntry> g_steamListNew;
+static std::string g_steamListNewError;
+
+// the server picked in the list for Connect (a Steam lobby has no address to type)
+static ServerEntry g_pick;
+static bool g_havePick = false;
+static bool g_settingAddr = false; // (our own SetDlgItemText, not the player typing)
+
+// ---- the link to the running game (LUGARUEX_ADMIN): status once a second, kick / ban / password back
+static AdminLink g_link;               // shared/adminlink.cpp
+static AdminStatus& g_admin = g_link.st;
+static HANDLE g_engineProcess = NULL;
+static bool g_filling = false;      // (FillServerList restoring the selection is no pick)
+static std::string g_joinPassword; // typed in the password window: only in memory, given to the game
+static bool g_pwAsking = false;
+static DWORD g_pwAskedAt = 0;
+
+static bool GameRunning()
+{
+    return g_engineProcess != NULL;
+}
+
+static bool MpCheck(int id)
+{
+    return IsDlgButtonChecked(g_mp, id) == BST_CHECKED;
+}
+
+static std::string MpText(int id)
+{
+    wchar_t b[256] = {};
+    GetDlgItemTextW(g_mp, id, b, 256);
+    return trim(narrow(b));
+}
+
+static void SetAddrText(const std::string& s)
+{
+    g_settingAddr = true;
+    SetDlgItemTextW(g_mp, IDC_ADDR, widen(s).c_str());
+    g_settingAddr = false;
+}
+
+static void Show(int id, bool on)
+{
+    ShowWindow(GetDlgItem(g_mp, id), on ? SW_SHOW : SW_HIDE);
+}
+
+static void UpdateHostStatus();
+
+static void UpdateMpEnable()
+{
+    const bool host = MpCheck(IDC_MP_HOST);
+    const bool join = MpCheck(IDC_MP_JOIN);
+    const bool opts = host && MpCheck(IDC_MP_ADVANCED);
+    Show(IDC_MP_HOSTSTATUS, host);
+    Show(IDC_MP_ADVANCED, host);
+    SetDlgItemTextW(g_mp, IDC_MP_ADVANCED, opts ? L"Host options  v" : L"Host options  >");
+    for (int id : { IDC_MP_SNAMELBL, IDC_MP_SERVERNAME, IDC_MP_GUESTCHARS, IDC_MP_PWON, IDC_MP_HOSTPW, IDC_MP_HOSTPW_SHOW, IDC_MP_MAXLBL,
+                    IDC_MP_MAXPLAYERS, IDC_MP_MAXHINT, IDC_LAN, IDC_MP_PORTLBL, IDC_PORT }) {
+        Show(id, opts);
+    }
+    const bool pw = MpCheck(IDC_MP_PWON);
+    EnableWindow(GetDlgItem(g_mp, IDC_MP_HOSTPW), pw);
+    EnableWindow(GetDlgItem(g_mp, IDC_MP_HOSTPW_SHOW), pw);
+    EnableWindow(GetDlgItem(g_mp, IDC_PORT), MpCheck(IDC_LAN));
+    EnableWindow(GetDlgItem(g_mp, IDC_MP_PORTLBL), MpCheck(IDC_LAN));
+    for (int id : { IDC_MP_ADDRLBL, IDC_ADDR, IDC_MP_ADDRHINT }) {
+        Show(id, join);
+    }
+    // the lower part moves down while the host options are open
+    const int dy = opts ? g_advShift : 0;
+    for (auto& kv : g_mpRects) {
+        RECT r = kv.second;
+        HWND h = GetDlgItem(g_mp, kv.first);
+        if (kv.first == IDC_MP_SERVERS) {
+            MoveWindow(h, r.left, r.top + dy, r.right - r.left, r.bottom - r.top - dy, TRUE);
+        } else {
+            MoveWindow(h, r.left, r.top + dy, r.right - r.left, r.bottom - r.top, TRUE);
+        }
+    }
+    UpdateHostStatus();
+}
+
+static void PasswordShown(HWND dlg, int edit, int box)
+{
+    const bool show = IsDlgButtonChecked(dlg, box) == BST_CHECKED;
+    SendDlgItemMessageW(dlg, edit, EM_SETPASSWORDCHAR, show ? 0 : 0x25CF, 0);
+    InvalidateRect(GetDlgItem(dlg, edit), NULL, TRUE);
+}
+
+// ---- the password window (joining a locked server, or the game says the password is wrong)
+static std::wstring g_pwQuestion;
+static std::string g_pwAnswer;
+
+static INT_PTR CALLBACK PasswordProc(HWND d, UINT msg, WPARAM wp, LPARAM)
+{
+    switch (msg) {
+        case WM_INITDIALOG:
+            SetDlgItemTextW(d, IDC_PW_TEXT, g_pwQuestion.c_str());
+            SendDlgItemMessageW(d, IDC_PW_EDIT, EM_SETPASSWORDCHAR, 0x25CF, 0);
+            SendDlgItemMessageW(d, IDC_PW_EDIT, EM_LIMITTEXT, 64, 0);
+            SetForegroundWindow(d);
+            SetFocus(GetDlgItem(d, IDC_PW_EDIT));
+            return FALSE;
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDC_PW_SHOW) {
+                PasswordShown(d, IDC_PW_EDIT, IDC_PW_SHOW);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDOK) {
+                wchar_t b[128] = {};
+                GetDlgItemTextW(d, IDC_PW_EDIT, b, 128);
+                g_pwAnswer = narrow(b);
+                EndDialog(d, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(d, IDCANCEL);
+                return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+static bool AskPassword(const std::wstring& question, std::string& out)
+{
+    g_pwQuestion = question;
+    g_pwAnswer.clear();
+    if (DialogBoxParamW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDD_PASSWORD), g_main, PasswordProc, 0) != IDOK) {
+        return false;
+    }
+    out = g_pwAnswer;
+    return true;
+}
+
+static std::wstring ServerStatus(const ServerEntry& e)
+{
+    if (!e.answered) {
+        return L"No answer";
+    }
+    if (e.info.version != EX_LAUNCHER_VERSION) {
+        return L"Version " + widen(e.info.version); // (can't be joined from this version)
+    }
+    std::wstring s = e.info.inGame ? L"In game" : L"In menu";
+    if (e.info.password) {
+        s += L", locked";
+    }
+    if (e.info.shareMods) {
+        s += L", mods";
+    }
+    return s;
+}
+
+// is this list entry the server this PC hosts right now
+static bool IsOwnServer(const ServerEntry& e)
+{
+    return GameRunning() && g_admin.heard && g_admin.role == 1 && e.answered && e.info.id != 0 && e.info.id == g_admin.sessionId;
+}
+
+// every server: LAN / VPN first (closest), then Steam, then ones joined before; the same
+// hosting session answering twice shows once
+static std::vector<ServerEntry> ListSource()
+{
+    std::vector<ServerEntry> out;
+    std::set<uint32_t> ids;
+    auto add = [&](const ServerEntry& e) {
+        if (e.answered && e.info.id != 0) {
+            if (ids.count(e.info.id)) {
+                return;
+            }
+            ids.insert(e.info.id);
+        }
+        out.push_back(e);
+    };
+    for (const ServerEntry& e : g_servers.Entries()) {
+        if (e.lan) {
+            add(e);
+        }
+    }
+    for (const ServerEntry& e : g_steamServers) {
+        add(e);
+    }
+    for (const ServerEntry& e : g_servers.Entries()) {
+        if (!e.lan) {
+            add(e);
+        }
+    }
+    // the server I host first (it may not be in Steam's list yet)
+    if (GameRunning() && g_admin.heard && g_admin.role == 1) {
+        auto own = std::find_if(out.begin(), out.end(), IsOwnServer);
+        ServerEntry mine;
+        if (own != out.end()) {
+            mine = *own;
+            out.erase(own);
+        } else {
+            mine.addr = "(this PC)";
+            mine.answered = true;
+            mine.info.id = g_admin.sessionId;
+            mine.info.version = EX_LAUNCHER_VERSION;
+            mine.info.name = g_set.serverName.empty() ? netinfo::CleanName(g_set.name) + "'s game" : g_set.serverName;
+            mine.info.players = 1 + (int)g_admin.players.size();
+            mine.info.maxPlayers = g_set.maxPlayers;
+        }
+        out.insert(out.begin(), mine);
+    }
+    return out;
+}
+
+// list rows: a server, or (opened with a double click; your own server always) one of its players
+struct MpRow
+{
+    int server = 0;
+    int player = -1;    // -1 = the server's row
+    uint32_t admin = 0; // a guest on your server (right click: kick / ban)
+};
+static std::vector<ServerEntry> g_shownServers;
+static std::vector<MpRow> g_rows;
+static std::set<std::string> g_opened;      // servers whose players show (by addr)
+static std::set<std::string> g_closedOwn;   // your own server, closed by hand
+
+static std::string RowKey(const ServerEntry& e)
+{
+    return e.info.id ? "#" + std::to_string(e.info.id) : e.addr;
+}
+
+static bool Opened(const ServerEntry& e)
+{
+    return IsOwnServer(e) ? !g_closedOwn.count(RowKey(e)) : g_opened.count(RowKey(e)) > 0;
+}
+
+static void FillServerList()
+{
+    HWND lv = GetDlgItem(g_mp, IDC_MP_SERVERS);
+    std::vector<ServerEntry> list = ListSource();
+    // answering servers first, then by ping (your own stays on top)
+    const bool ownFirst = !list.empty() && IsOwnServer(list[0]);
+    std::stable_sort(list.begin() + (ownFirst ? 1 : 0), list.end(), [](const ServerEntry& a, const ServerEntry& b) {
+        if (a.answered != b.answered) {
+            return a.answered;
+        }
+        return a.pingMs < b.pingMs;
+    });
+    std::string selKey;
+    int selPlayer = -1;
+    const int sel = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
+    if (sel >= 0 && sel < (int)g_rows.size()) {
+        selKey = RowKey(g_shownServers[g_rows[sel].server]);
+        selPlayer = g_rows[sel].player;
+    }
+    g_shownServers = list;
+    g_filling = true;
+    g_rows.clear();
+    SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(lv);
+    auto addRow = [&](const MpRow& r, const std::wstring& c0, const std::wstring& c1, const std::wstring& c2, const std::wstring& c3) {
+        const int i = (int)g_rows.size();
+        g_rows.push_back(r);
+        LVITEMW it = {};
+        it.mask = LVIF_TEXT;
+        it.iItem = i;
+        it.pszText = (LPWSTR)c0.c_str();
+        ListView_InsertItem(lv, &it);
+        ListView_SetItemText(lv, i, 1, (LPWSTR)c1.c_str());
+        ListView_SetItemText(lv, i, 2, (LPWSTR)c2.c_str());
+        ListView_SetItemText(lv, i, 3, (LPWSTR)c3.c_str());
+        if (RowKey(g_shownServers[r.server]) == selKey && r.player == selPlayer) {
+            ListView_SetItemState(lv, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        }
+    };
+    for (int i = 0; i < (int)list.size(); i++) {
+        const ServerEntry& e = list[i];
+        const bool own = IsOwnServer(e);
+        const int players = own ? 1 + (int)g_admin.players.size() : e.info.players;
+        const std::wstring count = !e.answered ? L"-" : e.info.maxPlayers > 0 ? std::to_wstring(players) + L"/" + std::to_wstring(e.info.maxPlayers) : std::to_wstring(players);
+        const std::wstring status = own ? L"Yours" + std::wstring(e.info.password ? L", locked" : L"") : ServerStatus(e);
+        const std::wstring ping = own ? L"" : e.answered && e.pingMs >= 0 ? std::to_wstring(e.pingMs) + L" ms" : L"-";
+        MpRow r;
+        r.server = i;
+        addRow(r, L"", count, status, ping); // (the name is drawn in its colours)
+        if (!Opened(e) || !e.answered) {
+            continue;
+        }
+        if (own) {
+            MpRow me;
+            me.server = i;
+            me.player = 0;
+            addRow(me, L"      " + widen(netinfo::CleanName(g_set.name)) + L" (you)", L"", L"Host", L"");
+            for (size_t k = 0; k < g_admin.players.size(); k++) {
+                const AdminPlayer& a = g_admin.players[k];
+                MpRow pr;
+                pr.server = i;
+                pr.player = (int)k + 1;
+                pr.admin = a.id;
+                addRow(pr, L"      " + widen(a.name), a.seats > 1 ? std::to_wstring(a.seats) + L" players" : L"",
+                       a.inGame ? L"In game" : L"Waiting", L"");
+            }
+        } else {
+            for (size_t k = 0; k < e.info.list.size(); k++) {
+                MpRow pr;
+                pr.server = i;
+                pr.player = (int)k;
+                addRow(pr, L"      " + widen(e.info.list[k].name), L"", widen(netinfo::StateName(e.info.list[k].state)), L"");
+            }
+        }
+    }
+    SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
+    g_filling = false;
+}
+
+// the line under the list
+static void ShowServerDetails()
+{
+    HWND lv = GetDlgItem(g_mp, IDC_MP_SERVERS);
+    const int sel = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
+    std::wstring t;
+    if (sel < 0 || sel >= (int)g_rows.size()) {
+        t = GameRunning() && g_admin.heard && g_admin.role == 2 && !g_admin.status.empty() ? L"Game: " + widen(g_admin.status)
+            : g_steamListState == 1 && !g_steamAnswered ? L"Asking Steam..."
+            : !g_steamListError.empty() ? widen(g_steamListError) + L" (LAN / VPN servers still show.)"
+                                        : L"Pick a server to join it. Through Steam nobody sees anyone's IP address.";
+    } else {
+        const MpRow& r = g_rows[sel];
+        const ServerEntry& e = g_shownServers[r.server];
+        if (r.admin) {
+            t = L"Right click a player to kick or ban them (they stay behind as an enemy).";
+        } else if (IsOwnServer(e)) {
+            t = L"Your server. Double click to show or hide its players.";
+        } else if (!e.answered) {
+            t = widen(e.addr) + L" did not answer.";
+        } else if (e.info.version != EX_LAUNCHER_VERSION) {
+            t = L"Version " + widen(e.info.version) + L" (yours: " + widen(EX_LAUNCHER_VERSION) + L"): can't be joined.";
+        } else {
+            t = (e.steam ? L"Through Steam" : e.lan ? L"On your network" : L"Direct") + std::wstring(L". ");
+            t += e.info.password ? L"Password protected (players hidden)." : L"Double click to show who is there.";
+        }
+    }
+    SetDlgItemTextW(g_mp, IDC_MPNOTE, t.c_str());
+}
+
+static void UpdateHostStatus()
+{
+    std::wstring t;
+    if (GameRunning() && g_admin.heard && g_admin.role == 1) {
+        t = !g_admin.status.empty() ? widen(g_admin.status)
+            : g_admin.steam && g_admin.code.empty() ? L"Your server is starting..."
+                                                    : L"Your server is up" + std::wstring(g_admin.steam ? L" in the Steam server list" : L" on your network") + L": " +
+                                                          std::to_wstring(g_admin.players.size()) + (g_admin.players.size() == 1 ? L" guest." : L" guests.");
+    } else if (GameRunning()) {
+        t = L"The game is running.";
+    } else {
+        t = MpCheck(IDC_LAN) ? L"Play starts your server on your network (LAN, Radmin, Hamachi, ZeroTier...)."
+                             : L"Play starts your server: it shows in the Steam server list.";
+    }
+    SetDlgItemTextW(g_mp, IDC_MP_HOSTSTATUS, t.c_str());
+}
+
+static void SteamListThread(std::string helper)
+{
+    std::vector<ServerEntry> list;
+    std::string err;
+    SteamList_Run(helper, list, err);
+    g_steamListNew = list;
+    g_steamListNewError = err;
+    g_steamListState = 2;
+}
+
+static void RefreshServers()
+{
+    const std::wstring helper = g_exDir + L"lugaruex-steam.exe";
+    if (g_steamListState == 0 && PathFileExistsW(helper.c_str())) {
+        g_steamListState = 1;
+        std::thread(SteamListThread, narrow(helper)).detach();
+    }
+    // LAN / VPN broadcast + servers joined before + the typed address
+    std::vector<std::string> addrs = RecentServers();
+    const std::string typed = MpText(IDC_ADDR);
+    if (!typed.empty()) {
+        addrs.insert(addrs.begin(), typed);
+    }
+    const int port = (int)GetDlgItemInt(g_mp, IDC_PORT, NULL, FALSE);
+    g_servers.Refresh(addrs, port > 0 && port < 65536 ? port : 27015);
+    ShowServerDetails();
+}
+
+// server names in their colours (^0-^9) on the list's dark rows
+static LRESULT ServerListDraw(NMLVCUSTOMDRAW* cd)
+{
+    switch (cd->nmcd.dwDrawStage) {
+        case CDDS_PREPAINT:
+            return CDRF_NOTIFYITEMDRAW;
+        case CDDS_ITEMPREPAINT:
+            return CDRF_NOTIFYSUBITEMDRAW;
+        case CDDS_ITEMPREPAINT | CDDS_SUBITEM: {
+            const int i = (int)cd->nmcd.dwItemSpec;
+            if (i >= (int)g_rows.size()) {
+                return CDRF_DODEFAULT;
+            }
+            const MpRow& row = g_rows[i];
+            const ServerEntry& e = g_shownServers[row.server];
+            cd->clrText = e.answered ? (row.player >= 0 ? RGB(185, 180, 170) : RGB(225, 220, 210)) : RGB(130, 130, 130);
+            if (cd->iSubItem != 0 || row.player >= 0) {
+                return CDRF_DODEFAULT;
+            }
+            HWND lv = cd->nmcd.hdr.hwndFrom;
+            RECT r;
+            ListView_GetSubItemRect(lv, i, 0, LVIR_LABEL, &r);
+            const bool selected = (ListView_GetItemState(lv, i, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+            HBRUSH bg = CreateSolidBrush(selected ? GetSysColor(COLOR_HIGHLIGHT) : RGB(28, 26, 26));
+            FillRect(cd->nmcd.hdc, &r, bg);
+            DeleteObject(bg);
+            SetBkMode(cd->nmcd.hdc, TRANSPARENT);
+            r.left += 4;
+            // an arrow when it has players to show
+            const bool canOpen = e.answered && (IsOwnServer(e) || !e.info.list.empty());
+            std::vector<netinfo::Segment> segs;
+            segs.push_back({ -1, canOpen ? (Opened(e) ? "v " : "> ") : "  " });
+            for (const netinfo::Segment& s : netinfo::ColourSegments(e.info.name)) {
+                segs.push_back(s);
+            }
+            for (const netinfo::Segment& s : segs) {
+                unsigned char c[3];
+                netinfo::ColourRGB(s.colour, c);
+                SetTextColor(cd->nmcd.hdc, e.answered ? RGB(c[0], c[1], c[2]) : RGB(130, 130, 130));
+                const std::wstring w = widen(s.text);
+                RECT m = r;
+                DrawTextW(cd->nmcd.hdc, w.c_str(), -1, &m, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_CALCRECT);
+                DrawTextW(cd->nmcd.hdc, w.c_str(), -1, &r, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+                r.left += m.right - m.left;
+                if (r.left >= r.right) {
+                    break;
+                }
+            }
+            return CDRF_SKIPDEFAULT;
+        }
+    }
+    return CDRF_DODEFAULT;
+}
+
+static void PickRow(int item)
+{
+    if (item < 0 || item >= (int)g_rows.size()) {
+        return;
+    }
+    const ServerEntry& e = g_shownServers[g_rows[item].server];
+    if (IsOwnServer(e) || e.addr == "(this PC)") {
+        return;
+    }
+    // picking a server switches to Connect: a LAN / direct one fills in its address
+    g_pick = e;
+    g_havePick = true;
+    SetAddrText(e.steam ? "" : e.addr);
+    CheckRadioButton(g_mp, IDC_MP_OFF, IDC_MP_JOIN, IDC_MP_JOIN);
+    UpdateMpEnable();
+}
+
+static void PlayerMenu(int item)
+{
+    if (item < 0 || item >= (int)g_rows.size() || !g_rows[item].admin) {
+        return;
+    }
+    const uint32_t id = g_rows[item].admin;
+    const std::string name = g_admin.players[g_rows[item].player - 1].name;
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, IDM_MP_KICK, (L"Kick " + widen(name)).c_str());
+    AppendMenuW(m, MF_STRING, IDM_MP_BAN, (L"Ban " + widen(name)).c_str());
+    POINT pt;
+    GetCursorPos(&pt);
+    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_mp, NULL);
+    DestroyMenu(m);
+    if (cmd == IDM_MP_KICK) {
+        g_link.Kick(id, false);
+    } else if (cmd == IDM_MP_BAN &&
+               MessageBoxW(g_main, (L"Ban " + widen(name) + L" until you stop hosting? (\"unban " + widen(name) + L"\" in the game's console lifts it.)").c_str(),
+                           L"LugaruEX", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+        g_link.Kick(id, true);
+    }
+}
+
+static INT_PTR MpProc(HWND p, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+        case WM_COMMAND: {
+            const int id = LOWORD(wp), code = HIWORD(wp);
+            if (id == IDC_MP_OFF || id == IDC_MP_HOST || id == IDC_MP_JOIN) {
+                CheckRadioButton(p, IDC_MP_OFF, IDC_MP_JOIN, id);
+                UpdateMpEnable();
+            } else if (id == IDC_MP_ADVANCED || id == IDC_MP_PWON || id == IDC_LAN) {
+                UpdateMpEnable();
+            } else if (id == IDC_MP_HOSTPW_SHOW) {
+                PasswordShown(p, IDC_MP_HOSTPW, IDC_MP_HOSTPW_SHOW);
+            } else if (id == IDC_MP_REFRESH) {
+                RefreshServers();
+            } else if (id == IDC_ADDR && code == EN_CHANGE) {
+                if (!g_settingAddr) {
+                    g_havePick = false; // typing an IP replaces the picked server
+                }
+            } else if (id == IDC_ADDR && code == EN_KILLFOCUS) {
+                RefreshServers(); // a typed address is asked too
+            } else {
+                return FALSE;
+            }
+            return TRUE;
+        }
+        case WM_TIMER:
+            if (wp == 1) {
+                g_servers.Poll();
+                bool changed = false;
+                if (g_steamListState == 2) { // Steam's answer came
+                    g_steamServers = g_steamListNew;
+                    g_steamListError = g_steamListNewError;
+                    g_steamAnswered = true;
+                    g_steamListState = 0;
+                    changed = true;
+                }
+                // redraw only when something changed
+                std::string sig;
+                for (auto& e : ListSource()) {
+                    sig += e.addr + (e.answered ? "+" : "-") + std::to_string(e.info.players) + e.info.name + (e.info.inGame ? "g" : "m") +
+                           std::to_string(e.info.list.size()) + std::to_string(e.pingMs / 20) + (Opened(e) ? "o" : "c") + "|";
+                    for (auto& pl : e.info.list) {
+                        sig += pl.name + std::to_string(pl.state);
+                    }
+                }
+                for (auto& a : g_admin.players) {
+                    sig += std::to_string(a.id) + a.name + (a.inGame ? "g" : "w");
+                }
+                static std::string lastSig;
+                if (sig != lastSig || changed) {
+                    lastSig = sig;
+                    FillServerList();
+                    ShowServerDetails();
+                }
+                // ask again every 15 s while the tab is open
+                static DWORD last = GetTickCount(); // (the page asked when it opened)
+                if (IsWindowVisible(p) && GetTickCount() - last > 15000u) {
+                    last = GetTickCount();
+                    RefreshServers();
+                }
+            }
+            return TRUE;
+        case WM_NOTIFY: {
+            NMHDR* h = (NMHDR*)lp;
+            if (h->idFrom != IDC_MP_SERVERS) {
+                return FALSE;
+            }
+            if (h->code == NM_CUSTOMDRAW) {
+                SetWindowLongPtrW(p, DWLP_MSGRESULT, ServerListDraw((NMLVCUSTOMDRAW*)lp));
+                return TRUE;
+            }
+            if (h->code == NM_DBLCLK) {
+                const int i = ((NMITEMACTIVATE*)lp)->iItem;
+                if (i >= 0 && i < (int)g_rows.size() && g_rows[i].player < 0) {
+                    const ServerEntry& e = g_shownServers[g_rows[i].server];
+                    const std::string k = RowKey(e);
+                    std::set<std::string>& s = IsOwnServer(e) ? g_closedOwn : g_opened;
+                    if (s.count(k)) {
+                        s.erase(k);
+                    } else {
+                        s.insert(k);
+                    }
+                    FillServerList();
+                }
+                return TRUE;
+            }
+            if (h->code == NM_RCLICK) {
+                PlayerMenu(((NMITEMACTIVATE*)lp)->iItem);
+                return TRUE;
+            }
+            if (h->code == LVN_ITEMCHANGED) {
+                NMLISTVIEW* n = (NMLISTVIEW*)lp;
+                if (!g_filling && (n->uNewState & LVIS_SELECTED) && !(n->uOldState & LVIS_SELECTED)) {
+                    PickRow(n->iItem);
+                }
+                ShowServerDetails();
+                return TRUE;
+            }
+            return FALSE;
+        }
+        case WM_CTLCOLORSTATIC:
+            if ((HWND)lp == GetDlgItem(p, IDC_MP_MODWARN)) {
+                SetTextColor((HDC)wp, RGB(190, 70, 30));
+                SetBkMode((HDC)wp, TRANSPARENT);
+                return (INT_PTR)GetStockObject(NULL_BRUSH);
+            }
+            return FALSE;
+    }
+    return FALSE;
+}
 static void InitGfxPage(HWND p)
 {
     g_gfx = p;
@@ -1386,13 +2049,61 @@ static void InitMpPage(HWND p)
     g_mp = p;
     int id = g_set.mpmode == "host" ? IDC_MP_HOST : (g_set.mpmode == "join" ? IDC_MP_JOIN : IDC_MP_OFF);
     CheckRadioButton(p, IDC_MP_OFF, IDC_MP_JOIN, id);
+    SetDlgItemTextW(p, IDC_MP_NAME, widen(g_set.name).c_str());
+    SendDlgItemMessageW(p, IDC_MP_NAME, EM_LIMITTEXT, netinfo::kMaxName, 0);
+    SetDlgItemTextW(p, IDC_MP_SERVERNAME, widen(g_set.serverName).c_str());
+    SendDlgItemMessageW(p, IDC_MP_SERVERNAME, EM_LIMITTEXT, 60, 0);
+    SetDlgItemTextW(p, IDC_MP_HOSTPW, widen(g_set.hostPassword).c_str());
+    SendDlgItemMessageW(p, IDC_MP_HOSTPW, EM_SETPASSWORDCHAR, 0x25CF, 0);
+    SendDlgItemMessageW(p, IDC_MP_HOSTPW, EM_LIMITTEXT, 64, 0);
+    CheckDlgButton(p, IDC_MP_PWON, g_set.usePassword ? BST_CHECKED : BST_UNCHECKED);
     SetDlgItemInt(p, IDC_PORT, g_set.port, FALSE);
-    SetDlgItemTextW(p, IDC_ADDR, widen(g_set.addr).c_str());
+    SetDlgItemInt(p, IDC_MP_MAXPLAYERS, std::max(0, g_set.maxPlayers), FALSE);
+    CheckDlgButton(p, IDC_MP_GUESTCHARS, g_set.guestChars ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(p, IDC_MP_ADVANCED, g_set.mpAdvanced ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(p, IDC_LAN, g_set.lan ? BST_CHECKED : BST_UNCHECKED);
+    SetAddrText(g_set.addr);
+    if (!g_set.code.empty() && g_set.addr.empty()) {
+        // the Steam server picked last time (joined again if it is still there)
+        g_pick = ServerEntry();
+        g_pick.addr = g_set.code;
+        g_pick.steam = true;
+        g_havePick = true;
+    }
     CheckDlgButton(p, IDC_SHAREMODS, g_set.shareMods ? BST_CHECKED : BST_UNCHECKED);
-    SetDlgItemTextW(p, IDC_MPNOTE,
-                    L"Compatible with Radmin VPN, Hamachi, ZeroTier, Tailscale and other virtual LANs.");
+    // the part below moves down while the host options are open
+    RECT adv = { 0, 0, 0, 44 };
+    MapDialogRect(p, &adv);
+    g_advShift = adv.bottom;
+    for (int c : { IDC_SHAREMODS, IDC_MP_MODWARN, IDC_MP_SERVERSLBL, IDC_MP_REFRESH, IDC_MP_SERVERS }) {
+        RECT r;
+        GetWindowRect(GetDlgItem(p, c), &r);
+        MapWindowPoints(NULL, p, (POINT*)&r, 2);
+        g_mpRects[c] = r;
+    }
+    // the server list: dark rows (server names can be coloured)
+    HWND lv = GetDlgItem(p, IDC_MP_SERVERS);
+    ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    ListView_SetBkColor(lv, RGB(28, 26, 26));
+    ListView_SetTextBkColor(lv, RGB(28, 26, 26));
+    ListView_SetTextColor(lv, RGB(225, 220, 210));
+    RECT lr;
+    GetClientRect(lv, &lr);
+    const int w = lr.right - lr.left - GetSystemMetrics(SM_CXVSCROLL); // (room for the scroll bar)
+    const wchar_t* cols[] = { L"Server", L"Players", L"Status", L"Ping" };
+    const int widths[] = { w * 46 / 100, w * 14 / 100, w * 26 / 100, w * 14 / 100 - 2 };
+    for (int i = 0; i < 4; i++) {
+        LVCOLUMNW c = {};
+        c.mask = LVCF_TEXT | LVCF_WIDTH;
+        c.pszText = (LPWSTR)cols[i];
+        c.cx = widths[i];
+        ListView_InsertColumn(lv, i, &c);
+    }
+    g_link.Open();
     UpdateMpEnable();
+    ShowServerDetails();
+    RefreshServers();
+    SetTimer(p, 1, 25, NULL); // (answers are timed when read: often, for a true ping)
 }
 
 // ---- Character page ----
@@ -1662,6 +2373,12 @@ static INT_PTR CALLBACK PageProc(HWND p, UINT msg, WPARAM wp, LPARAM lp)
             }
             return FALSE;
         }
+        if (p == g_mp && g_mp) {
+            if (INT_PTR r = MpProc(p, msg, wp, lp)) {
+                return r;
+            }
+            return FALSE;
+        }
     }
     switch (msg) {
         case WM_INITDIALOG:
@@ -1712,16 +2429,6 @@ static INT_PTR CALLBACK PageProc(HWND p, UINT msg, WPARAM wp, LPARAM lp)
                     UpdateAspectLabel();
                 } else if (id == IDC_MODE && code == CBN_SELCHANGE) {
                     FillRefresh((int)ComboData(p, IDC_REFRESH));
-                }
-            } else if (p == g_mp) {
-                if (id == IDC_MP_OFF || id == IDC_MP_HOST || id == IDC_MP_JOIN) {
-                    // the labels between the buttons split the auto radio group, so keep
-                    // exactly one mode selected ourselves
-                    CheckRadioButton(p, IDC_MP_OFF, IDC_MP_JOIN, id);
-                    UpdateMpEnable();
-                }
-                if (id == IDC_LAN) {
-                    UpdateMpEnable();
                 }
             } else if (p == g_ch) {
                 if (id == IDC_CH_DEFAULT) {
@@ -1800,19 +2507,107 @@ static bool CollectSettings()
     s.mpmode = IsDlgButtonChecked(g_mp, IDC_MP_HOST) == BST_CHECKED ? "host" : (IsDlgButtonChecked(g_mp, IDC_MP_JOIN) == BST_CHECKED ? "join" : "off");
     int port = GetDlgItemInt(g_mp, IDC_PORT, NULL, FALSE);
     s.port = (port > 0 && port < 65536) ? port : 27015;
-    wchar_t buf[256] = {};
-    GetDlgItemTextW(g_mp, IDC_ADDR, buf, 256);
-    s.addr = trim(narrow(buf));
+    // host: through Steam unless LAN / VPN is ticked; connect: a typed IP is direct, a
+    // server picked in the list goes the way it was found
+    const std::string typed = MpText(IDC_ADDR);
+    if (s.mpmode == "join") {
+        s.addr = typed;
+        const bool steamPick = typed.empty() && g_havePick && g_pick.steam;
+        s.steam = steamPick ? 1 : 0;
+        s.code = steamPick ? g_pick.addr : "";
+    } else {
+        s.addr = typed;
+        s.steam = s.lan ? 0 : 1;
+    }
+    auto text = [&](int id) {
+        wchar_t b[256] = {};
+        GetDlgItemTextW(g_mp, id, b, 256);
+        return trim(narrow(b));
+    };
+    s.name = netinfo::CleanName(text(IDC_MP_NAME)); // (empty = User)
+    s.serverName = netinfo::CleanText(text(IDC_MP_SERVERNAME), netinfo::kMaxServerName, true);
+    s.hostPassword = text(IDC_MP_HOSTPW);
+    s.usePassword = MpCheck(IDC_MP_PWON) ? 1 : 0;
+    if (s.mpmode == "host" && s.usePassword && s.hostPassword.empty()) {
+        MessageBoxW(g_main, L"Type a password under Host options, or untick Password.", L"LugaruEX", MB_ICONWARNING);
+        return false;
+    }
+    const int maxp = (int)GetDlgItemInt(g_mp, IDC_MP_MAXPLAYERS, NULL, FALSE);
+    s.maxPlayers = maxp <= 0 ? 0 : std::max(2, std::min(250, maxp)); // 0 = no limit
+    s.guestChars = IsDlgButtonChecked(g_mp, IDC_MP_GUESTCHARS) == BST_CHECKED;
+    s.mpAdvanced = IsDlgButtonChecked(g_mp, IDC_MP_ADVANCED) == BST_CHECKED;
     s.chDefault = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
     s.chModel = ComboData(g_ch, IDC_CH_MODEL) == 1 ? "wolf" : "rabbit";
     LPARAM sk = ComboData(g_ch, IDC_CH_SKIN);
     s.chSkin = SkinPathOf(sk);
     s.chClothes = ClothesKeyOf(ComboData(g_ch, IDC_CH_CLOTHES));
-    if (s.mpmode == "join" && s.addr.empty()) {
-        MessageBoxW(g_main, L"Enter the host's address as IP:port.", L"LugaruEX", MB_ICONWARNING);
+    if (s.mpmode == "join" && s.addr.empty() && s.code.empty()) {
+        MessageBoxW(g_main, L"Pick a server from the list, or type the host's IP (LAN / VPN).", L"LugaruEX", MB_ICONWARNING);
         return false;
     }
     return true;
+}
+
+// the listed server this Play would join (Steam: by code; direct: by address)
+static const ServerEntry* JoinTarget()
+{
+    const bool steam = g_set.steam != 0;
+    const std::string want = steam ? g_set.code : g_set.addr;
+    if (want.empty()) {
+        return nullptr;
+    }
+    const std::vector<ServerEntry>& pool = steam ? g_steamServers : g_servers.Entries();
+    for (const ServerEntry& e : pool) {
+        if (!e.answered) {
+            continue;
+        }
+        if (e.addr == want || (!steam && want.find(':') == std::string::npos && e.addr.rfind(want + ":", 0) == 0)) {
+            return &e;
+        }
+    }
+    return nullptr;
+}
+
+// Play with Join: a server known to run another LugaruEX version can't be joined
+static bool CheckJoinVersion()
+{
+    if (g_set.mpmode != "join") {
+        return true;
+    }
+    const ServerEntry* e = JoinTarget();
+    if (e && e->info.version != EX_LAUNCHER_VERSION) {
+        MessageBoxW(g_main,
+                    (L"\"" + widen(netinfo::StripColours(e->info.name)) + L"\" runs LugaruEX " + widen(e->info.version) + L", you have " +
+                     widen(EX_LAUNCHER_VERSION) + L".\n\nBoth need the same version to play together.")
+                        .c_str(),
+                    L"LugaruEX - different version", MB_ICONWARNING);
+        return false;
+    }
+    return true;
+}
+
+// Play with Join and Mod share on: the host's mods will be downloaded and used here
+static bool ConfirmModShareJoin()
+{
+    if (g_set.mpmode != "join" || !g_set.shareMods) {
+        return true;
+    }
+    const ServerEntry* known = JoinTarget();
+    if (known && !known->info.shareMods) {
+        return true; // that server shares no mods
+    }
+    if (known && known->info.version != EX_LAUNCHER_VERSION) {
+        return true; // (the version question comes first)
+    }
+    std::wstring q;
+    if (known) {
+        q = L"\"" + widen(netinfo::StripColours(known->info.name)) + L"\" shares " + std::to_wstring(known->info.mods) +
+            (known->info.mods == 1 ? L" mod" : L" mods") + L". With Mod share on, they are downloaded and used in your game.";
+    } else {
+        q = L"Mod share is on: if this server shares mods, they are downloaded and used in your game.";
+    }
+    q += L"\n\nOnly join servers of players you trust. Join?";
+    return MessageBoxW(g_main, q.c_str(), L"LugaruEX - Mod share", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
 }
 
 // ---- controller navigation (Steam Deck through Proton, couch play): D-pad / left stick
@@ -2001,7 +2796,6 @@ static void PadNavigate()
     }
 }
 
-static HANDLE g_engineProcess = NULL;
 
 static bool LaunchEngine()
 {
@@ -2029,13 +2823,71 @@ static bool LaunchEngine()
     PROCESS_INFORMATION pi = {};
     std::vector<wchar_t> cl(cmd.begin(), cmd.end());
     cl.push_back(0);
-    if (!CreateProcessW(exe.c_str(), cl.data(), NULL, NULL, FALSE, 0, NULL, g_exeDir.c_str(), &si, &pi)) {
+    // online: the link back to this window (kick / ban, password) and a typed password -
+    // only for this game, in its environment, never written to a file
+    const bool online = g_set.mpmode != "off";
+    g_admin.heard = false;
+    g_admin.players.clear();
+    if (online && g_link.Open()) {
+        SetEnvironmentVariableW(L"LUGARUEX_ADMIN", widen(g_link.NewSecret()).c_str());
+    }
+    if (online && g_set.mpmode == "join" && !g_joinPassword.empty()) {
+        SetEnvironmentVariableW(L"LUGARUEX_JOIN_PASSWORD", widen(g_joinPassword).c_str());
+    }
+    const BOOL started = CreateProcessW(exe.c_str(), cl.data(), NULL, NULL, FALSE, 0, NULL, g_exeDir.c_str(), &si, &pi);
+    SetEnvironmentVariableW(L"LUGARUEX_ADMIN", NULL);
+    SetEnvironmentVariableW(L"LUGARUEX_JOIN_PASSWORD", NULL);
+    if (!started) {
         MessageBoxW(g_main, L"Failed to start LugaruEX.exe.", L"LugaruEX", MB_ICONERROR);
         return false;
     }
     CloseHandle(pi.hThread);
-    g_engineProcess = pi.hProcess; // waited for after the dialog closes
+    g_engineProcess = pi.hProcess; // (online: watched by the window; else waited for after it closes)
     return true;
+}
+
+// Play is off while the game runs (and while an update downloads)
+static void UpdatePlayButton()
+{
+    EnableWindow(GetDlgItem(g_main, IDOK), !GameRunning() && !g_updBusy);
+    SetDlgItemTextW(g_main, IDOK, GameRunning() ? L"Playing..." : L"Play!");
+}
+
+// online games keep this window open: who is on your server, passwords, and Play again after
+static void WatchGame()
+{
+    if (!GameRunning()) {
+        return;
+    }
+    if (g_link.Poll()) {
+        UpdateHostStatus();
+        ShowServerDetails();
+    }
+    if (WaitForSingleObject(g_engineProcess, 0) == WAIT_OBJECT_0) {
+        CloseHandle(g_engineProcess);
+        g_engineProcess = NULL;
+        g_admin.heard = false;
+        g_admin.players.clear();
+        UpdatePlayButton();
+        UpdateHostStatus();
+        FillServerList();
+        RefreshServers();
+        return;
+    }
+    // the server wants a password (none given, or the wrong one): ask here, send it to the game
+    if (g_admin.heard && g_admin.role == 2 && g_admin.needPassword && !g_pwAsking && GetTickCount() - g_pwAskedAt > 1500) {
+        g_pwAsking = true;
+        std::string pw;
+        FlashWindow(g_main, TRUE);
+        const bool ok = AskPassword(g_admin.status.empty() ? L"This server needs a password." : widen(g_admin.status) + L".", pw);
+        g_pwAsking = false;
+        g_pwAskedAt = GetTickCount();
+        g_admin.needPassword = false; // (until the game says so again)
+        if (ok) {
+            g_joinPassword = pw;
+            g_link.Password(pw);
+        }
+    }
 }
 
 // the footer text next to Auto Update
@@ -2093,6 +2945,7 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                 ShowPage(first);
             }
             SetTimer(d, 7, 16, NULL); // controller polling for the Controls / Local tabs
+            SetTimer(d, 9, 100, NULL); // the running game (online: status, passwords)
 
             CheckDlgButton(d, IDC_AUTOUPDATE, g_set.autoUpdate ? BST_CHECKED : BST_UNCHECKED);
             DragAcceptFiles(d, TRUE); // mod zips dropped anywhere on the window
@@ -2108,6 +2961,8 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                 Controls_Tick();
                 Local_Tick();
                 PadNavigate();
+            } else if (wp == 9) {
+                WatchGame();
             } else if (wp == 8 && g_updInfo.size > 0) { // download progress
                 const int pct = (int)std::min<uint64_t>(100, g_updBytes * 100 / g_updInfo.size);
                 SetDlgItemTextW(d, IDC_VERSION, (L"Downloading " + widen(g_updInfo.version) + L"... " + std::to_wstring(pct) + L"%").c_str());
@@ -2146,13 +3001,13 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                     return TRUE;
                 }
                 g_updBusy = false;
-                EnableWindow(GetDlgItem(d, IDOK), TRUE);
+                UpdatePlayButton();
                 SetDlgItemTextW(d, IDC_VERSION, VersionLabel().c_str());
             } else if (wp == 0) {
                 std::string* err = (std::string*)lp;
                 KillTimer(d, 8);
                 g_updBusy = false;
-                EnableWindow(GetDlgItem(d, IDOK), TRUE);
+                UpdatePlayButton();
                 SetDlgItemTextW(d, IDC_VERSION, VersionLabel().c_str());
                 MessageBoxW(d, (L"The update could not be downloaded: " + widen(*err)).c_str(), L"LugaruEX Update", MB_ICONWARNING);
                 delete err;
@@ -2195,11 +3050,23 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
         }
         case WM_COMMAND:
             if (LOWORD(wp) == IDOK) {
-                if (g_updBusy) {
-                    return TRUE; // updating: the game starts from the new launcher
+                if (g_updBusy || GameRunning()) {
+                    return TRUE; // updating (the game starts from the new launcher), or already playing
                 }
-                if (!CollectSettings()) {
+                if (!CollectSettings() || !CheckJoinVersion() || !ConfirmModShareJoin()) {
                     return TRUE;
+                }
+                // a server known to be locked: its password first (a small window)
+                g_joinPassword.clear();
+                if (g_set.mpmode == "join") {
+                    const ServerEntry* t = JoinTarget();
+                    if (t && t->info.password &&
+                        !AskPassword(L"\"" + widen(netinfo::StripColours(t->info.name)) + L"\" needs a password.", g_joinPassword)) {
+                        return TRUE;
+                    }
+                }
+                if (g_set.mpmode == "join" && !g_set.steam && !g_set.addr.empty()) {
+                    RememberServer(g_set.addr); // the server list asks it next time
                 }
                 if (!SaveIni(g_set)) {
                     MessageBoxW(d, L"Could not write the settings file (LugaruEX\\LugaruEX.ini).", L"LugaruEX", MB_ICONWARNING);
@@ -2209,7 +3076,17 @@ static INT_PTR CALLBACK MainProc(HWND d, UINT msg, WPARAM wp, LPARAM lp)
                     Mods_Save(IniPath());     // [Mods]
                 }
                 if (LaunchEngine()) {
-                    EndDialog(d, IDOK);
+                    if (g_set.mpmode == "off") {
+                        EndDialog(d, IDOK); // solo: the window goes (the game is waited for)
+                    } else {
+                        // online: stay open (who is on your server, passwords); Play again when it ends
+                        UpdatePlayButton();
+                        UpdateHostStatus();
+                        CheckDlgButton(g_mp, IDC_MP_ADVANCED, BST_UNCHECKED); // (room for the player list)
+                        UpdateMpEnable();
+                        TabCtrl_SetCurSel(g_tabs, 4);
+                        ShowPage(4);
+                    }
                 }
                 return TRUE;
             }

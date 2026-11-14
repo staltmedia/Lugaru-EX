@@ -29,8 +29,12 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include "setup.h"
 #include "outfits.h"
 #include "update.h"
+#include "netinfo.h"
+#include "serverquery.h"
+#include "adminlink.h"
 
 #include <algorithm>
+#include <sstream>
 #include <atomic>
 #include <cctype>
 #include <thread>
@@ -60,7 +64,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.4.12"
+#define LUGARUEX_VERSION "0.5.0"
 
 namespace
 {
@@ -123,6 +127,10 @@ struct Settings
     int lan = 0;
     int port = 27015;
     std::string addr; // join address: empty until the player types the host's
+    std::string name = "User", serverName, hostPassword, recent, code;
+    int usePassword = -1; // host: the Password box (-1: on when a password was saved before)
+    int maxPlayers = 0, guestChars = 1, mpAdvanced = 0; // maxPlayers 0 = no limit
+    int steam = 1; // through Steam (Valve's relay, Steam server list) - 0 = direct (IP / LAN / VPN)
     int chDefault = 0;
     std::string chModel = "rabbit";
     std::string chSkin = "random";
@@ -161,6 +169,16 @@ void LoadSettings()
     s.port = i.GetInt("Multiplayer", "Port", s.port);
     s.lan = i.GetInt("Multiplayer", "LAN", s.lan);
     s.addr = i.Get("Multiplayer", "Address", s.addr);
+    s.name = i.Get("Multiplayer", "Name", s.name);
+    s.serverName = i.Get("Multiplayer", "ServerName", s.serverName);
+    s.hostPassword = i.Get("Multiplayer", "HostPassword", s.hostPassword);
+    s.usePassword = i.GetInt("Multiplayer", "UsePassword", s.hostPassword.empty() ? 0 : 1);
+    s.maxPlayers = i.GetInt("Multiplayer", "MaxPlayers", s.maxPlayers);
+    s.guestChars = i.GetInt("Multiplayer", "GuestCharacters", s.guestChars);
+    s.mpAdvanced = i.GetInt("Multiplayer", "Advanced", s.mpAdvanced);
+    s.recent = i.Get("Multiplayer", "Recent", s.recent);
+    s.steam = i.GetInt("Multiplayer", "Steam", s.steam);
+    s.code = i.Get("Multiplayer", "Code", s.code);
     s.chDefault = i.GetInt("Player", "Default", s.chDefault);
     s.chModel = Lower(i.Get("Player", "Model", s.chModel));
     s.chSkin = i.Get("Player", "Skin", s.chSkin);
@@ -257,6 +275,18 @@ bool g_overrides = true, g_shaders = true;
 int g_mpSel = 0, g_port = 27015;
 char g_addr[128] = "";
 bool g_lan = false, g_shareMods = true;
+char g_name[64] = "User", g_serverName[96] = "", g_hostPw[64] = "";
+bool g_showHostPw = false, g_mpAdvanced = false, g_guestChars = true, g_usePw = false;
+bool g_pickSteam = false; // the picked server (g_pickedServer) is a Steam lobby: its code
+std::vector<ServerEntry> g_steamServers;
+std::string g_steamListError;
+std::atomic<int> g_steamListState(0); // 0 idle, 1 asking, 2 answer waiting
+std::vector<ServerEntry> g_steamListNew;
+std::string g_steamListNewError;
+int g_maxPlayers = 0;
+ServerQuery g_servers;
+std::string g_pickedServer; // the server list's selection (address)
+bool g_askModShare = false; // Play: the "this server shares mods" question is open
 bool g_autoUpdate = true;
 // Character
 bool g_chDefault = false;
@@ -339,6 +369,17 @@ void InitFromSettings()
     snprintf(g_addr, sizeof(g_addr), "%s", s.addr.c_str());
     g_lan = s.lan != 0;
     g_shareMods = s.shareMods != 0;
+    snprintf(g_name, sizeof(g_name), "%s", s.name.c_str());
+    snprintf(g_serverName, sizeof(g_serverName), "%s", s.serverName.c_str());
+    snprintf(g_hostPw, sizeof(g_hostPw), "%s", s.hostPassword.c_str());
+    g_usePw = s.usePassword != 0;
+    g_maxPlayers = std::max(0, s.maxPlayers);
+    g_guestChars = s.guestChars != 0;
+    g_mpAdvanced = s.mpAdvanced != 0;
+    if (s.mpmode == "join" && s.addr.empty() && !s.code.empty()) { // the Steam server picked last time
+        g_pickedServer = s.code;
+        g_pickSteam = true;
+    }
     g_autoUpdate = s.autoUpdate != 0;
     g_chDefault = s.chDefault != 0;
     g_modelSel = s.chModel == "wolf" ? 1 : 0;
@@ -599,11 +640,13 @@ struct Player
     std::string id, name;
     std::string ch = "random";
     int seat = 0;
+    int rank = 0; // saved player number (0 = player 1): order when several join at once
     float x = 0, y = 0, w = 1, h = 1;
 };
 const int kMaxLocal = 4;
 const ImU32 kColor[kMaxLocal] = { IM_COL32(70, 140, 245, 255), IM_COL32(230, 70, 55, 255), IM_COL32(80, 200, 80, 255), IM_COL32(240, 190, 40, 255) };
 std::vector<Player> g_pl;
+std::vector<Player> g_known; // controllers seen before (saved, or switched off): their character comes back with them
 bool g_sideBySide = false;
 std::vector<std::pair<std::string, std::string>> g_chars; // key, label
 
@@ -660,6 +703,8 @@ void FillChars()
     g_chars.push_back({ "new:wolf", "New wolf skin..." });
 }
 
+const char* const kKeyboard = "keyboard"; // player 1 on keyboard and mouse only (their controller is another player)
+
 void LoadLocal()
 {
     const Ini& ini = g_ini;
@@ -675,30 +720,86 @@ void LoadLocal()
         p.name = ini.Get("Local", k + "Name", "Controller");
         p.ch = ini.Get("Local", k + "Char", "random");
         p.seat = ini.GetInt("Local", k + "Seat", i);
-        g_pl.push_back(p);
+        p.rank = i;
+        if (i == 0 && p.id == kKeyboard) {
+            p.name = "Keyboard and mouse";
+            g_pl.push_back(p); // player 1 chose keyboard and mouse only: always there
+            continue;
+        }
+        g_known.push_back(p); // a player again once their controller is on
+    }
+    // controllers that were off when the settings were saved: id|character|name
+    for (int i = 1; i <= 16; i++) {
+        const std::string v = ini.Get("Local", "Known" + std::to_string(i));
+        const size_t a = v.find('|'), b = a == std::string::npos ? a : v.find('|', a + 1);
+        if (b == std::string::npos) {
+            continue;
+        }
+        Player p;
+        p.id = v.substr(0, a);
+        p.ch = v.substr(a + 1, b - a - 1);
+        p.name = v.substr(b + 1);
+        p.rank = p.seat = 100 + i;
+        if (!p.id.empty() && std::none_of(g_known.begin(), g_known.end(), [&](const Player& k) { return k.id == p.id; })) {
+            g_known.push_back(p);
+        }
     }
     Layout();
 }
 
-// new controllers drop in; unplugged ones keep their seat until the same controller returns
+// the players are the controllers connected right now (none = player 1 on the keyboard):
+// a controller switched on joins, one switched off leaves (its character is remembered)
 void SyncLocal()
 {
     bool changed = false;
+    for (size_t i = 0; i < g_pl.size();) {
+        PadState* s = Pad_Find(g_pl[i].id);
+        if ((s && s->connected) || g_pl[i].id == kKeyboard) {
+            i++;
+            continue;
+        }
+        auto k = std::find_if(g_known.begin(), g_known.end(), [&](const Player& p) { return p.id == g_pl[i].id; });
+        if (k != g_known.end()) {
+            *k = g_pl[i];
+        } else {
+            g_known.push_back(g_pl[i]);
+        }
+        g_pl.erase(g_pl.begin() + i);
+        changed = true;
+    }
+    std::vector<Player> joining;
     for (auto& s : Pad_List()) {
         if (!s.connected) {
             continue;
         }
         auto it = std::find_if(g_pl.begin(), g_pl.end(), [&](const Player& p) { return p.id == s.id; });
-        if (it == g_pl.end() && (int)g_pl.size() < kMaxLocal) {
-            Player p;
-            p.id = s.id;
-            p.name = s.name;
-            p.seat = (int)g_pl.size();
-            g_pl.push_back(p);
-            changed = true;
-        } else if (it != g_pl.end() && it->name != s.name) {
+        if (it != g_pl.end()) {
             it->name = s.name;
+            continue;
         }
+        auto k = std::find_if(g_known.begin(), g_known.end(), [&](const Player& p) { return p.id == s.id; });
+        Player p;
+        if (k != g_known.end()) {
+            p = *k;
+        } else {
+            p.seat = p.rank = 1000 + (int)joining.size();
+        }
+        p.id = s.id;
+        p.name = s.name;
+        joining.push_back(p);
+    }
+    // several at once (the launcher opening): in their saved order, so player 1 stays player 1
+    std::stable_sort(joining.begin(), joining.end(), [](const Player& a, const Player& b) { return a.rank < b.rank; });
+    const bool late = !g_pl.empty();
+    for (Player& p : joining) {
+        if ((int)g_pl.size() >= kMaxLocal) {
+            break;
+        }
+        if (late) {
+            p.seat = 1000 + (int)g_pl.size(); // joining later: the next free part of the screen
+        }
+        g_pl.push_back(p);
+        changed = true;
     }
     if (changed) {
         Layout();
@@ -720,6 +821,18 @@ std::string LocalText()
         const std::string ch = i == 0 ? std::string("default") : p.ch; // player 1 = the Character tab
         t += k + "=" + p.id + "\r\n" + k + "Name=" + name + "\r\n" + k + "Char=" + ch + "\r\n" + k + "Seat=" + std::to_string(p.seat) +
              "\r\n" + k + "Rect=" + rect + "\r\n";
+    }
+    // controllers that are off now keep their character for next time (the game ignores these)
+    int n = 0;
+    for (const Player& p : g_known) {
+        if (n >= 16 || std::any_of(g_pl.begin(), g_pl.end(), [&](const Player& q) { return q.id == p.id; })) {
+            continue;
+        }
+        std::string name;
+        for (unsigned char c : p.name) {
+            name += (c >= 32 && c < 128 && c != '|') ? (char)c : '_';
+        }
+        t += "Known" + std::to_string(++n) + "=" + p.id + "|" + p.ch + "|" + name + "\r\n";
     }
     return t;
 }
@@ -898,6 +1011,22 @@ bool CollectSettings()
     s.mpmode = g_mpSel == 1 ? "host" : (g_mpSel == 2 ? "join" : "off");
     s.port = (g_port > 0 && g_port < 65536) ? g_port : 27015;
     s.addr = Trim(g_addr);
+    s.name = netinfo::CleanName(g_name);
+    s.serverName = netinfo::CleanText(g_serverName, netinfo::kMaxServerName, true);
+    s.hostPassword = Trim(g_hostPw);
+    s.usePassword = g_usePw ? 1 : 0;
+    s.maxPlayers = g_maxPlayers <= 0 ? 0 : std::max(2, std::min(250, g_maxPlayers)); // 0 = no limit
+    s.guestChars = g_guestChars;
+    s.mpAdvanced = g_mpAdvanced;
+    // host: through Steam unless LAN / VPN is ticked; connect: a typed IP is direct, a server
+    // picked in the list goes the way it was found
+    if (s.mpmode == "join") {
+        const bool steamPick = s.addr.empty() && g_pickSteam && !g_pickedServer.empty();
+        s.steam = steamPick ? 1 : 0;
+        s.code = steamPick ? g_pickedServer : "";
+    } else {
+        s.steam = s.lan ? 0 : 1;
+    }
     s.chDefault = g_chDefault;
     s.chModel = g_modelSel == 1 ? "wolf" : "rabbit";
     s.chSkin = g_skin;
@@ -905,8 +1034,12 @@ bool CollectSettings()
     s.shareMods = g_shareMods;
     s.autoUpdate = g_autoUpdate;
     s.tab = g_openTab;
-    if (s.mpmode == "join" && s.addr.empty() && !s.lan) {
-        g_message = "Enter the host's address as IP:port.";
+    if (s.mpmode == "host" && s.usePassword && s.hostPassword.empty()) {
+        g_message = "Type a password under Host options, or untick Password.";
+        return false;
+    }
+    if (s.mpmode == "join" && s.addr.empty() && s.code.empty()) {
+        g_message = "Pick a server from the list, or type the host's IP (LAN / VPN).";
         return false;
     }
     return true;
@@ -962,6 +1095,23 @@ bool SaveIni()
     ki("LAN", s.lan);
     line("; 1 = share mods online: send yours when hosting, download the host's when joining");
     ki("ShareMods", s.shareMods);
+    line("; your name (server lists, chat)");
+    kv("Name", s.name);
+    line("; host: the name in server lists (^0-^9 colour the text after them)");
+    kv("ServerName", s.serverName);
+    kv("HostPassword", s.hostPassword);
+    line("; 0 = the server has no password (HostPassword is kept for later)");
+    ki("UsePassword", s.usePassword);
+    line("; host: players at most (yours included, 0 = no limit), and whether guests choose their character");
+    ki("MaxPlayers", s.maxPlayers);
+    ki("GuestCharacters", s.guestChars);
+    ki("Advanced", s.mpAdvanced);
+    line("; servers joined before (the launcher's server list asks them)");
+    kv("Recent", s.recent);
+    line("; 1 = play through Steam (Steam server list, Valve's relay: nobody sees anyone's IP address); 0 = direct (IP / LAN / VPN)");
+    ki("Steam", s.steam);
+    ki("Listed", 1);
+    kv("Code", s.code);
     line("");
     line("[Player]");
     line("; Default=1 keeps the character each level defines");
@@ -1005,6 +1155,15 @@ bool SaveIni()
 
 std::vector<std::string> g_passArgs; // command line options for the game (e.g. -d), not Steam's %command%
 
+// (defined with the Multiplayer tab)
+extern AdminLink g_link;
+extern std::string g_joinPassword;
+#ifdef _WIN32
+extern HANDLE g_gameProc;
+#else
+extern pid_t g_gamePid;
+#endif
+
 bool LaunchEngine()
 {
     const std::string exe = EnginePath();
@@ -1012,6 +1171,14 @@ bool LaunchEngine()
         g_message = "Could not find " + exe + "\nPlease reinstall LugaruEX.";
         return false;
     }
+    // online: the link back to this window (kick / ban, password) and a typed password -
+    // only for this game, in its environment, never written to a file
+    const bool online = g_set.mpmode != "off";
+    std::string admin;
+    if (online && g_link.Open()) {
+        admin = g_link.NewSecret();
+    }
+    const std::string pw = online && g_set.mpmode == "join" ? g_joinPassword : std::string();
 #ifdef _WIN32
     std::string cmd = "\"" + exe + "\"";
     for (auto& a : g_passArgs) {
@@ -1021,12 +1188,21 @@ bool LaunchEngine()
     PROCESS_INFORMATION pi = {};
     std::vector<char> cl(cmd.begin(), cmd.end());
     cl.push_back(0);
-    if (!CreateProcessA(exe.c_str(), cl.data(), NULL, NULL, FALSE, 0, NULL, g_gameDir.c_str(), &si, &pi)) {
+    if (!admin.empty()) {
+        SetEnvironmentVariableA("LUGARUEX_ADMIN", admin.c_str());
+    }
+    if (!pw.empty()) {
+        SetEnvironmentVariableA("LUGARUEX_JOIN_PASSWORD", pw.c_str());
+    }
+    const BOOL started = CreateProcessA(exe.c_str(), cl.data(), NULL, NULL, FALSE, 0, NULL, g_gameDir.c_str(), &si, &pi);
+    SetEnvironmentVariableA("LUGARUEX_ADMIN", NULL);
+    SetEnvironmentVariableA("LUGARUEX_JOIN_PASSWORD", NULL);
+    if (!started) {
         g_message = "Failed to start the game.";
         return false;
     }
     CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    g_gameProc = pi.hProcess;
     return true;
 #else
     if (access(exe.c_str(), X_OK) != 0) {
@@ -1041,6 +1217,12 @@ bool LaunchEngine()
         if (chdir(g_gameDir.c_str()) != 0) {
             _exit(126);
         }
+        if (!admin.empty()) {
+            setenv("LUGARUEX_ADMIN", admin.c_str(), 1);
+        }
+        if (!pw.empty()) {
+            setenv("LUGARUEX_JOIN_PASSWORD", pw.c_str(), 1);
+        }
         std::vector<char*> argv;
         argv.push_back((char*)exe.c_str());
         for (auto& a : g_passArgs) {
@@ -1050,7 +1232,7 @@ bool LaunchEngine()
         execv(exe.c_str(), argv.data());
         _exit(127);
     }
-    // Steam waits for the program it started: stay until the game ends (no window)
+    g_gamePid = pid; // (Steam waits for the program it started: the launcher stays until the game ends)
     return true;
 #endif
 }
@@ -1641,25 +1823,87 @@ int g_dragSeat = -1;
 
 void TabLocal(float s)
 {
-    SyncLocal();
     const float avail = ImGui::GetContentRegionAvail().x;
     const float leftW = 250 * s;
     ImGui::BeginChild("##players", ImVec2(leftW, 0));
     if (g_pl.empty()) {
-        ImGui::TextWrapped("No controllers connected yet - plug one in and it joins as a player.");
+        ImGui::TextWrapped("1 player (keyboard and mouse). Each controller you switch on joins as a player.");
     }
     std::vector<std::string> labels;
     for (auto& c : g_chars) {
         labels.push_back(c.second);
     }
+    // the connected controllers (numbered when two have the same name)
+    std::vector<std::pair<std::string, std::string>> pads;
+    for (auto& ps : Pad_List()) {
+        if (ps.connected) {
+            pads.push_back({ ps.id, ps.name });
+        }
+    }
+    for (size_t a = 0; a < pads.size(); a++) {
+        int same = 0, mine = 0;
+        for (size_t b = 0; b < pads.size(); b++) {
+            if (pads[b].second == pads[a].second) {
+                same++;
+                mine += b <= a ? 1 : 0;
+            }
+        }
+        if (same > 1) {
+            pads[a].second += " " + std::to_string(mine);
+        }
+    }
     for (int i = 0; i < (int)g_pl.size(); i++) {
         Player& p = g_pl[i];
-        PadState* st = Pad_Find(p.id);
-        const bool conn = st && st->connected;
         ImGui::PushID(i);
-        ImGui::PushStyleColor(ImGuiCol_Text, conn ? kColor[i] : IM_COL32(130, 130, 130, 255));
-        ImGui::Text("P%d   %s%s", i + 1, p.name.c_str(), conn ? "" : "   (unplugged)");
-        ImGui::PopStyleColor();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColor[i]), "P%d", i + 1);
+        ImGui::SameLine(30 * s);
+        // the input this player uses; picking another player's controller swaps them
+        std::vector<std::string> ids, names;
+        if (i == 0) {
+            ids.push_back(kKeyboard);
+            names.push_back("Keyboard and mouse");
+            for (auto& pd : pads) {
+                ids.push_back(pd.first);
+                names.push_back("Keyboard + " + pd.second);
+            }
+        } else {
+            for (auto& pd : pads) {
+                ids.push_back(pd.first);
+                names.push_back(pd.second);
+            }
+        }
+        int dev = 0;
+        for (int k = 0; k < (int)ids.size(); k++) {
+            if (ids[k] == p.id) {
+                dev = k;
+            }
+        }
+        if (Combo("##dev", &dev, names, leftW - 70 * s) && dev < (int)ids.size() && ids[dev] != p.id) {
+            const std::string want = ids[dev];
+            auto other = std::find_if(g_pl.begin(), g_pl.end(), [&](const Player& o) { return o.id == want; });
+            if (other != g_pl.end()) {
+                const int j = (int)(other - g_pl.begin());
+                if (p.id == kKeyboard) {
+                    p.id = want; // player 1 takes that controller back: its player leaves
+                    p.name = other->name;
+                    g_pl.erase(g_pl.begin() + j);
+                } else {
+                    std::swap(g_pl[i].id, g_pl[j].id);
+                    std::swap(g_pl[i].name, g_pl[j].name);
+                }
+            } else {
+                p.id = want; // keyboard only: the controller it had becomes the next player
+                if (want == kKeyboard) {
+                    p.name = "Keyboard and mouse";
+                }
+            }
+            SyncLocal();
+            Layout();
+            ImGui::PopID();
+            break; // (the list changed)
+        }
+        ImGui::SetCursorPosX(30 * s);
         int sel = 0;
         for (int k = 0; k < (int)g_chars.size(); k++) {
             if (g_chars[k].first == p.ch) {
@@ -1669,9 +1913,9 @@ void TabLocal(float s)
         if (i == 0) { // player 1's character is the Character tab's
             int one = 0;
             ImGui::BeginDisabled();
-            Combo("##ch", &one, { "As on the Character tab" }, leftW - 40 * s);
+            Combo("##ch", &one, { "As on the Character tab" }, leftW - 70 * s);
             ImGui::EndDisabled();
-        } else if (Combo("##ch", &sel, labels, leftW - 40 * s)) {
+        } else if (Combo("##ch", &sel, labels, leftW - 70 * s)) {
             const std::string key = g_chars[sel].first;
             if (key.rfind("new:", 0) == 0) {
                 StartImport(key.substr(4), "local:" + std::to_string(i));
@@ -1679,16 +1923,6 @@ void TabLocal(float s)
                 p.ch = key;
             }
         }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(conn);
-        if (ImGui::Button("x")) {
-            g_pl.erase(g_pl.begin() + i);
-            Layout();
-            ImGui::EndDisabled();
-            ImGui::PopID();
-            break;
-        }
-        ImGui::EndDisabled();
         ImGui::Spacing();
         ImGui::PopID();
     }
@@ -1749,8 +1983,9 @@ void TabLocal(float s)
         ImVec2 r0, r1;
         region(p, r0, r1);
         PadState* st = Pad_Find(p.id);
-        const bool conn = st && st->connected;
-        const bool flash = conn && now - st->lastActive < 350;
+        const bool keyboard = p.id == kKeyboard;
+        const bool conn = keyboard || (st && st->connected);
+        const bool flash = st && st->connected && now - st->lastActive < 350;
         const bool target = g_dragSeat >= 0 && i == hover && i != g_dragSeat;
         const ImU32 c = kColor[i];
         const float t = (flash || target) ? 0.45f : (i == g_dragSeat ? 0.1f : 0.22f);
@@ -1761,10 +1996,16 @@ void TabLocal(float s)
         snprintf(tag, sizeof(tag), "P%d", i + 1);
         dl->AddText(ImVec2(r0.x + 6, r0.y + 3), conn ? c : IM_COL32(150, 150, 150, 255), tag);
         const float pw = r1.x - r0.x, ph = r1.y - r0.y;
-        DrawPad(dl, ImVec2(r0.x + pw / 6, r0.y + ph / 6), ImVec2(r1.x - pw / 6, r1.y - ph / 8), st, c);
+        if (keyboard) {
+            const char* kt = "Keyboard";
+            const ImVec2 ts = ImGui::CalcTextSize(kt);
+            dl->AddText(ImVec2((r0.x + r1.x - ts.x) / 2, (r0.y + r1.y - ts.y) / 2), IM_COL32(220, 220, 230, 255), kt);
+        } else {
+            DrawPad(dl, ImVec2(r0.x + pw / 6, r0.y + ph / 6), ImVec2(r1.x - pw / 6, r1.y - ph / 8), st, c);
+        }
     }
     if (g_pl.empty()) {
-        const char* t = "Connect a controller - each one becomes a player";
+        const char* t = "P1 - keyboard and mouse";
         const ImVec2 ts = ImGui::CalcTextSize(t);
         dl->AddText(ImVec2(a.x + (sw - ts.x) / 2, a.y + (sh - ts.y) / 2), IM_COL32(170, 170, 170, 255), t);
     }
@@ -1774,37 +2015,479 @@ void TabLocal(float s)
     ImGui::EndGroup();
 }
 
+std::vector<std::string> RecentServers()
+{
+    std::vector<std::string> out;
+    std::stringstream ss(g_set.recent);
+    std::string a;
+    while (std::getline(ss, a, '|')) {
+        a = Trim(a);
+        if (!a.empty() && std::find(out.begin(), out.end(), a) == out.end()) {
+            out.push_back(a);
+        }
+    }
+    return out;
+}
+
+void RememberServer(const std::string& addr)
+{
+    std::vector<std::string> r = RecentServers();
+    r.erase(std::remove(r.begin(), r.end(), addr), r.end());
+    r.insert(r.begin(), addr);
+    r.resize(std::min<size_t>(r.size(), 8));
+    std::string s;
+    for (auto& a : r) {
+        s += (s.empty() ? "" : "|") + a;
+    }
+    g_set.recent = s;
+}
+
+// ---- the game this launcher started. Online games keep the launcher open: who is on your
+// server (right click: kick / ban), passwords, and Play again when the game ends.
+AdminLink g_link; // shared/adminlink.cpp
+#ifdef _WIN32
+HANDLE g_gameProc = NULL;
+#else
+pid_t g_gamePid = 0;
+#endif
+std::string g_joinPassword; // typed in the password window: only in memory, given to the game
+bool g_steamAnswered = false; // (re-asking Steam quietly after its first answer)
+std::set<std::string> g_opened, g_closedOwn; // servers whose players show / your server, closed by hand
+
+bool GameRunning()
+{
+#ifdef _WIN32
+    return g_gameProc != NULL;
+#else
+    return g_gamePid > 0;
+#endif
+}
+
+// true when the game just ended
+bool GameEnded()
+{
+#ifdef _WIN32
+    if (g_gameProc && WaitForSingleObject(g_gameProc, 0) == WAIT_OBJECT_0) {
+        CloseHandle(g_gameProc);
+        g_gameProc = NULL;
+        return true;
+    }
+#else
+    int status = 0;
+    if (g_gamePid > 0 && waitpid(g_gamePid, &status, WNOHANG) == g_gamePid) {
+        g_gamePid = 0;
+        return true;
+    }
+#endif
+    return false;
+}
+
+bool Hosting()
+{
+    return GameRunning() && g_link.st.heard && g_link.st.role == 1;
+}
+
+void SteamListThread(std::string helper)
+{
+    std::vector<ServerEntry> list;
+    std::string err;
+    SteamList_Run(helper, list, err);
+    g_steamListNew = list;
+    g_steamListNewError = err;
+    g_steamListState = 2;
+}
+
+// every server: Steam lobbies, the LAN and virtual LANs (broadcast), servers joined before
+// and the typed address
+void RefreshServers()
+{
+#ifdef _WIN32
+    const std::string helper = g_exDir + "lugaruex-steam.exe";
+#else
+    const std::string helper = g_exDir + "lugaruex-steam";
+#endif
+    if (g_steamListState == 0 && FileExists(helper)) {
+        g_steamListState = 1;
+        std::thread(SteamListThread, helper).detach();
+    }
+    std::vector<std::string> addrs = RecentServers();
+    const std::string typed = Trim(g_addr);
+    if (!typed.empty()) {
+        addrs.insert(addrs.begin(), typed);
+    }
+    g_servers.Refresh(addrs, g_port > 0 && g_port < 65536 ? g_port : 27015);
+}
+
+// the listed server this Play would join (Steam: by code; direct: by address)
+const ServerEntry* JoinTarget()
+{
+    const bool steam = g_set.steam != 0;
+    const std::string want = steam ? g_set.code : g_set.addr;
+    if (want.empty()) {
+        return nullptr;
+    }
+    const std::vector<ServerEntry>& pool = steam ? g_steamServers : g_servers.Entries();
+    for (const ServerEntry& e : pool) {
+        if (e.answered && (e.addr == want || (!steam && want.find(':') == std::string::npos && e.addr.rfind(want + ":", 0) == 0))) {
+            return &e;
+        }
+    }
+    return nullptr;
+}
+
+bool IsOwnServer(const ServerEntry& e)
+{
+    return Hosting() && e.answered && e.info.id != 0 && e.info.id == g_link.st.sessionId;
+}
+
+// LAN / VPN first (closest), then Steam, then servers joined before; the same hosting
+// session answering twice shows once; the server you host on top
+std::vector<ServerEntry> ListSource()
+{
+    std::vector<ServerEntry> out;
+    std::set<uint32_t> ids;
+    auto add = [&](const ServerEntry& e) {
+        if (e.answered && e.info.id != 0) {
+            if (ids.count(e.info.id)) {
+                return;
+            }
+            ids.insert(e.info.id);
+        }
+        out.push_back(e);
+    };
+    for (const ServerEntry& e : g_servers.Entries()) {
+        if (e.lan) {
+            add(e);
+        }
+    }
+    for (const ServerEntry& e : g_steamServers) {
+        add(e);
+    }
+    for (const ServerEntry& e : g_servers.Entries()) {
+        if (!e.lan) {
+            add(e);
+        }
+    }
+    std::stable_sort(out.begin(), out.end(), [](const ServerEntry& a, const ServerEntry& b) {
+        if (a.answered != b.answered) {
+            return a.answered;
+        }
+        return a.pingMs < b.pingMs;
+    });
+    if (Hosting()) {
+        auto own = std::find_if(out.begin(), out.end(), IsOwnServer);
+        ServerEntry mine;
+        if (own != out.end()) {
+            mine = *own;
+            out.erase(own);
+        } else { // (not in a list yet)
+            mine.addr = "(this PC)";
+            mine.answered = true;
+            mine.info.id = g_link.st.sessionId;
+            mine.info.version = LUGARUEX_VERSION;
+            mine.info.name = g_set.serverName.empty() ? netinfo::CleanName(g_set.name) + "'s game" : g_set.serverName;
+            mine.info.maxPlayers = g_set.maxPlayers;
+        }
+        out.insert(out.begin(), mine);
+    }
+    return out;
+}
+
+std::string RowKey(const ServerEntry& e)
+{
+    return e.info.id ? "#" + std::to_string(e.info.id) : e.addr;
+}
+
+bool Opened(const ServerEntry& e)
+{
+    return IsOwnServer(e) ? !g_closedOwn.count(RowKey(e)) : g_opened.count(RowKey(e)) > 0;
+}
+
+// a server name in its colours (^0-^9)
+void ColouredText(const std::string& name, bool dim)
+{
+    bool first = true;
+    for (const netinfo::Segment& seg : netinfo::ColourSegments(name)) {
+        unsigned char c[3];
+        netinfo::ColourRGB(seg.colour, c);
+        if (!first) {
+            ImGui::SameLine(0, 0);
+        }
+        first = false;
+        ImGui::TextColored(dim ? ImVec4(.5f, .5f, .5f, 1) : ImVec4(c[0] / 255.f, c[1] / 255.f, c[2] / 255.f, 1), "%s", seg.text.c_str());
+    }
+}
+
+// a password box with Show
+void PasswordBox(const char* id, char* buf, size_t size, bool* show, float w, float s)
+{
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputText(id, buf, size, *show ? 0 : ImGuiInputTextFlags_Password);
+    ImGui::SameLine(0, 6 * s);
+    ImGui::PushID(id);
+    ImGui::Checkbox("Show", show);
+    ImGui::PopID();
+}
+
+// Solo / Host / Connect: buttons that stay pressed
+bool ModeButton(const char* label, int mode, float w)
+{
+    const bool on = g_mpSel == mode;
+    if (on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    const bool hit = ImGui::Button(label, ImVec2(w, 0));
+    if (on) {
+        ImGui::PopStyleColor();
+    }
+    if (hit) {
+        g_mpSel = mode;
+    }
+    return hit;
+}
+
 void TabMultiplayer(float s)
 {
-    ImGui::RadioButton("Single player", &g_mpSel, 0);
-    ImGui::RadioButton("Host a co-op game", &g_mpSel, 1);
-    ImGui::Indent(24 * s);
-    ImGui::BeginDisabled(g_mpSel != 1);
+    static bool asked = false;
+    static Uint32 lastAsk = 0;
+    if (!asked || SDL_GetTicks() - lastAsk > 15000u) { // when the tab opens, then every 15 s
+        asked = true;
+        lastAsk = SDL_GetTicks();
+        RefreshServers();
+    }
+    if (g_steamListState == 2) { // Steam's answer came
+        g_steamServers = g_steamListNew;
+        g_steamListError = g_steamListNewError;
+        g_steamListState = 0;
+        g_steamAnswered = true;
+    }
+    const float lab = 92 * s;
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("UDP port:");
-    ImGui::SameLine(110 * s);
-    ImGui::SetNextItemWidth(110 * s);
-    ImGui::InputInt("##port", &g_port, 0, 0);
-    ImGui::EndDisabled();
-    ImGui::Unindent(24 * s);
-    ImGui::RadioButton("Join a co-op game", &g_mpSel, 2);
-    ImGui::Indent(24 * s);
-    ImGui::BeginDisabled(g_mpSel != 2 || g_lan);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Host IP:");
-    ImGui::SameLine(110 * s);
-    ImGui::SetNextItemWidth(220 * s);
-    ImGui::InputText("##addr", g_addr, sizeof(g_addr));
-    ImGui::EndDisabled();
-    ImGui::Unindent(24 * s);
-    ImGui::Spacing();
-    ImGui::BeginDisabled(g_mpSel == 0);
-    ImGui::Checkbox("LAN - host on this network / find the host automatically", &g_lan);
-    ImGui::EndDisabled();
+    ImGui::TextUnformatted("Name:");
+    ImGui::SameLine(lab);
+    ImGui::SetNextItemWidth(170 * s);
+    ImGui::InputText("##name", g_name, netinfo::kMaxName + 1);
+
+    ModeButton("Solo", 0, 110 * s);
+    ImGui::SameLine();
+    ModeButton("Host", 1, 110 * s);
+    ImGui::SameLine();
+    ModeButton("Connect", 2, 110 * s);
+
+    if (g_mpSel == 1) {
+        const AdminStatus& a = g_link.st;
+        std::string t;
+        if (Hosting()) {
+            t = !a.status.empty() ? a.status
+                : a.steam && a.code.empty() ? "Your server is starting..."
+                                            : std::string("Your server is up") + (a.steam ? " in the Steam server list: " : " on your network: ") +
+                                                  std::to_string(a.players.size()) + (a.players.size() == 1 ? " guest." : " guests.");
+        } else if (GameRunning()) {
+            t = "The game is running.";
+        } else {
+            t = g_lan ? "Play starts your server on your network (LAN, Radmin, Hamachi, ZeroTier...)."
+                      : "Play starts your server: it shows in the Steam server list.";
+        }
+        ImGui::TextUnformatted(t.c_str());
+        ImGui::SetNextItemOpen(g_mpAdvanced);
+        g_mpAdvanced = ImGui::TreeNodeEx("Host options", ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_FramePadding);
+        if (g_mpAdvanced) {
+            ImGui::BeginDisabled(GameRunning());
+            ImGui::Indent(16 * s);
+            const float col = ImGui::GetContentRegionAvail().x / 2;
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Server name:");
+            ImGui::SameLine(lab + 16 * s);
+            ImGui::SetNextItemWidth(col - lab - 30 * s);
+            ImGui::InputText("##sname", g_serverName, sizeof(g_serverName));
+            ImGui::SameLine(col + 16 * s);
+            ImGui::Checkbox("Allow custom players", &g_guestChars);
+            ImGui::Checkbox("Password", &g_usePw);
+            ImGui::SameLine(lab + 16 * s);
+            ImGui::BeginDisabled(!g_usePw);
+            PasswordBox("##hpw", g_hostPw, sizeof(g_hostPw), &g_showHostPw, col - lab - 90 * s, s);
+            ImGui::EndDisabled();
+            ImGui::SameLine(col + 16 * s);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Max players:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(70 * s);
+            ImGui::InputInt("##maxp", &g_maxPlayers, 0, 0);
+            g_maxPlayers = std::max(0, std::min(250, g_maxPlayers));
+            ImGui::SameLine();
+            ImGui::TextDisabled("(0 = no limit)");
+            ImGui::Checkbox("LAN / VPN (no Steam)", &g_lan);
+            ImGui::SameLine(col + 16 * s);
+            ImGui::BeginDisabled(!g_lan);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("UDP port:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90 * s);
+            ImGui::InputInt("##port", &g_port, 0, 0);
+            ImGui::EndDisabled();
+            ImGui::Unindent(16 * s);
+            ImGui::EndDisabled();
+        }
+    } else if (g_mpSel == 2) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Host IP:");
+        ImGui::SameLine(lab);
+        ImGui::SetNextItemWidth(220 * s);
+        if (ImGui::InputText("##addr", g_addr, sizeof(g_addr))) {
+            g_pickSteam = false; // typing an IP replaces the picked Steam server
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("LAN / VPN only. Steam servers: pick below.");
+    }
+
     ImGui::Checkbox("Mod share", &g_shareMods);
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1.f, .5f, .3f, 1), "(Only use with players you trust)");
+
     ImGui::Spacing();
-    ImGui::TextWrapped("Compatible with Radmin VPN, Hamachi, ZeroTier, Tailscale and other virtual LANs. "
-                       "Windows and Linux players can play together.");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Servers");
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 90 * s);
+    if (ImGui::Button("Refresh", ImVec2(90 * s, 0))) {
+        lastAsk = SDL_GetTicks();
+        RefreshServers();
+    }
+    const std::vector<ServerEntry> list = ListSource();
+    const float listH = std::max(60 * s, ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * 2.2f);
+    std::string note;
+    if (ImGui::BeginTable("##servers", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_ScrollY, ImVec2(0, listH))) {
+        ImGui::TableSetupColumn("Server", ImGuiTableColumnFlags_WidthStretch, 2.2f);
+        ImGui::TableSetupColumn("Players", ImGuiTableColumnFlags_WidthStretch, 0.7f);
+        ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableSetupColumn("Ping", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+        ImGui::TableHeadersRow();
+        for (const ServerEntry& e : list) {
+            const bool own = IsOwnServer(e) || e.addr == "(this PC)";
+            const bool canOpen = e.answered && (own || !e.info.list.empty());
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::PushID(RowKey(e).c_str());
+            const bool sel = !own && e.addr == g_pickedServer;
+            if (ImGui::Selectable("##row", sel, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick)) {
+                if (ImGui::IsMouseDoubleClicked(0) && canOpen) { // show / hide its players
+                    std::set<std::string>& set = own ? g_closedOwn : g_opened;
+                    if (!set.erase(RowKey(e))) {
+                        set.insert(RowKey(e));
+                    }
+                } else if (!own) { // picking a server = connecting to it
+                    g_pickedServer = e.addr;
+                    g_pickSteam = e.steam;
+                    snprintf(g_addr, sizeof(g_addr), "%s", e.steam ? "" : e.addr.c_str());
+                    g_mpSel = 2;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                note = own ? "Your server. Double click to show or hide its players."
+                       : !e.answered ? e.addr + " did not answer."
+                       : e.info.version != LUGARUEX_VERSION ? "Version " + e.info.version + " (yours: " LUGARUEX_VERSION "): can't be joined."
+                       : std::string(e.steam ? "Through Steam. " : e.lan ? "On your network. " : "Direct. ") +
+                             (e.info.password ? "Password protected (players hidden)." : "Double click to show who is there.");
+            }
+            ImGui::SameLine(0, 0);
+            ImGui::TextDisabled("%s", canOpen ? (Opened(e) ? "v " : "> ") : "  ");
+            ImGui::SameLine(0, 0);
+            ColouredText(e.info.name, !e.answered);
+            ImGui::TableNextColumn();
+            const int players = own ? 1 + (int)g_link.st.players.size() : e.info.players;
+            const std::string count = !e.answered ? "-" : e.info.maxPlayers > 0 ? std::to_string(players) + "/" + std::to_string(e.info.maxPlayers) : std::to_string(players);
+            ImGui::TextUnformatted(count.c_str());
+            ImGui::TableNextColumn();
+            std::string st = own ? "Yours" : !e.answered ? "No answer" : e.info.version != LUGARUEX_VERSION ? "Version " + e.info.version : (e.info.inGame ? "In game" : "In menu");
+            if (e.answered && e.info.password) {
+                st += ", locked";
+            }
+            if (!own && e.answered && e.info.shareMods) {
+                st += ", mods";
+            }
+            ImGui::TextUnformatted(st.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(own ? "" : e.answered && e.pingMs >= 0 ? (std::to_string(e.pingMs) + " ms").c_str() : "-");
+            // its players
+            if (canOpen && Opened(e)) {
+                if (own) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextDisabled("      %s (you)", netinfo::CleanName(g_set.name).c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::TableNextColumn();
+                    ImGui::TextDisabled("Host");
+                    ImGui::TableNextColumn();
+                    for (const AdminPlayer& a : g_link.st.players) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::PushID((int)a.id);
+                        ImGui::Selectable(("      " + a.name).c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+                        if (ImGui::IsItemHovered()) {
+                            note = "Right click a player to kick or ban them (they stay behind as an enemy).";
+                        }
+                        if (ImGui::BeginPopupContextItem("##player")) {
+                            if (ImGui::MenuItem(("Kick " + a.name).c_str())) {
+                                g_link.Kick(a.id, false);
+                            }
+                            if (ImGui::MenuItem(("Ban " + a.name + " (until you stop hosting)").c_str())) {
+                                g_link.Kick(a.id, true);
+                            }
+                            ImGui::EndPopup();
+                        }
+                        ImGui::PopID();
+                        ImGui::TableNextColumn();
+                        if (a.seats > 1) {
+                            ImGui::TextDisabled("%d players", a.seats);
+                        }
+                        ImGui::TableNextColumn();
+                        ImGui::TextDisabled("%s", a.inGame ? "In game" : "Waiting");
+                        ImGui::TableNextColumn();
+                    }
+                } else {
+                    for (const netinfo::Player& pl : e.info.list) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextDisabled("      %s", pl.name.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::TableNextColumn();
+                        ImGui::TextDisabled("%s", netinfo::StateName(pl.state));
+                        ImGui::TableNextColumn();
+                    }
+                }
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (note.empty()) {
+        note = GameRunning() && g_link.st.heard && g_link.st.role == 2 && !g_link.st.status.empty() ? "Game: " + g_link.st.status
+               : g_steamListState == 1 && !g_steamAnswered ? "Asking Steam..."
+               : !g_steamListError.empty() ? g_steamListError + " (LAN / VPN servers still show.)"
+                                           : "Pick a server to join it. Through Steam nobody sees anyone's IP address.";
+    }
+    ImGui::TextWrapped("%s", note.c_str());
+}
+
+// Play with Join and Mod share on: ask when the server shares mods (or isn't known)
+bool ModShareQuestion(std::string& text)
+{
+    if (g_set.mpmode != "join" || !g_set.shareMods) {
+        return false;
+    }
+    const ServerEntry* known = nullptr;
+    known = JoinTarget();
+    if (known && !known->info.shareMods) {
+        return false;
+    }
+    if (known) {
+        text = "\"" + netinfo::StripColours(known->info.name) + "\" shares " + std::to_string(known->info.mods) + (known->info.mods == 1 ? " mod" : " mods") +
+               ". With Mod share on, they are downloaded and used in your game.";
+    } else {
+        text = "Mod share is on: if this server shares mods, they are downloaded and used in your game.";
+    }
+    text += "\n\nOnly join servers of players you trust.";
+    return true;
 }
 void TabMods(float s)
 {
@@ -1959,6 +2642,9 @@ void FreeDataThread()
     std::string err;
     const bool ok = Http_GetFile(Setup_FreeDataUrl(), zip, nullptr, err) && Setup_UnpackFreeData(zip, dir, err);
     fsu::RemoveTree(zip);
+    if (ok) {
+        Setup_MarkOwnCopy(dir); // (listed next time, and may be deleted from here)
+    }
     g_freeError = err;
     g_freeState = ok ? 2 : 3;
 }
@@ -2016,6 +2702,83 @@ void DoInstall()
     }
 }
 
+// the installed launcher of a game folder takes over (this program ends)
+void StartInstalled(const std::string& gameDir)
+{
+#ifndef _WIN32
+    const std::string l = fsu::Join(fsu::Join(gameDir, "LugaruEX"), Setup_LauncherName());
+    if (chdir(gameDir.c_str()) == 0) {
+        execl(l.c_str(), l.c_str(), (char*)nullptr);
+    }
+    g_message = "Could not start " + l;
+#else
+    (void)gameDir;
+#endif
+}
+
+// Add to Steam: Steam must be closed while its list of non-Steam games is changed
+std::atomic<int> g_steamState(0); // 0 idle, 1 closing Steam + adding, 2 done
+std::string g_steamResult;
+void AddToSteamThread(std::string launcher, std::string gameDir)
+{
+    std::string err;
+    if (!Setup_CloseSteam()) {
+        g_steamResult = "Steam did not close. Close it yourself (Steam menu > Exit), then press Add to Steam again.";
+        g_steamState = 2;
+        return;
+    }
+    const int r = Setup_AddToSteam(launcher, gameDir, err);
+    Setup_StartSteam();
+    g_steamResult = r == 0 ? "Added to Steam as \"Lugaru EX\". Steam is starting again; you'll find it in your library (Non-Steam)."
+                  : r == 1 ? "Lugaru EX is already in your Steam library."
+                           : "Could not add it to Steam: " + err;
+    g_steamState = 2;
+}
+
+void AddToSteam(const std::string& gameDir)
+{
+    const std::string launcher = fsu::Join(fsu::Join(gameDir, "LugaruEX"), Setup_LauncherName());
+    std::string err;
+    const int r = Setup_AddToSteam(launcher, gameDir, err);
+    if (r == 0) {
+        g_message = "Added to Steam as \"Lugaru EX\" (in your library under Non-Steam). It opens this launcher, which keeps LugaruEX up to date.";
+    } else if (r == 1) {
+        g_message = "Lugaru EX is already in your Steam library.";
+    } else if (r == 2) {
+        ImGui::OpenPopup("Steam is running");
+    } else {
+        g_message = "Could not add it to Steam: " + err;
+    }
+}
+
+// "Steam is running": close it, add, start it again (in the background)
+void SteamPopups(float btnW, const std::string& gameDir)
+{
+    if (ImGui::BeginPopupModal("Steam is running", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const int st = g_steamState;
+        if (st == 0) {
+            ImGui::TextUnformatted("Steam is open. It closes for a moment while Lugaru EX is added\nto your library, then starts again by itself.");
+            ImGui::Spacing();
+            if (ImGui::Button("Close Steam and add", ImVec2(btnW * 1.8f, 0))) {
+                g_steamState = 1;
+                const std::string launcher = fsu::Join(fsu::Join(gameDir, "LugaruEX"), Setup_LauncherName());
+                std::thread(AddToSteamThread, launcher, gameDir).detach();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(btnW, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+                ImGui::CloseCurrentPopup();
+            }
+        } else if (st == 1) {
+            ImGui::TextUnformatted("Closing Steam and adding Lugaru EX...");
+        } else {
+            g_message = g_steamResult;
+            g_steamState = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 // true = keep the window open
 bool SetupScreen(float s, float bannerH, float btnW)
 {
@@ -2031,15 +2794,17 @@ bool SetupScreen(float s, float bannerH, float btnW)
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
         if (ImGui::Button("Start LugaruEX", ImVec2(btnW * 1.6f, 0))) {
-#ifndef _WIN32
-            const std::string dir = fsu::Parent(fsu::Parent(g_installed));
-            if (chdir(dir.c_str()) == 0) {
-                execl(g_installed.c_str(), g_installed.c_str(), (char*)nullptr);
-            }
-#endif
+            StartInstalled(fsu::Parent(fsu::Parent(g_installed)));
             ImGui::EndChild();
             return false;
         }
+#ifndef _WIN32
+        ImGui::SameLine();
+        if (ImGui::Button("Add to Steam", ImVec2(btnW * 1.4f, 0))) {
+            AddToSteam(fsu::Parent(fsu::Parent(g_installed)));
+        }
+        SteamPopups(btnW, fsu::Parent(fsu::Parent(g_installed)));
+#endif
         ImGui::SameLine();
         const bool quit = ImGui::Button("Quit", ImVec2(btnW, 0));
         ImGui::EndChild();
@@ -2067,12 +2832,33 @@ bool SetupScreen(float s, float bannerH, float btnW)
         }
         ImGui::EndPopup();
     }
-    ImGui::TextUnformatted("Install into:");
-    const float listH = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 4.4f - ImGui::GetTextLineHeightWithSpacing() * 2;
+    // first time: the folder that already has this LugaruEX (then Play needs no install)
+    static bool picked = false;
+    if (!picked && !g_games.empty()) {
+        picked = true;
+        g_gameSel = 0;
+        for (int i = (int)g_games.size() - 1; i >= 0; i--) {
+            if (g_games[i].hasLugaruEX) {
+                g_gameSel = i;
+            }
+        }
+        for (int i = (int)g_games.size() - 1; i >= 0; i--) {
+            if (g_games[i].exVersion == CurrentVersion()) {
+                g_gameSel = i;
+            }
+        }
+    }
+    ImGui::TextUnformatted("Game folders:");
+    const float listH = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 5.4f - ImGui::GetTextLineHeightWithSpacing() * 2;
     ImGui::BeginChild("##games", ImVec2(0, listH), ImGuiChildFlags_Borders);
     for (int i = 0; i < (int)g_games.size(); i++) {
         const GameFolder& g = g_games[i];
-        const std::string label = g.kind + "    " + g.path + (g.hasLugaruEX ? "    (update)" : "");
+        std::string status;
+        if (g.hasLugaruEX) {
+            const int c = g.exVersion == "?" ? -1 : Setup_CompareVersions(g.exVersion, CurrentVersion());
+            status = "    LugaruEX " + (g.exVersion == "?" ? std::string("(older)") : g.exVersion) + (c < 0 ? " - update to " LUGARUEX_VERSION : c > 0 ? " (newer)" : " installed");
+        }
+        const std::string label = g.kind + "    " + g.path + status;
         ImGui::PushID(i);
         if (ImGui::Selectable(label.c_str(), g_gameSel == i)) {
             g_gameSel = i;
@@ -2083,6 +2869,69 @@ bool SetupScreen(float s, float bannerH, float btnW)
         ImGui::TextWrapped("No game found.");
     }
     ImGui::EndChild();
+    // what the picked folder can do
+    const bool have = g_gameSel >= 0 && g_gameSel < (int)g_games.size();
+    const GameFolder sel = have ? g_games[g_gameSel] : GameFolder();
+    const bool installed = have && sel.hasLugaruEX;
+    const bool same = installed && sel.exVersion == CurrentVersion();
+    ImGui::BeginDisabled(!installed);
+    if (ImGui::Button("Play", ImVec2(btnW, 0)) || (same && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false))) {
+        StartInstalled(sel.path); // (already installed: nothing to copy)
+    }
+#ifndef _WIN32
+    ImGui::SameLine();
+    if (ImGui::Button("Add to Steam", ImVec2(btnW * 1.4f, 0))) {
+        AddToSteam(sel.path);
+    }
+#endif
+    ImGui::EndDisabled();
+#ifndef _WIN32
+    SteamPopups(btnW, sel.path);
+#endif
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!installed && !(have && sel.ownCopy));
+    if (ImGui::Button("Remove...", ImVec2(btnW, 0))) {
+        ImGui::OpenPopup("Remove");
+    }
+    ImGui::EndDisabled();
+    if (ImGui::BeginPopupModal("Remove", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushTextWrapPos(460 * s);
+        if (installed) {
+            ImGui::TextWrapped("Remove LugaruEX from %s?\n\nIts folder %s/LugaruEX goes, with the settings, mods, presets and screenshots in it. "
+                               "The game itself stays.", sel.path.c_str(), sel.path.c_str());
+        }
+        if (sel.ownCopy) {
+            ImGui::TextWrapped("%s is a free copy of the game LugaruEX downloaded. You can delete the whole folder.", sel.path.c_str());
+        }
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        std::string err;
+        bool done = false, ok = false;
+        if (installed && ImGui::Button("Remove LugaruEX", ImVec2(btnW * 1.6f, 0))) {
+            done = true;
+            ok = Setup_Remove(sel, false, err);
+        }
+        if (sel.ownCopy) {
+            if (installed) {
+                ImGui::SameLine();
+            }
+            if (ImGui::Button("Delete whole folder", ImVec2(btnW * 1.6f, 0))) {
+                done = true;
+                ok = Setup_Remove(sel, true, err);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(btnW, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+            ImGui::CloseCurrentPopup();
+        }
+        if (done) {
+            g_message = ok ? "Removed." : "Could not remove it: " + err;
+            g_games = Setup_FindGames();
+            g_gameSel = g_games.empty() ? -1 : 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     if (ImGui::Button("Browse...") || pickNow) {
         const std::string p = PickFolderDialog();
         if (p == "?") {
@@ -2163,8 +3012,13 @@ bool SetupScreen(float s, float bannerH, float btnW)
     ImGui::Checkbox("Add to app menu", &g_setupShortcut);
     ImGui::Spacing();
     ImGui::BeginDisabled(fs == 1);
-    if (ImGui::Button("Install", ImVec2(btnW, 0)) || (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) && fs != 1)) {
-        DoInstall();
+    {
+        const bool curSame = g_gameSel >= 0 && g_gameSel < (int)g_games.size() && g_games[g_gameSel].exVersion == CurrentVersion();
+        const bool curHas = g_gameSel >= 0 && g_gameSel < (int)g_games.size() && g_games[g_gameSel].hasLugaruEX;
+        const char* label = curSame ? "Reinstall" : curHas ? "Update" : "Install";
+        if (ImGui::Button(label, ImVec2(btnW, 0)) || (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) && fs != 1 && !curSame)) {
+            DoInstall();
+        }
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
@@ -2284,6 +3138,15 @@ int main(int argc, char** argv)
     LoadSettings();
     if (!g_setupMode && g_set.autoUpdate && ApplyPendingUpdate(argv)) {
         return 0; // (the new launcher took over)
+    }
+    if (getenv("LUGARUEX_TEST_ADDTOSTEAM") && !g_setupMode) {
+        // test hook: add this install to Steam (as the button does) and say how it went
+        const std::string dir = g_gameDir.substr(0, g_gameDir.size() - 1);
+        const std::string l = fsu::Join(fsu::Join(dir, "LugaruEX"), Setup_LauncherName());
+        std::string err;
+        const int r = Setup_AddToSteam(l, dir, err);
+        printf("LugaruEX launcher: add to Steam -> %d%s%s, in Steam: %d\n", r, err.empty() ? "" : " ", err.c_str(), Setup_InSteam(l) ? 1 : 0);
+        fflush(stdout);
     }
     EnumMonitors();
     InitFromSettings();
@@ -2417,7 +3280,13 @@ int main(int argc, char** argv)
     }
 
     int tab = 0, wantTab = shotTab >= 0 ? shotTab : std::max(0, std::min(5, g_set.tab)); // last time's tab
-    bool running = true, play = false, applyUpdate = false, updAsked = false;
+    bool running = true, play = false, applyUpdate = false, updAsked = false, modShareOk = false, pwOk = false;
+    int pwAsk = 0; // the password window: 1 before joining (OK plays), 2 the running game asks
+    std::string pwText;
+    char pwBuf[80] = "";
+    bool pwShow = false;
+    Uint32 pwAskedAt = 0;
+    std::string modShareText;
     Uint32 updAskedAt = 0;
     Uint64 last = SDL_GetPerformanceCounter();
     while (running) {
@@ -2507,6 +3376,10 @@ int main(int argc, char** argv)
         const Uint64 now = SDL_GetPerformanceCounter();
         PreviewCore_Advance((double)(now - last) / SDL_GetPerformanceFrequency(), SDL_GetTicks());
         last = now;
+        if (!g_setupMode) {
+            SyncLocal();       // local players follow the controllers, whichever tab is open
+            g_servers.Poll();  // server list answers (timed as they are read: every frame)
+        }
 
         ImGui_ImplOpenGL2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -2585,7 +3458,19 @@ int main(int argc, char** argv)
         ImGui::AlignTextToFramePadding();
         ImGui::Checkbox("Auto Update", &g_autoUpdate);
         ImGui::SameLine();
-        const float textW = io.DisplaySize.x - ImGui::GetCursorPosX() - pad - 2 * btnW - 20 * s;
+#ifndef _WIN32
+        // Steam Deck / Linux: this launcher as a game in the Steam library (once)
+        static int inSteam = -1;
+        const std::string gameDirNoSlash = g_gameDir.substr(0, g_gameDir.size() - 1);
+        if (inSteam < 0 || (g_steamState == 0 && !g_message.empty())) {
+            inSteam = Setup_InSteam(fsu::Join(fsu::Join(gameDirNoSlash, "LugaruEX"), Setup_LauncherName())) ? 1 : 0;
+        }
+        const bool steamBtn = haveData && inSteam == 0;
+        const float steamW = steamBtn ? btnW * 1.3f + 8 * s : 0;
+#else
+        const float steamW = 0;
+#endif
+        const float textW = io.DisplaySize.x - ImGui::GetCursorPosX() - pad - 2 * btnW - 20 * s - steamW;
         if (haveData) {
             // with a controller in, how to drive the launcher with it (when there's room)
             bool anyPad = false;
@@ -2608,9 +3493,18 @@ int main(int argc, char** argv)
             ImGui::TextColored(ImVec4(1, 0.45f, 0.3f, 1), "No Data folder: put LugaruEX in the Lugaru HD folder");
             ImGui::PopTextWrapPos();
         }
+#ifndef _WIN32
+        if (steamBtn) {
+            ImGui::SameLine(io.DisplaySize.x - pad - 2 * btnW - 8 * s - steamW);
+            if (ImGui::Button("Add to Steam", ImVec2(btnW * 1.3f, 0))) {
+                AddToSteam(gameDirNoSlash);
+            }
+        }
+        SteamPopups(btnW, gameDirNoSlash);
+#endif
         ImGui::SameLine(io.DisplaySize.x - pad - 2 * btnW - 8 * s);
-        ImGui::BeginDisabled(g_updState == 1 || g_updState == 2); // updating: the game starts from the new launcher
-        if (ImGui::Button("Play!", ImVec2(btnW, 0))) {
+        ImGui::BeginDisabled(g_updState == 1 || g_updState == 2 || GameRunning()); // updating (the game starts from the new launcher), or playing
+        if (ImGui::Button(GameRunning() ? "Playing..." : "Play!", ImVec2(btnW, 0))) {
             play = true;
         }
         ImGui::EndDisabled();
@@ -2631,6 +3525,61 @@ int main(int argc, char** argv)
             ImGui::PopTextWrapPos();
             if (ImGui::Button("OK", ImVec2(btnW, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
                 g_message.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        // Play with Join + Mod share: this server's mods would be downloaded and used
+        if (g_askModShare) {
+            g_askModShare = false;
+            ImGui::OpenPopup("Mod share");
+        }
+        if (ImGui::BeginPopupModal("Mod share", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::PushTextWrapPos(420 * s);
+            ImGui::TextUnformatted(modShareText.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+            if (ImGui::Button("Join", ImVec2(btnW, 0))) {
+                modShareOk = true;
+                play = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(btnW, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        // the password window: before joining a locked server, or when the game says it's wrong
+        if (pwAsk && !ImGui::IsPopupOpen("Password")) {
+            ImGui::OpenPopup("Password");
+        }
+        if (ImGui::BeginPopupModal("Password", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted(pwText.c_str());
+            if (ImGui::IsWindowAppearing()) {
+                ImGui::SetKeyboardFocusHere();
+            }
+            ImGui::SetNextItemWidth(260 * s);
+            const bool enter = ImGui::InputText("##pw", pwBuf, sizeof(pwBuf), (pwShow ? 0 : ImGuiInputTextFlags_Password) | ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            ImGui::Checkbox("Show", &pwShow);
+            ImGui::Spacing();
+            const bool ok = ImGui::Button("OK", ImVec2(btnW, 0)) || enter;
+            ImGui::SameLine();
+            const bool cancel = ImGui::Button("Cancel", ImVec2(btnW, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight);
+            if (ok || cancel) {
+                if (ok) {
+                    g_joinPassword = pwBuf;
+                    if (pwAsk == 1) {
+                        pwOk = true; // Play goes on
+                        play = true;
+                    } else {
+                        g_link.Password(pwBuf);
+                    }
+                }
+                memset(pwBuf, 0, sizeof(pwBuf));
+                pwAsk = 0;
+                pwAskedAt = SDL_GetTicks();
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();
@@ -2773,12 +3722,64 @@ int main(int argc, char** argv)
         }
         SDL_GL_SwapWindow(win);
 
+        // the running game: ended (Play again), or it wants a password (none given / wrong)
+        if (GameRunning()) {
+            if (g_link.Poll() && g_link.st.role == 2 && g_link.st.needPassword && !pwAsk && SDL_GetTicks() - pwAskedAt > 1500) {
+                pwAsk = 2;
+                pwText = g_link.st.status.empty() ? "This server needs a password." : g_link.st.status + ".";
+                pwBuf[0] = 0;
+            }
+            if (GameEnded()) {
+                g_link.st = AdminStatus();
+                RefreshServers();
+            }
+        }
+        if (play && GameRunning()) {
+            play = false; // (Play is off while the game runs)
+        }
         if (play) {
             play = false;
-            if (CollectSettings()) {
+            const bool asked = modShareOk; // (Join was clicked in the mod share question)
+            modShareOk = false;
+            const bool pwAsked = pwOk; // (OK was clicked in the password window)
+            pwOk = false;
+            bool go = CollectSettings();
+            if (go && g_set.mpmode == "join") {
+                // a server known to run another version can't be joined
+                const ServerEntry* e = JoinTarget();
+                if (e && e->info.version != LUGARUEX_VERSION) {
+                    g_message = "\"" + netinfo::StripColours(e->info.name) + "\" runs LugaruEX " + e->info.version + ", you have " LUGARUEX_VERSION
+                                ".\n\nBoth need the same version to play together.";
+                    go = false;
+                }
+            }
+            if (go && !asked && ModShareQuestion(modShareText)) {
+                g_askModShare = true; // ask first; Join comes back here
+                go = false;
+            }
+            if (go && !pwAsked) {
+                // a server known to be locked: its password first (a small window)
+                g_joinPassword.clear();
+                const ServerEntry* t = g_set.mpmode == "join" ? JoinTarget() : nullptr;
+                if (t && t->info.password) {
+                    pwAsk = 1; // OK comes back here
+                    pwText = "\"" + netinfo::StripColours(t->info.name) + "\" needs a password.";
+                    pwBuf[0] = 0;
+                    go = false;
+                }
+            }
+            if (go) {
+                if (g_set.mpmode == "join" && !g_set.steam && !g_set.addr.empty()) {
+                    RememberServer(g_set.addr); // the server list asks it next time
+                }
                 if (!SaveIni()) {
                     g_message = "Could not write the settings file (" + IniPath() + ").";
-                } else if (LaunchEngine()) {
+                } else if (!LaunchEngine()) {
+                } else if (g_set.mpmode != "off") {
+                    // online: stay open (who is on your server, passwords); Play again when it ends
+                    g_mpAdvanced = false; // (room for the player list)
+                    wantTab = 4;
+                } else {
                     running = false;
 #ifndef _WIN32
                     // close the window now, and stay until the game ends: Steam treats the
@@ -2804,6 +3805,12 @@ int main(int argc, char** argv)
     SDL_GL_DeleteContext(gl);
     SDL_DestroyWindow(win);
     SDL_Quit();
+#ifndef _WIN32
+    if (GameRunning()) { // closed while an online game runs: stay (no window) until it ends, for Steam
+        int status = 0;
+        waitpid(g_gamePid, &status, 0);
+    }
+#endif
     if (applyUpdate) {
         RelaunchSelf(argv); // (Linux: this process becomes the new launcher)
     }

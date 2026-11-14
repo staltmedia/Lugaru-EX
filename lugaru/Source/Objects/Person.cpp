@@ -428,6 +428,13 @@ Person::Person(FILE* tfile, int mapvers, unsigned i)
     if (num_weapons < 0 || num_weapons > 5) {
         throw InvalidPersonException();
     }
+    // LugaruEX: (levels can come from an online host) a creature and skin the game has
+    if (creature != rabbittype && creature != wolftype) {
+        throw InvalidPersonException();
+    }
+    if (whichskin < 0 || whichskin >= (int)PersonType::types[creature].skins.size()) {
+        whichskin = 0;
+    }
     if (num_weapons > 0 && num_weapons < 5) {
         for (int j = 0; j < num_weapons; j++) {
             weaponids[j] = weapons.size();
@@ -437,6 +444,9 @@ Person::Person(FILE* tfile, int mapvers, unsigned i)
         }
     }
     funpackf(tfile, "Bi", &numwaypoints);
+    if (numwaypoints < 0 || numwaypoints > 90) { // LugaruEX: the arrays hold 90
+        throw InvalidPersonException();
+    }
     for (int j = 0; j < numwaypoints; j++) {
         funpackf(tfile, "Bf", &waypoints[j].x);
         funpackf(tfile, "Bf", &waypoints[j].y);
@@ -449,7 +459,7 @@ Person::Person(FILE* tfile, int mapvers, unsigned i)
     }
 
     funpackf(tfile, "Bi", &waypoint);
-    if (waypoint > (numwaypoints - 1)) {
+    if (waypoint < 0 || waypoint > (numwaypoints - 1)) {
         waypoint = 0;
     }
 
@@ -467,10 +477,14 @@ Person::Person(FILE* tfile, int mapvers, unsigned i)
     int numclothes;
     float tintr, tintg, tintb;
     funpackf(tfile, "Bi", &numclothes);
+    if (numclothes < 0 || numclothes > 64) {
+        throw InvalidPersonException();
+    }
     for (int k = 0; k < numclothes; k++) {
         char clothespath[256];
         int templength;
         funpackf(tfile, "Bi", &templength);
+        templength = std::max(0, std::min(templength, 255)); // LugaruEX: never past the buffer
         for (int l = 0; l < templength; l++) {
             funpackf(tfile, "Bb", &clothespath[l]);
         }
@@ -6904,10 +6918,10 @@ bool Person::addClothes(const int& clothesId)
 
     //Load Image
     ImageRec texture;
-    bool opened = load_image(Folders::getResourcePath(fileName).c_str(), texture);
-    if (opened) {
-        image_resize(texture, (skeleton.skinsize > 0) ? skeleton.skinsize : 512, (skeleton.skinsize > 0) ? skeleton.skinsize : 512); // LugaruEX: same size as the skin, or the paint streaks
-    }
+    // LugaruEX: same size as the skin, or the paint streaks; decoded once per level load
+    // for everyone wearing it (load_image_sized)
+    const unsigned side = (skeleton.skinsize > 0) ? skeleton.skinsize : 512;
+    bool opened = load_image_sized(Folders::getResourcePath(fileName).c_str(), side, side, texture);
 
     float alphanum;
     //Is it valid?
@@ -6940,6 +6954,39 @@ bool Person::addClothes(const int& clothesId)
 
         int tempnum = 0;
         alphanum = 255;
+        // LugaruEX: the loop below a pixel at a time (it ran a modulo test per byte; this
+        // is the big part of loading a character). Exactly the same arithmetic, quirks
+        // included: an RGBA pixel is blended with the PREVIOUS pixel's alpha (the original
+        // read a pixel's alpha after its colours), and an RGB image is tinted by byte
+        // position modulo 4 (every fourth byte untinted).
+        const float tint[3] = { tintr, tintg, tintb };
+        const int pixels = (int)(texture.sizeY * texture.sizeX);
+        static const bool oldLoop = getenv("LUGARUEX_TEST_OLDCLOTHES") != nullptr; // test hook: the original loop (A/B)
+        if (!oldLoop && bytesPerPixel == 4) {
+            const GLubyte* s = texture.data;
+            for (int p = 0; p < pixels; p++, s += 4) {
+                const float keep = 1 - alphanum / 255, put = alphanum / 255;
+                for (int c = 0; c < 3; c++) {
+                    const GLubyte v = (GLubyte)(s[c] * tint[c]);
+                    array[tempnum] = (float)array[tempnum] * keep + (float)v * put;
+                    tempnum++;
+                }
+                alphanum = s[3];
+            }
+            return 1;
+        }
+        if (!oldLoop && bytesPerPixel == 3) {
+            const float keep = 1 - alphanum / 255, put = alphanum / 255; // (alphanum stays 255)
+            for (int i = 0; i < pixels * 3; i++) {
+                GLubyte v = texture.data[i];
+                if ((i % 4) < 3) {
+                    v = (GLubyte)(v * tint[i % 4]);
+                }
+                array[tempnum] = (float)array[tempnum] * keep + (float)v * put;
+                tempnum++;
+            }
+            return 1;
+        }
         for (int i = 0; i < (int)(texture.sizeY * texture.sizeX * bytesPerPixel); i++) {
             if (bytesPerPixel == 3) {
                 alphanum = 255;
@@ -8170,8 +8217,15 @@ Person::Person(Json::Value value, int /*mapvers*/, unsigned i)
     power       = value["power"].asFloat();
     speedmult   = value["speedmult"].asFloat();
 
-    numwaypoints    = value["waypoints"].size();
+    numwaypoints    = value["waypoints"].size() < 30 ? (int)value["waypoints"].size() : 0; // LugaruEX: (only stored when under 30)
     num_weapons     = value["weapons"].size();
+    // LugaruEX: (levels can come from an online host) a creature and skin the game has
+    if (creature != rabbittype && creature != wolftype) {
+        throw InvalidPersonException();
+    }
+    if (whichskin < 0 || whichskin >= (int)PersonType::types[creature].skins.size()) {
+        whichskin = 0;
+    }
 
     if (id == 0) {
         targetyaw = value["targetyaw"].asFloat();
@@ -8185,7 +8239,7 @@ Person::Person(Json::Value value, int /*mapvers*/, unsigned i)
                 waypoints[k]    = value["waypoints"][k]["pos"];
             }
             waypoint = value["waypoint"].asInt();
-            if (waypoint > int(value["waypoints"].size())) {
+            if (waypoint < 0 || waypoint >= int(value["waypoints"].size())) {
                 waypoint = 0;
             }
         } else {

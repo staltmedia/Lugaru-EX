@@ -18,6 +18,7 @@ struct Player
     std::wstring name;
     std::string ch = "random"; // default | random | <model>:<skin path> (new players: random)
     int seat = 0;                    // which part of the screen (0 = top-left / first)
+    int rank = 0;                    // saved player number (0 = player 1): order when several join at once
     float x = 0, y = 0, w = 1, h = 1; // screen region (0..1), from the layout
 };
 
@@ -93,23 +94,85 @@ void layout()
     }
 }
 
+const char* const kKeyboard = "keyboard"; // player 1 on keyboard and mouse only (their controller is another player)
+
+// the connected controllers, with numbers when two have the same name
+std::vector<std::pair<std::string, std::wstring>> connectedPads()
+{
+    std::vector<std::pair<std::string, std::wstring>> out;
+    for (auto& s : Pad_List()) {
+        if (s.connected) {
+            out.push_back({ s.id, s.name });
+        }
+    }
+    for (size_t i = 0; i < out.size(); i++) {
+        int same = 0, mine = 0;
+        for (size_t k = 0; k < out.size(); k++) {
+            if (out[k].second == out[i].second) {
+                same++;
+                if (k <= i) {
+                    mine++;
+                }
+            }
+        }
+        if (same > 1) {
+            out[i].second += L" " + std::to_wstring(mine);
+        }
+    }
+    return out;
+}
+
+// what each row's input list holds (ids, in list order)
+std::vector<std::string> g_devIds[kMax];
+
+void fillDevices(int i)
+{
+    HWND c = GetDlgItem(g_page, IDC_LC_DEV1 + i);
+    std::vector<std::string> ids;
+    std::vector<std::wstring> labels;
+    const auto pads = connectedPads();
+    if (i == 0) {
+        ids.push_back(kKeyboard);
+        labels.push_back(L"Keyboard and mouse");
+        for (auto& p : pads) {
+            ids.push_back(p.first);
+            labels.push_back(L"Keyboard + " + p.second);
+        }
+    } else {
+        for (auto& p : pads) {
+            ids.push_back(p.first);
+            labels.push_back(p.second);
+        }
+    }
+    if (ids != g_devIds[i]) {
+        g_devIds[i] = ids;
+        SendMessageW(c, CB_RESETCONTENT, 0, 0);
+        for (auto& l : labels) {
+            SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)l.c_str());
+        }
+    }
+    for (size_t k = 0; k < ids.size(); k++) {
+        if (ids[k] == g_pl[i].id) {
+            SendMessageW(c, CB_SETCURSEL, k, 0);
+        }
+    }
+}
+
 void refreshRows()
 {
     for (int i = 0; i < kMax; i++) {
         const bool show = i < (int)g_pl.size();
-        const int ids[] = { IDC_LC_LABEL1 + i, IDC_LC_CHAR1 + i, IDC_LC_REMOVE1 + i };
+        const int ids[] = { IDC_LC_LABEL1 + i, IDC_LC_DEV1 + i, IDC_LC_CHAR1 + i };
         for (int id : ids) {
             ShowWindow(GetDlgItem(g_page, id), show ? SW_SHOW : SW_HIDE);
         }
+        ShowWindow(GetDlgItem(g_page, IDC_LC_REMOVE1 + i), SW_HIDE); // (a player leaves with their controller)
         if (!show) {
             continue;
         }
         const Player& p = g_pl[i];
-        PadState* s = Pad_Find(p.id);
-        const bool conn = s && s->connected;
-        std::wstring t = L"P" + std::to_wstring(i + 1) + L"   " + p.name + (conn ? L"" : L"   (unplugged - waiting for it)");
-        SetDlgItemTextW(g_page, IDC_LC_LABEL1 + i, t.c_str());
-        EnableWindow(GetDlgItem(g_page, IDC_LC_REMOVE1 + i), !conn);
+        SetDlgItemTextW(g_page, IDC_LC_LABEL1 + i, (L"P" + std::to_wstring(i + 1)).c_str());
+        fillDevices(i);
         HWND c = GetDlgItem(g_page, IDC_LC_CHAR1 + i);
         // player 1's character is the Character tab's (model, skin and clothes)
         const bool p1 = (i == 0);
@@ -138,36 +201,71 @@ void refreshRows()
     ShowWindow(GetDlgItem(g_page, IDC_LC_EMPTY), g_pl.empty() ? SW_SHOW : SW_HIDE);
 }
 
-// keep the player list in step with the controllers: new controllers drop in,
-// unplugged ones keep their seat until the same controller returns
+// controllers seen before (saved, or unplugged this session): their character and seat
+// come back with them
+std::vector<Player> g_known;
+
+void remember(const Player& p)
+{
+    auto it = std::find_if(g_known.begin(), g_known.end(), [&](const Player& k) { return k.id == p.id; });
+    if (it != g_known.end()) {
+        *it = p;
+    } else {
+        g_known.push_back(p);
+    }
+}
+
+// the players are the controllers connected right now (none = player 1 on the keyboard):
+// a controller switched on joins, one switched off leaves
 void sync()
 {
     bool changed = false;
+    for (size_t i = 0; i < g_pl.size();) {
+        PadState* s = Pad_Find(g_pl[i].id);
+        if ((s && s->connected) || g_pl[i].id == kKeyboard) {
+            i++;
+            continue;
+        }
+        remember(g_pl[i]);
+        g_pl.erase(g_pl.begin() + i);
+        changed = true;
+    }
+    std::vector<Player> joining;
     for (auto& s : Pad_List()) {
         if (!s.connected) {
             continue;
         }
         auto it = std::find_if(g_pl.begin(), g_pl.end(), [&](const Player& p) { return p.id == s.id; });
-        if (it == g_pl.end() && (int)g_pl.size() < kMax) {
-            Player p;
-            p.id = s.id;
-            p.name = s.name;
-            p.seat = (int)g_pl.size();
-            g_pl.push_back(p);
-            changed = true;
-        } else if (it != g_pl.end() && it->name != s.name) {
-            it->name = s.name;
-            changed = true;
+        if (it != g_pl.end()) {
+            if (it->name != s.name) {
+                it->name = s.name;
+                changed = true;
+            }
+            continue;
         }
+        auto k = std::find_if(g_known.begin(), g_known.end(), [&](const Player& p) { return p.id == s.id; });
+        Player p;
+        if (k != g_known.end()) {
+            p = *k;
+        } else {
+            p.seat = 1000 + (int)joining.size(); // after everyone already here
+            p.rank = 1000 + (int)joining.size();
+        }
+        p.id = s.id;
+        p.name = s.name;
+        joining.push_back(p);
     }
-    static std::vector<bool> lastConn;
-    std::vector<bool> conn;
-    for (auto& p : g_pl) {
-        PadState* s = Pad_Find(p.id);
-        conn.push_back(s && s->connected);
-    }
-    if (conn != lastConn) {
-        lastConn = conn;
+    // several at once (the launcher opening): in their saved order, so player 1 stays player 1
+    std::stable_sort(joining.begin(), joining.end(), [](const Player& a, const Player& b) { return a.rank < b.rank; });
+    const bool late = !g_pl.empty();
+    for (Player& p : joining) {
+        if ((int)g_pl.size() >= kMax) {
+            break;
+        }
+        if (late) {
+            p.seat = 1000 + (int)g_pl.size(); // joining later: the next free part of the screen
+        }
+        g_pl.push_back(p);
         changed = true;
     }
     if (changed) {
@@ -233,8 +331,9 @@ void paint(HWND w, HDC dc)
         const Player& p = g_pl[i];
         RECT r = regionPx(s, p);
         PadState* st = Pad_Find(p.id);
-        const bool conn = st && st->connected;
-        const bool flash = conn && now - st->lastActive < 350; // this controller is being used
+        const bool keyboard = p.id == kKeyboard;
+        const bool conn = keyboard || (st && st->connected);
+        const bool flash = st && st->connected && now - st->lastActive < 350; // this controller is being used
         const bool target = g_drag >= 0 && i == g_hover && i != g_drag;
         HBRUSH fill = CreateSolidBrush(mix(RGB(20, 20, 22), kColor[i], (flash || target) ? 0.45f : (i == g_drag ? 0.1f : 0.22f)));
         FillRect(dc, &r, fill);
@@ -258,13 +357,19 @@ void paint(HWND w, HDC dc)
         // live controller picture for this player's controller only
         const int pw = r.right - r.left, ph = r.bottom - r.top;
         RECT vr = { r.left + pw / 6, r.top + ph / 6, r.right - pw / 6, r.bottom - ph / 8 };
-        PadViz_Draw(dc, vr, st, kColor[i], (vr.right - vr.left) > 110);
+        if (keyboard) {
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, mix(kColor[i], RGB(255, 255, 255), 0.4f));
+            DrawTextW(dc, L"Keyboard", -1, &vr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        } else {
+            PadViz_Draw(dc, vr, st, kColor[i], (vr.right - vr.left) > 110);
+        }
     }
     if (g_pl.empty()) {
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, RGB(170, 170, 170));
         RECT tr = s;
-        DrawTextW(dc, L"Connect a controller - each one becomes a player", -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(dc, L"P1 - keyboard and mouse", -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 }
 
@@ -414,7 +519,32 @@ void Local_Init(HWND page, const std::wstring& iniPath)
         p.ch = buf;
         snprintf(key, sizeof(key), "P%dSeat", i + 1);
         p.seat = GetPrivateProfileIntA("Local", key, i, f.c_str());
-        g_pl.push_back(p);
+        p.rank = i;
+        if (i == 0 && p.id == kKeyboard) {
+            p.name = L"Keyboard and mouse";
+            g_pl.push_back(p); // player 1 chose keyboard and mouse only: always there
+            continue;
+        }
+        g_known.push_back(p); // a player again once their controller is on
+    }
+    // controllers that were off when the settings were saved: id|character|name
+    for (int i = 1; i <= 16; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "Known%d", i);
+        GetPrivateProfileStringA("Local", key, "", buf, sizeof(buf), f.c_str());
+        const std::string v = buf;
+        const size_t a = v.find('|'), b = a == std::string::npos ? a : v.find('|', a + 1);
+        if (b == std::string::npos) {
+            continue;
+        }
+        Player p;
+        p.id = v.substr(0, a);
+        p.ch = v.substr(a + 1, b - a - 1);
+        p.name = widen(v.substr(b + 1));
+        p.rank = p.seat = 100 + i;
+        if (!p.id.empty() && std::none_of(g_known.begin(), g_known.end(), [&](const Player& k) { return k.id == p.id; })) {
+            g_known.push_back(p);
+        }
     }
     SetDlgItemTextW(page, IDC_LC_NOTE,
                     L"Click and drag a player's screen to move it.");
@@ -431,7 +561,8 @@ INT_PTR Local_Proc(HWND page, UINT msg, WPARAM wp, LPARAM lp)
                 HDC dc = (HDC)wp;
                 const int i = id - IDC_LC_LABEL1;
                 PadState* s = (i < (int)g_pl.size()) ? Pad_Find(g_pl[i].id) : nullptr;
-                SetTextColor(dc, (s && s->connected) ? mix(kColor[i], RGB(0, 0, 0), 0.25f) : RGB(120, 120, 120));
+                const bool on = (s && s->connected) || (i < (int)g_pl.size() && g_pl[i].id == kKeyboard);
+                SetTextColor(dc, on ? mix(kColor[i], RGB(0, 0, 0), 0.25f) : RGB(120, 120, 120));
                 SetBkMode(dc, TRANSPARENT);
                 return (INT_PTR)GetStockObject(NULL_BRUSH);
             }
@@ -439,6 +570,37 @@ INT_PTR Local_Proc(HWND page, UINT msg, WPARAM wp, LPARAM lp)
         }
         case WM_COMMAND: {
             const int id = LOWORD(wp), code = HIWORD(wp);
+            if (id >= IDC_LC_DEV1 && id < IDC_LC_DEV1 + kMax && code == CBN_SELCHANGE) {
+                // a player takes another input: whoever had that controller gets this one
+                const int i = id - IDC_LC_DEV1;
+                const int s = (int)SendDlgItemMessageW(page, id, CB_GETCURSEL, 0, 0);
+                if (i < (int)g_pl.size() && s >= 0 && s < (int)g_devIds[i].size()) {
+                    const std::string want = g_devIds[i][s];
+                    auto other = std::find_if(g_pl.begin(), g_pl.end(), [&](const Player& p) { return p.id == want; });
+                    if (want == g_pl[i].id) {
+                        // (no change)
+                    } else if (other != g_pl.end()) {
+                        const int j = (int)(other - g_pl.begin());
+                        if (g_pl[i].id == kKeyboard) {
+                            // player 1 takes that controller back: its player leaves
+                            g_pl[0].id = want;
+                            g_pl[0].name = other->name;
+                            g_pl.erase(g_pl.begin() + j);
+                        } else {
+                            std::swap(g_pl[i].id, g_pl[j].id);
+                            std::swap(g_pl[i].name, g_pl[j].name);
+                        }
+                    } else {
+                        // keyboard only for player 1: the controller it had becomes the next player (sync)
+                        g_pl[i].id = want;
+                        g_pl[i].name = want == kKeyboard ? L"Keyboard and mouse" : g_pl[i].name;
+                    }
+                    sync();
+                    layout();
+                    refreshRows();
+                }
+                return TRUE;
+            }
             if (id >= IDC_LC_CHAR1 && id < IDC_LC_CHAR1 + kMax && code == CBN_SELCHANGE) {
                 const int i = id - IDC_LC_CHAR1;
                 const int s = (int)SendDlgItemMessageW(page, id, CB_GETCURSEL, 0, 0);
@@ -508,5 +670,15 @@ void Local_Save(const std::wstring& iniPath)
         snprintf(key, sizeof(key), "P%dRect", (int)i + 1);
         snprintf(val, sizeof(val), "%.4f,%.4f,%.4f,%.4f", p.x, p.y, p.w, p.h);
         WritePrivateProfileStringA("Local", key, val, f.c_str());
+    }
+    // controllers that are off now keep their character for next time (the game ignores these)
+    int n = 0;
+    for (const Player& p : g_known) {
+        if (n >= 16 || std::any_of(g_pl.begin(), g_pl.end(), [&](const Player& q) { return q.id == p.id; })) {
+            continue;
+        }
+        char key[32];
+        snprintf(key, sizeof(key), "Known%d", ++n);
+        WritePrivateProfileStringA("Local", key, (p.id + "|" + p.ch + "|" + narrow(p.name)).c_str(), f.c_str());
     }
 }

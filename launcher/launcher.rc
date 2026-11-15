@@ -8,8 +8,8 @@ IDI_APP ICON "../lugaru/Dist/Windows/Lugaru.ico"
 1 RT_MANIFEST "launcher.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,5,6,0
-PRODUCTVERSION 0,5,6,0
+FILEVERSION 0,5,7,0
+PRODUCTVERSION 0,5,7,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -19,7 +19,7 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "LugaruEX Launcher"
             VALUE "ProductName", "LugaruEX"
-            VALUE "FileVersion", "0.5.6"
+            VALUE "FileVersion", "0.5.7"
             VALUE "LegalCopyright", "GPLv2+ (based on OSS Lugaru)"
         END
     END
@@ -94,6 +94,7 @@ BEGIN
     CONTROL         "Host", IDC_MP_HOST, "Button", BS_AUTORADIOBUTTON | BS_PUSHLIKE, 72, 22, 60, 14
     CONTROL         "Connect", IDC_MP_JOIN, "Button", BS_AUTORADIOBUTTON | BS_PUSHLIKE, 136, 22, 60, 14
     LTEXT           "", IDC_MP_HOSTSTATUS, 8, 42, 268, 9
+    CONTROL         "Expanded AI", IDC_MP_SOLOAI, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 41, 70, 10
     CONTROL         "Host options  >", IDC_MP_ADVANCED, "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 8, 54, 64, 12
     LTEXT           "Server name:", IDC_MP_SNAMELBL, 18, 74, 44, 9
     EDITTEXT        IDC_MP_SERVERNAME, 62, 72, 92, 12, ES_AUTOHSCROLL | WS_TABSTOP

@@ -75,6 +75,9 @@ public:
     int textureness[subdivision][subdivision];
 
     GLfloat vArray[(max_patch_elements)*subdivision * subdivision];
+    // LugaruEX lighting: per vertex of vArray, the smooth normal and the sun term the game
+    // baked into its colour (4 floats), for the shaders' surface pass
+    std::vector<GLfloat> exNArray;
 
     bool visible[subdivision][subdivision];
     float avgypatch[subdivision][subdivision];

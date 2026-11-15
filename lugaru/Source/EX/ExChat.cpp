@@ -47,6 +47,7 @@ struct Bubble
     std::string text;
     Uint32 at;
     bool afk = false; // an AFK countdown (seconds), not a chat line
+    bool typing = false; // "..." while that player writes a line
 };
 std::vector<Bubble> g_bubbles;
 const Uint32 kShow = 6000, kFade = 2000; // ms
@@ -167,6 +168,19 @@ bool ChatHandleEvent(const void* ev)
     return false;
 }
 
+bool ChatTyping()
+{
+    // test hook LUGARUEX_TEST_TYPING=from-to: "writing" from..to seconds of level time
+    static const char* tt = getenv("LUGARUEX_TEST_TYPING");
+    if (tt && Game::gameon && strchr(tt, '-')) {
+        const float t = Game::leveltime;
+        if (t >= (float)atof(tt) && t < (float)atof(strchr(tt, '-') + 1)) {
+            return true;
+        }
+    }
+    return g_typing;
+}
+
 bool ChatBlocksKeys()
 {
     if (g_typing) {
@@ -188,14 +202,32 @@ void ChatReceived(int person, const std::string& name, const std::string& text)
         return;
     }
     logLine(name + ": " + text);
-    g_bubbles.erase(std::remove_if(g_bubbles.begin(), g_bubbles.end(), [&](const Bubble& b) { return b.person == person; }), g_bubbles.end());
-    g_bubbles.push_back({ person, text, SDL_GetTicks() });
+    // lines sent one after another stack over the head (newest nearest), each fading on its
+    // own clock; at most four per player
+    int mine = 0;
+    for (const Bubble& b : g_bubbles) {
+        mine += b.person == person ? 1 : 0;
+    }
+    for (auto it = g_bubbles.begin(); mine >= 4 && it != g_bubbles.end();) {
+        if (it->person == person) {
+            it = g_bubbles.erase(it); // (the oldest go first: the list is in arrival order)
+            mine--;
+        } else {
+            ++it;
+        }
+    }
+    Bubble b;
+    b.person = person;
+    b.text = text;
+    b.at = SDL_GetTicks();
+    g_bubbles.push_back(b);
 }
 
-static bool anyAfkCountdown()
+// something over someone's head besides chat: an AFK countdown, or "..." while they write
+static bool anyOverHead()
 {
     for (auto& p : Person::players) {
-        if (p->exAfk > 0 && p->exAfk <= 60 && !p->dead) {
+        if ((p->exAfk > 0 && p->exAfk <= 60 && !p->dead) || p->exTyping) {
             return true;
         }
     }
@@ -204,7 +236,7 @@ static bool anyAfkCountdown()
 
 void ChatCapture3D()
 {
-    if (g_bubbles.empty() && !anyAfkCountdown()) {
+    if (g_bubbles.empty() && !anyOverHead()) {
         g_have3D = false; // (nothing over anyone's head: no need to read the matrices back)
         return;
     }
@@ -231,6 +263,14 @@ void ChatDraw()
             b.afk = true;
             shown.push_back(b);
         }
+        if (p.exTyping && !p.dead) {
+            Bubble b;
+            b.person = (int)i;
+            b.text = std::string("...").substr(0, 1 + (now / 400) % 3); // . .. ... while they write
+            b.at = now;
+            b.typing = true;
+            shown.push_back(b);
+        }
     }
 
     if ((shown.empty() || !g_have3D) && !line) {
@@ -246,7 +286,9 @@ void ChatDraw()
         double dist;
         std::vector<std::string> lines;
         float sx;
-        bool afk;
+        bool afk, typing;
+        int person;
+        Uint32 at;
     };
     std::vector<Placed> placed;
     for (const Bubble& b : g_have3D ? shown : std::vector<Bubble>()) {
@@ -285,8 +327,11 @@ void ChatDraw()
         pl.dist = dist;
         pl.sx = (float)sx;
         pl.afk = b.afk;
-        if (b.afk) {
-            pl.size *= 1.6f; // the countdown reads from further away
+        pl.typing = b.typing;
+        pl.person = b.person;
+        pl.at = b.at;
+        if (b.afk || b.typing) {
+            pl.size *= 1.6f; // the countdown and the writing dots read from further away
         }
         size_t widest = 0;
         for (auto& l : pl.lines) {
@@ -300,7 +345,18 @@ void ChatDraw()
         placed.push_back(pl);
     }
     // nearest speaker keeps their place; the others move up until nothing overlaps
-    std::sort(placed.begin(), placed.end(), [](const Placed& a, const Placed& b) { return a.dist < b.dist; });
+    // (one player's own stack: countdown, then "...", then their lines newest first - the
+    // later ones move up, so the newest line sits nearest the head and older ones rise above)
+    auto rank = [](const Placed& p) { return p.afk ? 0 : p.typing ? 1 : 2; };
+    std::stable_sort(placed.begin(), placed.end(), [&rank](const Placed& a, const Placed& b) {
+        if (a.dist != b.dist) {
+            return a.dist < b.dist;
+        }
+        if (rank(a) != rank(b)) {
+            return rank(a) < rank(b);
+        }
+        return a.at > b.at;
+    });
     for (size_t i = 0; i < placed.size(); i++) {
         for (int guard = 0; guard < 16; guard++) {
             bool moved = false;

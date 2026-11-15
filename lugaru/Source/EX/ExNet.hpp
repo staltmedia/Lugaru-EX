@@ -97,6 +97,7 @@ std::string NetConsoleKick(const std::string& who, int mode);
     go to the console log as "name: text" and float over the speaker's head, fading out. */
 bool ChatHandleEvent(const void* sdlEvent); // true = the event was the chat's (typing)
 bool ChatBlocksKeys();                      // typing (or Enter / Escape still held after it)
+bool ChatTyping();                          // this PC's chat line is open
 void ChatReceived(int person, const std::string& name, const std::string& text);
 void ChatCapture3D(); // in each view, with the 3D camera still set: remember it for the bubbles
 void ChatDraw();      // in each view, after the world: bubbles; typing line on the shared HUD

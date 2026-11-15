@@ -426,8 +426,15 @@ public:
     int exTarget = 0;
     // LugaruEX AFK (host option): seconds left shown over the head (1..60), 255 = the AI plays this player
     unsigned char exAfk = 0;
+    bool exTyping = false; // writing a chat line: "..." over the head
     // LugaruEX Expanded AI: how long this enemy has been in a spot for its extra moves
     float exAiCooldown = 0;
+    // its current plan (ExBot.cpp: 1 sneak up, 2 hit a downed player, 3 check a body), on whom and for how long
+    int exAiPlan = 0, exAiPlanOn = -1;
+    float exAiPlanTime = 0;
+    int exAiBodyOf = -1, exAiBodyLeft = 0; // body checks rolled for that body, how many are left
+    float exAiBodyWait = 0;
+    int exAiBody = -1; // the person a started ground / body / sneak move is aimed at (kept as the victim)
     // score pop-up in the middle of this player's own screen
     int exPopBonus = 0, exPopValue = 0;
     float exPopTime = 10;

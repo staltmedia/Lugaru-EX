@@ -1,4 +1,4 @@
-LugaruEX 0.5.6 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.5.7 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -163,6 +163,7 @@ Launcher
   Multiplayer: your Name (User if empty), then Solo, Host or Connect; Play
     starts the game that way. Online play goes through Steam (see Online
     co-op below).
+    Solo: Expanded AI (the same option as in the Host options).
     Host: Host options (the arrow) has the Server name (^1 red, ^2 green,
     ^3 yellow, ^4 blue, ^5 cyan, ^6 magenta, ^7 white, ^8 orange, ^9 purple,
     ^0 grey colour the text after them), Password (tick it and type one;
@@ -170,8 +171,12 @@ Launcher
     Max players (yours included, 0 = no limit), Friendly fire (players can
     hit each other; your attacks still pick an enemy first, a partner only
     when they stand close in front of you and no enemy is near), Expanded AI
-    (enemies also use leg cannons, wall kicks and knife throws, more often
-    on harder difficulties), AFK Timer (Seconds) (default 120, 0 = off) and
+    (enemies also use the players' moves: leg cannons, wall kicks, knife
+    throws, wind-up punches, knife follow-ups, sneak attacks when your back
+    is turned, stabs / smashes / drop kicks when you are down (they can miss,
+    like you); once you are dead they sometimes check your body a few times,
+    kick it up and punch it, and an unarmed one may kick a body over to pull
+    out the knife it lies on. More often on harder difficulties), AFK Timer (Seconds) (default 120, 0 = off) and
     LAN / VPN (no Steam: your
     network or a virtual one like Radmin, Hamachi, ZeroTier) with its UDP
     port.
@@ -272,8 +277,10 @@ Online co-op
   people you play with know your address). A free copy and a Steam copy play
   together: levels that differ come from the host.
   - Chat: press T in a level (unless T is bound to an action), type, Enter
-    sends, Escape cancels. The line floats over your character's head for
-    everyone for a few seconds and fades; nearer players' text is bigger.
+    sends, Escape cancels. While you write, "..." shows over your head. The
+    line floats over your character's head for everyone for a few seconds
+    and fades; lines sent one after another stack (newest nearest the head)
+    and each fades on its own. Nearer players' text is bigger.
     The console (~) keeps the log as "name: text", with who joined / left.
   - The host's PC runs the game; yours shows it and sends your buttons. Your
     camera, menus, sound and screen are your own, like single player.

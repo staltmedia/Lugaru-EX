@@ -1549,8 +1549,10 @@ void LocalAfkStep()
         }
         Person& p = *Person::players[s.person];
         const float yaw = i == 0 ? Game::yaw : s.cam.yaw, pitch = i == 0 ? Game::pitch : s.cam.pitch;
+        // writing a chat line ("..." over the head; online the snapshot tells the guests)
+        p.exTyping = i == 0 ? ChatTyping() : (s.remote && s.netConnected && s.net.typing);
         const bool move = p.forwardkeydown || p.backkeydown || p.leftkeydown || p.rightkeydown;
-        const bool any = move || p.jumpkeydown || p.crouchkeydown || p.drawkeydown || p.throwkeydown || attackRaw(s.person) ||
+        const bool any = move || p.exTyping || p.jumpkeydown || p.crouchkeydown || p.drawkeydown || p.throwkeydown || attackRaw(s.person) ||
                          fabsf(yaw - s.afkYaw) > 1.f || fabsf(pitch - s.afkPitch) > 1.f;
         s.afkYaw = yaw;
         s.afkPitch = pitch;

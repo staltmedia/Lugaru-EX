@@ -60,7 +60,7 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.5.6" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.5.7" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
@@ -1475,6 +1475,7 @@ static void UpdateMpEnable()
     const bool join = MpCheck(IDC_MP_JOIN);
     const bool opts = host && MpCheck(IDC_MP_ADVANCED);
     Show(IDC_MP_HOSTSTATUS, host);
+    Show(IDC_MP_SOLOAI, !host && !join); // Solo: Expanded AI (the same setting as in the Host options)
     Show(IDC_MP_ADVANCED, host);
     SetDlgItemTextW(g_mp, IDC_MP_ADVANCED, opts ? L"Host options  v" : L"Host options  >");
     for (int id : { IDC_MP_SNAMELBL, IDC_MP_SERVERNAME, IDC_MP_GUESTCHARS, IDC_MP_PWON, IDC_MP_HOSTPW, IDC_MP_HOSTPW_SHOW, IDC_MP_MAXLBL,
@@ -1917,6 +1918,8 @@ static INT_PTR MpProc(HWND p, UINT msg, WPARAM wp, LPARAM lp)
             if (id == IDC_MP_OFF || id == IDC_MP_HOST || id == IDC_MP_JOIN) {
                 CheckRadioButton(p, IDC_MP_OFF, IDC_MP_JOIN, id);
                 UpdateMpEnable();
+            } else if (id == IDC_MP_SOLOAI || id == IDC_MP_EXPANDEDAI) {
+                CheckDlgButton(p, id == IDC_MP_SOLOAI ? IDC_MP_EXPANDEDAI : IDC_MP_SOLOAI, MpCheck(id) ? BST_CHECKED : BST_UNCHECKED);
             } else if (id == IDC_MP_ADVANCED || id == IDC_MP_PWON || id == IDC_LAN) {
                 UpdateMpEnable();
             } else if (id == IDC_MP_HOSTPW_SHOW) {
@@ -2089,6 +2092,7 @@ static void InitMpPage(HWND p)
     CheckDlgButton(p, IDC_MP_GUESTCHARS, g_set.guestChars ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(p, IDC_MP_FRIENDLY, g_set.friendlyFire ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(p, IDC_MP_EXPANDEDAI, g_set.expandedAI ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(p, IDC_MP_SOLOAI, g_set.expandedAI ? BST_CHECKED : BST_UNCHECKED);
     SetDlgItemInt(p, IDC_MP_AFK, std::max(0, g_set.afkTimer), FALSE);
     CheckDlgButton(p, IDC_MP_ADVANCED, g_set.mpAdvanced ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(p, IDC_LAN, g_set.lan ? BST_CHECKED : BST_UNCHECKED);

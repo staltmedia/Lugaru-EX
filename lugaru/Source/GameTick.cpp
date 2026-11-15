@@ -1894,6 +1894,41 @@ void Game::ProcessDevInput()
                     p1.takeWeapon((int)weapons.size() - 1);
                     p1.weaponactive = 0;
                 }
+                // LUGARUEX_TEST_FOEARM=knife|sword|staff[,behind][,alert]: the enemy holds one; ",behind": it
+                // starts behind player 1 instead; ",alert": it is already attacking
+                if (const char* arm = getenv("LUGARUEX_TEST_FOEARM")) {
+                    const int t = strstr(arm, "knife") ? knife : strstr(arm, "sword") ? sword : strstr(arm, "staff") ? staff : 0;
+                    if (t && f.creature != wolftype) {
+                        weapons.push_back(Weapon(t, -1));
+                        f.takeWeapon((int)weapons.size() - 1);
+                        f.weaponactive = 0;
+                    }
+                    if (strstr(arm, "behind")) {
+                        f.coords = p1.coords - fwd * dist;
+                        f.coords.y = std::max(p1.coords.y, terrain.getHeight(f.coords.x, f.coords.z));
+                        f.oldcoords = f.realoldcoords = f.coords;
+                        f.yaw = f.targetyaw = roughDirectionTo(f.coords, p1.coords);
+                        p1.yaw = p1.targetyaw = roughDirectionTo(p1.coords, p1.coords + fwd);
+                    }
+                    if (strstr(arm, "none")) { // its own weapons go far away
+                        for (int w = 0; w < f.num_weapons && w < 2; w++) {
+                            const int id = f.weaponids[w];
+                            if (id >= 0 && id < (int)weapons.size()) {
+                                weapons[id].owner = -1;
+                                weapons[id].position.x += 400;
+                                weapons[id].tippoint.x += 400;
+                            }
+                        }
+                        f.num_weapons = 0;
+                        f.weaponactive = -1;
+                    }
+                    if (strstr(arm, "alert")) {
+                        f.aitype = attacktypecutoff;
+                        f.howactive = typeactive;
+                        f.lastseentime = 12;
+                    }
+                    printf("EXTEST foe arm: %s\n", arm);
+                }
                 printf("EXTEST foe: person %d (%s) %.1f in front of player 1 (%s%s)\n", foe, f.creature == wolftype ? "wolf" : "rabbit", dist,
                        Person::players[0]->creature == wolftype ? "wolf" : "rabbit",
                        give == knife ? ", knife" : give == sword ? ", sword" : give == staff ? ", staff" : "");
@@ -3118,7 +3153,7 @@ void doAttacks()
             Person::players[k]->attackkeydown = 0;
         }
         if (Person::players[k]->animTarget != rabbitrunninganim && Person::players[k]->animTarget != wolfrunninganim) {
-            if (!Person::players[k]->isPlayerControlled()) {
+            if (!Person::players[k]->isPlayerControlled() && !EX::ExpandedAIKeepsVictim(*Person::players[k])) {
                 Person::players[k]->victim = Person::players[EX::AITarget(*Person::players[k])];
             }
             //attack key pressed

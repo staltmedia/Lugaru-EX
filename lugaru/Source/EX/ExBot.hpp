@@ -20,7 +20,7 @@ struct PadInput;
 
 /** host options (the launcher's Host settings; only while hosting, never on a guest) */
 bool FriendlyFire(); // players can hit each other (aiming still prefers enemies)
-bool ExpandedAI();   // the AI also uses the players' moves: leg cannons, wall kicks, knife throws
+bool ExpandedAI();   // the AI also uses the players' moves (host option, also in Solo)
 
 /** true with a chance of perSecond per second for this simulation step (rate-independent) */
 bool AIChance(float perSecond);
@@ -31,6 +31,8 @@ void ExpandedAIStep(int person);
 bool ExpandedAIWallJump(const Person& p);
 /** Expanded AI: an enemy jumping off a wall kicks the player below */
 bool ExpandedAIWallKick(const Person& p);
+/** Expanded AI: an enemy in one of its own ground / body / sneak moves keeps that move's victim (true; sets it) */
+bool ExpandedAIKeepsVictim(Person& p);
 
 /** the friendly AI that plays for an AFK player: its buttons and the way it looks (camera yaw) */
 void BotInput(int person, PadInput& in, float& yaw);

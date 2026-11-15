@@ -391,7 +391,7 @@ static const char* kComposite =
     "      if (mat == 3.0) s = mix(0.5, 1.0, s);  // leaves let light through: a crown never goes black\n"
     "      s = mix(1.0, s, uShadowStr);\n"
     "      float a = uAmbFrac;\n"
-    "      bool relit = mat == 1.0 || mat == 2.0 || mat == 4.0;\n"
+    "      bool relit = mat == 1.0 || mat == 2.0 || mat == 4.0 || mat == 6.0;  // (6: the ground)\n"
     "      float lam = (mat == 3.0) ? 0.75 : ndl;  // the game lights leaves flat\n"
     "      float fo = a + (1.0 - a) * (relit ? ndlv : lam);\n"
     "      if (uDebug == 4) { gl_FragColor = vec4(n * 0.5 + 0.5, 1.0); return; }\n"
@@ -414,7 +414,7 @@ static const char* kComposite =
     "      float bLum = dot(bounceL, vec3(0.299, 0.587, 0.114)), bMax = (1.0 - vis) * a;\n"
     "      if (bLum > bMax) bounceL *= bMax / bLum;\n"
     "      c = alb * (skyL + bounceL + vec3((1.0 - a) * lam * s * mix(1.0, 1.22, uSharp)));\n"
-    "      if (relit) {\n"
+    "      if (relit && mat != 6.0) {\n"
     "        vec3 V = normalize(-p);\n"
     "        float nv = max(dot(n, V), 0.001);\n"
     "        float nh = max(dot(n, normalize(uSunV + V)), 0.0);\n"
@@ -498,11 +498,12 @@ static const char* kSurfVS =
     "varying vec2 vUV;\n"
     "varying float vNdl;\n"
     "uniform vec3 uSunV;\n"
+    "uniform float uTerrain;  // the ground: its sun term comes baked (colour alpha)\n"
     "void main() {\n"
     "  gl_Position = ftransform();\n"
     "  vP = (gl_ModelViewMatrix * gl_Vertex).xyz;\n"
     "  vN = normalize(gl_NormalMatrix * gl_Normal);\n"
-    "  vNdl = max(dot(vN, uSunV), 0.0);\n"
+    "  vNdl = uTerrain > 0.5 ? clamp(gl_Color.a, 0.0, 1.0) : max(dot(vN, uSunV), 0.0);\n"
     "  vUV = gl_MultiTexCoord0.xy;\n"
     "}\n";
 static const char* kSurfFS =
@@ -646,6 +647,13 @@ struct DrawRec
     float mv[16];
 };
 static std::vector<DrawRec> g_draws;
+struct TerrainRec
+{
+    const float* v;
+    const float* n;
+    int count;
+};
+static std::vector<TerrainRec> g_terrainDraws; // ground patches drawn this frame (camera matrix)
 static bool g_recording = false;
 static int g_drawKind = LK_NONE;
 static bool g_engine = false; // shaders for shadows / surfaces compiled
@@ -663,7 +671,22 @@ void LightingCaptureCamera()
     glGetFloatv(GL_PROJECTION_MATRIX, g_camProj);
     g_haveCam = true;
     g_draws.clear();
+    g_terrainDraws.clear();
     g_recording = g_engine;
+}
+
+static bool g_noTerrainSurf = getenv("LUGARUEX_TEST_NOTERRAINSURF") != nullptr; // test hook: the old depth normals
+
+bool LightingRecordingTerrain()
+{
+    return g_recording && !g_noTerrainSurf;
+}
+
+void LightingRecordTerrain(const float* v, const float* n, int vertices)
+{
+    if (g_recording && !g_noTerrainSurf && v && n && vertices > 0) {
+        g_terrainDraws.push_back({ v, n, vertices });
+    }
 }
 
 static bool g_nextValid = false, g_nextLit = false; // LightingNextDraw (below)
@@ -1191,6 +1214,30 @@ static void enginePasses(int w, int h, const float* proj, const float* mv, Engin
         }
         glLoadMatrixf(r.mv);
         drawArrays(r.v, r.n, r.colorLayout, r.idx);
+    }
+    if (!g_terrainDraws.empty()) {
+        // the ground with its own smooth normals and the game's baked sun term (material 6):
+        // relit like the models, instead of normals rebuilt from the depth (flat per triangle,
+        // unlike the game's smooth shading: facets and dark bands on slopes)
+        const GLint uTerrain = U(g_progSurf, "uTerrain");
+        ex_glUniform1f(uMat, 6.f);
+        ex_glUniform1f(uAlpha, 0.f);
+        ex_glUniform1f(uTerrain, 1.f);
+        glLoadMatrixf(g_camMV);
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_NORMAL_ARRAY);
+        glEnableClientState(GL_COLOR_ARRAY);
+        for (const TerrainRec& t : g_terrainDraws) {
+            glVertexPointer(3, GL_FLOAT, 9 * sizeof(GLfloat), t.v);
+            glNormalPointer(GL_FLOAT, 4 * sizeof(GLfloat), t.n);
+            glColorPointer(4, GL_FLOAT, 4 * sizeof(GLfloat), t.n); // (alpha = the sun term)
+            glDrawArrays(GL_TRIANGLES, 0, t.count);
+        }
+        glDisableClientState(GL_VERTEX_ARRAY);
+        glDisableClientState(GL_NORMAL_ARRAY);
+        glDisableClientState(GL_COLOR_ARRAY);
+        ex_glUniform1f(uTerrain, 0.f);
     }
     ex_glUseProgram(0);
     glBindTexture(GL_TEXTURE_2D, 0);

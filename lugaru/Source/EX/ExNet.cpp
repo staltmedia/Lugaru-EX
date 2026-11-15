@@ -1168,7 +1168,7 @@ static void writePerson(Writer& w, int idx, const Person& p, bool joints)
     w.u8(p.aitype);
     // onterrain: the guest plants feet on the ground (IK) like the host; stunned and howactive
     // (awake, asleep, knocked out...): the face (stunned, eyes shut, open mouth)
-    w.u8((p.onfire ? 1 : 0) | (p.headless ? 2 : 0) | (p.onterrain ? 4 : 0) | (p.stunned > 0 ? 8 : 0) | ((p.howactive & 7) << 4));
+    w.u8((p.onfire ? 1 : 0) | (p.headless ? 2 : 0) | (p.onterrain ? 4 : 0) | (p.stunned > 0 ? 8 : 0) | ((p.howactive & 7) << 4) | (p.exTyping ? 128 : 0));
     w.u8(p.exAfk); // AFK countdown over their head (seconds), 255 = the AI plays for them
     w.u16((int)p.damage);
     w.u16((int)p.bloodloss);
@@ -3083,6 +3083,7 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
                 in.fwd = btn & 1, in.back = btn & 2, in.left = btn & 4, in.right = btn & 8;
                 in.jump = btn & 16, in.crouch = btn & 32, in.attack = btn & 64, in.draw = btn & 128, in.thrw = btn & 256;
                 in.walk = btn & 512; // (older guests never set it: they run)
+                in.typing = k == 0 && (btn & 1024); // writing a chat line (the PC's first player)
                 LocalRemoteInput(c->slots[k], in, yaw, pitch, c->connected);
             }
         }
@@ -3931,19 +3932,22 @@ void NetFrame(double dt)
         helperSend('K'); // (the helper ends itself when the game stops saying this)
     }
     {
-        // test hook LUGARUEX_TEST_CHAT=seconds:text - say it that long after a level starts
+        // test hook LUGARUEX_TEST_CHAT=seconds:text[|seconds:text...] - say each that long after a level starts
         static const char* testChat = getenv("LUGARUEX_TEST_CHAT");
         static double since = -1;
-        static bool said = false;
+        static const char* next = testChat;
         const bool playing = g_role == R_HOST ? hostInLevel() : g_inLevel;
-        if (testChat && !said && playing) {
+        if (next && *next && playing) {
             if (since < 0) {
                 since = now();
             }
-            const char* colon = strchr(testChat, ':');
-            if (colon && now() - since > atof(testChat)) {
-                said = true;
-                NetChatSend(colon + 1);
+            const char* colon = strchr(next, ':');
+            if (!colon) {
+                next = nullptr;
+            } else if (now() - since > atof(next)) {
+                const char* bar = strchr(colon, '|');
+                NetChatSend(bar ? std::string(colon + 1, bar) : std::string(colon + 1));
+                next = bar ? bar + 1 : nullptr;
             }
         }
     }
@@ -4112,7 +4116,8 @@ void NetFrame(double dt)
                 in.attack = !testWalk && ((int)(now() * 2)) % 5 == 0;
             }
             const int btn = (in.fwd ? 1 : 0) | (in.back ? 2 : 0) | (in.left ? 4 : 0) | (in.right ? 8 : 0) | (in.jump ? 16 : 0) |
-                            (in.crouch ? 32 : 0) | (in.attack ? 64 : 0) | (in.draw ? 128 : 0) | (in.thrw ? 256 : 0) | (in.walk ? 512 : 0);
+                            (in.crouch ? 32 : 0) | (in.attack ? 64 : 0) | (in.draw ? 128 : 0) | (in.thrw ? 256 : 0) | (in.walk ? 512 : 0) |
+                            (k == 0 && ChatTyping() ? 1024 : 0);
             w.u16(btn);
             w.f32(yaw);
             w.f32(pitch);
@@ -4282,6 +4287,7 @@ void NetGuestStep()
         p.onterrain = (s.flags & 4) != 0;
         p.stunned = (s.flags & 8) ? 1.f : 0.f;
         p.howactive = (s.flags >> 4) & 7;
+        p.exTyping = (s.flags & 128) != 0;
         p.exAfk = (unsigned char)s.afk;
         if (p.onfire && !wasOnFire) {
             p.exFireStart(); // catching fire: the burst of flames and the fire loop

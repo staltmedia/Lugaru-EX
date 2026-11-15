@@ -44,6 +44,7 @@ struct PadInput
     bool walk = false;          // walk instead of run (a light push of the left stick; Ctrl on a keyboard)
     float lookX = 0, lookY = 0; // right stick, shaped, -1..1
     bool lt = false, rt = false; // triggers pulled (a dead player cycles who they watch; not bindable)
+    bool typing = false;        // online guest: writing a chat line ("..." over their head)
 };
 /** player 1 walks: Ctrl held, or player 1's controller stick pushed only lightly */
 bool P1Walk();

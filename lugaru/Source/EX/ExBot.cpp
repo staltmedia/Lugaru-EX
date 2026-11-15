@@ -24,6 +24,9 @@ the Free Software Foundation; either version 2 of the License, or
 #include "Objects/Object.hpp"
 #include "Objects/Person.hpp"
 #include "Objects/Weapons.hpp"
+#include "Environment/Terrain.hpp"
+#include "Level/Dialog.hpp"
+#include "Math/Random.hpp"
 #include "Tutorial.hpp"
 
 #include <algorithm>
@@ -34,6 +37,7 @@ the Free Software Foundation; either version 2 of the License, or
 extern int difficulty;
 extern int hostile;
 extern bool winfreeze;
+extern Terrain terrain;
 
 namespace EX
 {
@@ -49,7 +53,8 @@ bool FriendlyFire()
 
 bool ExpandedAI()
 {
-    return hostRules() && cfg.mpExpandedAI;
+    // also in Solo (offline and local split screen); never on a guest or in the tutorial
+    return !NetIsGuest() && cfg.mpMode != "join" && !Tutorial::active && cfg.mpExpandedAI;
 }
 
 static float stepTime()
@@ -125,50 +130,462 @@ static bool fighting(const Person& p)
            p.aitype == attacktypecutoff && p.stunned <= 0 && p.surprised <= 0;
 }
 
+static int weaponOf(Person& p)
+{
+    if (!p.hasWeapon() || p.weaponactive < 0 || p.weaponactive > 1) {
+        return 0;
+    }
+    const int w = p.weaponids[p.weaponactive];
+    return w >= 0 && w < (int)weapons.size() ? weapons[w].getType() : 0;
+}
+
+// standing in a state a player could start an attack from (GameTick's attack block)
+static bool ready(const Person& p)
+{
+    return !Animation::animations[p.animTarget].attack && p.staggerdelay <= 0 &&
+           (p.isIdle() || p.isRun() || p.isCrouch() || p.animTarget == walkanim || p.animTarget == sneakanim);
+}
+
+// v's back is turned to p
+static bool behind(const Person& p, const Person& v, float t)
+{
+    const float dx = v.coords.x - p.coords.x, dz = v.coords.z - p.coords.z;
+    const float l = sqrtf(dx * dx + dz * dz), lf = sqrtf(v.facing.x * v.facing.x + v.facing.z * v.facing.z);
+    return l > 1e-4f && lf > 1e-4f && (dx * v.facing.x + dz * v.facing.z) / (l * lf) > t;
+}
+
+// a player who could be grabbed from behind: on their feet, not fighting, not running
+static bool sneakable(const Person& v)
+{
+    return !v.dead && !v.skeleton.free && Animation::animations[v.animTarget].attack == neutral &&
+           (v.isIdle() || v.isCrouch() || v.isStop() || v.animTarget == walkanim || v.animTarget == sneakanim) &&
+           v.animTarget != getupfrombackanim && v.animTarget != getupfromfrontanim;
+}
+
+static bool livingHumanWithin(const Person& p, float r2)
+{
+    for (auto& h : Person::players) {
+        if (h.get() != &p && h->isPlayerControlled() && !h->dead && dist2(h->coords, p.coords) < r2) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void goTo(Person& p, const XYZ& where)
+{
+    p.targetyaw = roughDirectionTo(p.coords, where);
+    p.lookyaw = p.targetyaw;
+    p.forwardkeydown = 1;
+    p.backkeydown = p.leftkeydown = p.rightkeydown = 0;
+    p.attackkeydown = p.jumpkeydown = p.crouchkeydown = 0;
+}
+
+static void holdFacing(Person& p, const XYZ& where)
+{
+    p.targetyaw = roughDirectionTo(p.coords, where);
+    p.lookyaw = p.targetyaw;
+    p.forwardkeydown = p.backkeydown = p.leftkeydown = p.rightkeydown = 0;
+    p.attackkeydown = p.jumpkeydown = p.crouchkeydown = 0;
+}
+
+static void clearDeadDecals()
+{
+    terrain.deleteDeadDecals();
+    for (unsigned l = 0; l < Object::objects.size(); l++) {
+        if (Object::objects[l]->model.type == decalstype) {
+            Object::objects[l]->model.deleteDeadDecals();
+        }
+    }
+}
+
+// a move started the way GameTick's attack code starts it for a player
+static void startMove(Person& P, int vi, int anim)
+{
+    Person& V = *Person::players[vi];
+    P.victim = Person::players[vi];
+    P.hasvictim = 1;
+    P.animTarget = anim;
+    P.frameTarget = 0;
+    P.target = 0;
+    XYZ targetpoint = V.coords;
+    if (anim == crouchstabanim || anim == swordgroundstabanim || anim == staffgroundsmashanim) {
+        targetpoint += (V.jointPos(abdomen) + V.jointPos(neck)) / 2 * V.scale;
+    }
+    P.targetyaw = roughDirectionTo(P.coords, targetpoint);
+    P.targettilt2 = pitchTo(P.coords, targetpoint);
+    if (anim == crouchstabanim || anim == swordgroundstabanim) {
+        P.targetyaw += (float)(abs(Random() % 100) - 50) / 4; // the player's aim spread: some stabs miss
+    }
+    if (anim == staffgroundsmashanim) {
+        P.targettilt2 += 10;
+    }
+    P.lastattack3 = P.lastattack2;
+    P.lastattack2 = P.lastattack;
+    P.lastattack = anim;
+    if (anim == swordgroundstabanim) {
+        P.targetyaw += 30;
+    }
+    if (anim == killanim || anim == dropkickanim) {
+        clearDeadDecals();
+    }
+    P.exAiBody = vi;
+}
+
+static void startSneak(Person& P, int vi, int weapon)
+{
+    Person& V = *Person::players[vi];
+    if (!weapon) {
+        P.animCurrent = P.animTarget = sneakattackanim;
+        V.animCurrent = V.animTarget = sneakattackedanim;
+        P.oldcoords = P.coords;
+        P.coords = V.coords;
+    } else {
+        P.animCurrent = P.animTarget = weapon == knife ? knifesneakattackanim : swordsneakattackanim;
+        V.animCurrent = V.animTarget = weapon == knife ? knifesneakattackedanim : swordsneakattackedanim;
+        V.oldcoords = V.coords;
+        V.coords = P.coords;
+    }
+    P.victim = Person::players[vi];
+    P.hasvictim = 1;
+    V.targettilt2 = 0;
+    V.frameTarget = 1;
+    V.frameCurrent = 0;
+    V.target = 0;
+    V.velocity = 0;
+    P.targettilt2 = V.targettilt2;
+    P.frameCurrent = V.frameCurrent;
+    P.frameTarget = V.frameTarget;
+    P.target = V.target;
+    P.velocity = 0;
+    P.targetyaw = V.yaw;
+    P.yaw = V.yaw;
+    V.targetyaw = V.yaw;
+    P.exAiBody = vi;
+}
+
+static void startKnifeFollow(Person& P, int vi)
+{
+    Person& V = *Person::players[vi];
+    P.targetyaw = roughDirectionTo(P.coords, V.coords);
+    P.targettilt2 = pitchTo(P.coords, V.coords);
+    P.victim = Person::players[vi];
+    P.hasvictim = 1;
+    V.animTarget = V.animCurrent = knifefollowedanim;
+    V.targettilt2 = P.targettilt2;
+    V.frameTarget = 1;
+    V.frameCurrent = 0;
+    V.target = 0;
+    V.velocity = 0;
+    P.animCurrent = P.animTarget = knifefollowanim;
+    P.targettilt2 = V.targettilt2;
+    P.frameCurrent = V.frameCurrent;
+    P.frameTarget = V.frameTarget;
+    P.target = V.target;
+    P.velocity = 0;
+    P.oldcoords = P.coords;
+    V.coords = P.coords;
+    V.targetyaw = P.targetyaw;
+    V.yaw = P.targetyaw;
+    P.yaw = P.targetyaw;
+    P.exAiBody = vi;
+}
+
+// a ground move on a body or a downed player in reach; false when out of reach
+static bool tryGround(Person& P, int vi, int weapon, bool body)
+{
+    Person& V = *Person::players[vi];
+    if (!ready(P) || !V.skeleton.free) {
+        return false;
+    }
+    const float s2 = (P.scale * 5) * (P.scale * 5);
+    const float d2 = distsq(&P.coords, &V.coords);
+    int anim = -1;
+    if (weapon == knife && d2 < 1.5f * s2) {
+        anim = crouchstabanim;
+    } else if (weapon == sword && d2 < 1.5f * s2) {
+        anim = swordgroundstabanim;
+    } else if (weapon == staff && d2 < 3.5f * s2) {
+        anim = staffgroundsmashanim;
+    }
+    if (body && d2 < 3.5f && (anim < 0 || Random() % 3 == 0)) {
+        // a body: kick it up and punch it (unarmed, the player's crouch move), or kick it around
+        anim = !weapon && V.dead && V.skeleton.longdead > 1000 && d2 < 2.5f && Random() % 2 ? killanim : dropkickanim;
+    } else if (!body && !weapon && d2 < 3.5f && V.skeleton.longdead < 300 && P.lastattack != spinkickanim) {
+        anim = dropkickanim;
+    }
+    if (anim < 0) {
+        return false;
+    }
+    startMove(P, vi, anim);
+    static const char* const names[] = { "stabs", "stabs", "smashes", "kicks up and punches", "kicks" };
+    const int n = anim == crouchstabanim ? 0 : anim == swordgroundstabanim ? 1 : anim == staffgroundsmashanim ? 2 : anim == killanim ? 3 : 4;
+    printf("LugaruEX: Expanded AI - person %d %s %s %d\n", (int)P.id, names[n], body ? "the body of" : "downed player", vi);
+    return true;
+}
+
+// a knife in this body can be pulled out the way it lies (GameTick's pick-up rule)
+static bool knifeReachable(const Person& b)
+{
+    return (b.skeleton.forward.y < 0 && b.weaponstuckwhere == 0) || (b.skeleton.forward.y > 0 && b.weaponstuckwhere == 1) ||
+           b.weaponstuck == -1 || b.num_weapons > 1;
+}
+
+// plans: 1 sneak up behind a player, 2 hit a downed player, 3 check / beat a body, 4 get a knife out of a body
+enum { kSneak = 1, kDowned, kBody, kKnife };
+
 void ExpandedAIStep(int person)
 {
     if (!valid(person)) {
         return;
     }
     Person& P = *Person::players[person];
-    if (!fighting(P)) {
+    if (!ExpandedAI() || !hostile || winfreeze || Dialog::inDialog() || P.isPlayerControlled() || P.dead || P.skeleton.free) {
+        P.exAiPlan = 0;
         return;
     }
-    P.exAiCooldown -= stepTime();
-    if (P.exAiCooldown > 0) {
-        return;
+    const float dt = stepTime();
+    P.exAiCooldown -= dt;
+    P.exAiBodyWait -= dt;
+    if (P.exAiPlan && (P.exAiPlanTime -= dt) <= 0) {
+        P.exAiPlan = 0;
     }
-    Person* V = chased(P);
-    if (!V) {
+    static const bool dbg = getenv("LUGARUEX_TEST_AIDEBUG") != nullptr;
+    if (dbg) {
+        static float tt[256] = {};
+        float& t = tt[person & 255];
+        if ((t += dt) > 1) {
+            t = 0;
+            printf("EXTEST ai %d: aitype=%d anim=%d ready=%d plan=%d bodyOf=%d left=%d wait=%.1f target=%d\n", person, P.aitype, P.animTarget, ready(P),
+                   P.exAiPlan, P.exAiBodyOf, P.exAiBodyLeft, P.exAiBodyWait, P.exTarget);
+        }
+    }
+    // fighting: every move; calm again (back on its rounds after a kill): only bodies
+    const bool attacking = P.aitype == attacktypecutoff;
+    const bool calm = P.aitype == passivetype || P.aitype == pathfindtype;
+    if ((!attacking && !calm) || P.stunned > 0 || P.surprised > 0 || (!attacking && (P.exAiPlan == kSneak || P.exAiPlan == kDowned))) {
+        P.exAiPlan = 0;
+    }
+    if ((!attacking && !calm) || P.stunned > 0 || P.surprised > 0) {
         return;
     }
     const float s2 = (P.scale * 5) * (P.scale * 5);
-    const float d2 = distsq(&P.coords, &V->coords);
-    const bool vStanding = Animation::animations[V->animTarget].height != lowheight && V->animTarget != getupfrombackanim &&
-                           V->animTarget != getupfromfrontanim;
-    // leg cannon: running at the player from a few steps away (a miss throws the kicker
-    // down, as it does a player)
-    if (P.creature == rabbittype && P.isRun() && P.wasRun() && d2 < 12 * s2 && d2 > 7 * s2 && vStanding &&
-        flatDot(P, V->coords) > .8f && AIChance(1.2f * rate())) {
-        P.victim = Person::players[P.exTarget];
-        P.hasvictim = 1;
-        P.setTargetAnimation(rabbitkickanim);
-        P.exAiCooldown = 3;
-        printf("LugaruEX: Expanded AI - person %d leg cannon at %d\n", person, P.exTarget);
+    const int weapon = weaponOf(P);
+
+    // ---- carry on with a plan
+    if (P.exAiPlan && valid(P.exAiPlanOn)) {
+        Person& V = *Person::players[P.exAiPlanOn];
+        const float d2 = distsq(&P.coords, &V.coords);
+        if (P.exAiPlan == kSneak) {
+            if (!sneakable(V) || !behind(P, V, .2f) || d2 > 30) {
+                P.exAiPlan = 0;
+            } else if (d2 < 1.5f * s2 && ready(P)) {
+                startSneak(P, P.exAiPlanOn, weapon);
+                printf("LugaruEX: Expanded AI - person %d sneak attack on %d\n", person, P.exAiPlanOn);
+                P.exAiPlan = 0;
+                return;
+            } else if (ready(P)) {
+                goTo(P, V.coords);
+                return;
+            }
+        } else if (P.exAiPlan == kDowned) {
+            if (V.dead || !V.skeleton.free) {
+                P.exAiPlan = 0;
+            } else {
+                if (tryGround(P, P.exAiPlanOn, weapon, false)) {
+                    P.exAiPlan = 0;
+                } else if (ready(P)) {
+                    goTo(P, V.coords);
+                }
+                return;
+            }
+        } else if (P.exAiPlan == kBody) {
+            if (!V.dead || livingHumanWithin(P, 100)) {
+                P.exAiPlan = 0;
+            } else {
+                if (tryGround(P, P.exAiPlanOn, weapon, true)) {
+                    P.exAiPlan = 0;
+                    P.exAiBodyLeft--;
+                    P.exAiBodyWait = 1.2f + (float)(rand() % 300) / 100.f;
+                } else if (ready(P)) {
+                    goTo(P, V.coords);
+                }
+                return;
+            }
+        } else if (P.exAiPlan == kKnife) {
+            if (P.hasWeapon() || !V.num_weapons || !V.skeleton.free || livingHumanWithin(P, 16)) {
+                if (P.num_weapons > 0) {
+                    printf("LugaruEX: Expanded AI - person %d got the knife out of body %d\n", person, P.exAiPlanOn);
+                }
+                P.exAiPlan = 0;
+            } else if (ready(P) || P.animTarget == crouchremoveknifeanim) {
+                if (dbg) {
+                    static float kt = 0;
+                    if ((kt += dt) > .25f) {
+                        kt = 0;
+                        printf("EXTEST knife plan: reach=%d d2=%.2f fwdy=%.2f where=%d stuck=%d anim=%d toggle=%d\n", knifeReachable(V), d2, V.skeleton.forward.y, V.weaponstuckwhere, V.weaponstuck, P.animTarget, (int)P.throwtogglekeydown);
+                    }
+                }
+                if (knifeReachable(V)) {
+                    if (d2 < 1.8f) { // GameTick's pick-up block pulls it out
+                        holdFacing(P, V.coords);
+                        P.throwkeydown = 1;
+                        if (P.animTarget != crouchremoveknifeanim && P.animTarget != removeknifeanim) {
+                            P.throwtogglekeydown = 0;
+                        }
+                    } else {
+                        goTo(P, V.coords);
+                    }
+                } else if (d2 < 2.3f && ready(P)) {
+                    // lying on the knife: kick the body up and over first (the kick-up move spins it)
+                    startMove(P, P.exAiPlanOn, killanim);
+                    printf("LugaruEX: Expanded AI - person %d kicks body %d over to get its knife\n", person, P.exAiPlanOn);
+                } else {
+                    goTo(P, V.coords);
+                }
+                return;
+            }
+        }
+    }
+    if (P.exAiPlan || !ready(P)) {
         return;
     }
-    // knife throw: a knife in hand, the player in sight but out of reach
-    if (hasKnifeOut(P) && (P.isIdle() || P.isRun()) && d2 > 9 && d2 < 100 && flatDot(P, V->coords) > .7f && AIChance(.25f * rate()) &&
-        canSee(P, *V)) {
-        P.throwtogglekeydown = 1;
-        P.victim = Person::players[P.exTarget];
-        P.hasvictim = 1;
-        P.setTargetAnimation(knifethrowanim);
-        P.targetyaw = roughDirectionTo(P.coords, V->coords);
-        P.targettilt2 = pitchTo(P.coords, V->coords);
-        P.exAiCooldown = 4;
-        printf("LugaruEX: Expanded AI - person %d throws a knife at %d\n", person, P.exTarget);
+
+    // ---- the player it chases
+    const int vi = P.exTarget;
+    Person* V = attacking && valid(vi) && Person::players[vi].get() != &P && Person::players[vi]->isPlayerControlled() ? Person::players[vi].get() : nullptr;
+    if (V && !V->dead && !V->skeleton.free) {
+        const float d2 = distsq(&P.coords, &V->coords);
+        const bool vStanding = Animation::animations[V->animTarget].height != lowheight && V->animTarget != getupfrombackanim &&
+                               V->animTarget != getupfromfrontanim;
+        // sneak attack: the player's back is turned (a rabbit; a staff has no sneak attack)
+        if (P.creature == rabbittype && weapon != staff && d2 < 25 && sneakable(*V) && behind(P, *V, .5f) && AIChance(.35f * rate())) {
+            P.exAiPlan = kSneak;
+            P.exAiPlanOn = vi;
+            P.exAiPlanTime = 4;
+            printf("LugaruEX: Expanded AI - person %d sneaks up on %d\n", person, vi);
+            return;
+        }
+        if (P.exAiCooldown <= 0) {
+            // leg cannon: running at the player from a few steps away (a miss throws the kicker
+            // down, as it does a player)
+            if (P.creature == rabbittype && P.isRun() && P.wasRun() && d2 < 12 * s2 && d2 > 7 * s2 && vStanding &&
+                flatDot(P, V->coords) > .8f && AIChance(1.2f * rate())) {
+                P.victim = Person::players[vi];
+                P.hasvictim = 1;
+                P.setTargetAnimation(rabbitkickanim);
+                P.exAiCooldown = 3;
+                printf("LugaruEX: Expanded AI - person %d leg cannon at %d\n", person, vi);
+                return;
+            }
+            // knife throw: a knife in hand, the player in sight but out of reach
+            if (hasKnifeOut(P) && (P.isIdle() || P.isRun()) && d2 > 9 && d2 < 100 && flatDot(P, V->coords) > .7f && AIChance(.25f * rate()) &&
+                canSee(P, *V)) {
+                P.throwtogglekeydown = 1;
+                P.victim = Person::players[vi];
+                P.hasvictim = 1;
+                P.setTargetAnimation(knifethrowanim);
+                P.targetyaw = roughDirectionTo(P.coords, V->coords);
+                P.targettilt2 = pitchTo(P.coords, V->coords);
+                P.exAiCooldown = 4;
+                printf("LugaruEX: Expanded AI - person %d throws a knife at %d\n", person, vi);
+                return;
+            }
+            // knife follow-up: a staggering, badly bleeding player
+            if (weapon == knife && V->staggerdelay > 0 && V->bloodloss > V->damagetolerance / 2 && d2 < 2.5f * s2 && AIChance(1.5f * rate())) {
+                startKnifeFollow(P, vi);
+                P.exAiCooldown = 2;
+                printf("LugaruEX: Expanded AI - person %d knife follow-up on %d\n", person, vi);
+                return;
+            }
+            // wind-up punch, the player's close unarmed move
+            if (P.creature == rabbittype && !weapon && d2 < 1.5f * s2 && vStanding && flatDot(P, V->coords) > .5f && AIChance(.6f * rate())) {
+                startMove(P, vi, winduppunchanim);
+                P.exAiBody = -1;
+                P.exAiCooldown = 1.5f;
+                printf("LugaruEX: Expanded AI - person %d wind-up punch at %d\n", person, vi);
+                return;
+            }
+        }
     }
+    // a player knocked down near it: go hit them on the ground (stab, smash, drop kick)
+    if (P.creature != rabbittype) { // (wolves keep their own moves)
+        return;
+    }
+    if (V && !V->dead && V->skeleton.free && distsq(&P.coords, &V->coords) < 36 && AIChance(1.2f * rate())) {
+        P.exAiPlan = kDowned;
+        P.exAiPlanOn = vi;
+        P.exAiPlanTime = 2.5f;
+        printf("LugaruEX: Expanded AI - person %d goes for downed player %d\n", person, vi);
+        return;
+    }
+
+    // ---- bodies, when no living player is close
+    if (livingHumanWithin(P, 100)) {
+        return;
+    }
+    int body = -1, knifeBody = -1;
+    float bodyD = 225, knifeD = 100;
+    for (unsigned j = 0; j < Person::players.size(); j++) {
+        Person& B = *Person::players[j];
+        if ((int)j == person || !B.skeleton.free) {
+            continue;
+        }
+        const float d = dist2(B.coords, P.coords);
+        if (B.dead && B.isPlayerControlled() && d < bodyD) {
+            body = j;
+            bodyD = d;
+        }
+        if (dbg && B.dead && B.num_weapons > 0 && B.weaponstuck == -1 && getenv("LUGARUEX_TEST_AIDEBUG")[0] == 's') {
+            // test: the body lies on its knife
+            B.weaponstuck = 0;
+            B.weaponstuckwhere = B.skeleton.forward.y < 0 ? 1 : 0;
+            printf("EXTEST body %d now lies on its knife\n", j);
+        }
+        if (B.num_weapons > 0 && B.dead && d < knifeD) { // anyone's body
+            knifeBody = j;
+            knifeD = d;
+        }
+    }
+    // a knife stuck in a body: an unarmed rabbit sometimes goes to get it (kicking the body
+    // over first when it lies on it)
+    if (knifeBody >= 0 && !P.hasWeapon() && P.num_weapons == 0 && P.creature == rabbittype && AIChance(.3f * rate())) {
+        P.exAiPlan = kKnife;
+        P.exAiPlanOn = knifeBody;
+        P.exAiPlanTime = 7;
+        printf("LugaruEX: Expanded AI - person %d goes to get the knife in body %d\n", person, knifeBody);
+        return;
+    }
+    // a player it killed: sometimes check the body, a few times, now and then for no reason
+    if (body >= 0) {
+        if (P.exAiBodyOf != body) {
+            P.exAiBodyOf = body;
+            const float chance = difficulty <= 0 ? .3f : difficulty == 1 ? .5f : .75f;
+            P.exAiBodyLeft = (float)(rand() % 1000) < chance * 1000 ? 1 + rand() % (2 + std::max(0, difficulty)) : 0;
+            P.exAiBodyWait = .6f + (float)(rand() % 250) / 100.f;
+            if (P.exAiBodyLeft) {
+                printf("LugaruEX: Expanded AI - person %d will check body %d %d times\n", person, body, P.exAiBodyLeft);
+            }
+        }
+        if (P.exAiBodyLeft > 0 && P.exAiBodyWait <= 0) {
+            P.exAiPlan = kBody;
+            P.exAiPlanOn = body;
+            P.exAiPlanTime = 6;
+        }
+    }
+}
+
+bool ExpandedAIKeepsVictim(Person& p)
+{
+    const int a = p.animTarget;
+    if (valid(p.exAiBody) && Animation::animations[a].attack != neutral &&
+        (a == crouchstabanim || a == swordgroundstabanim || a == staffgroundsmashanim || a == dropkickanim || a == killanim ||
+         a == sneakattackanim || a == knifesneakattackanim || a == swordsneakattackanim || a == knifefollowanim)) {
+        p.victim = Person::players[p.exAiBody];
+        return true;
+    }
+    p.exAiBody = -1;
+    return false;
 }
 
 bool ExpandedAIWallJump(const Person& p)

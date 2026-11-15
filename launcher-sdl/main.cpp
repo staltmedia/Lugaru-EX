@@ -65,7 +65,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.5.6"
+#define LUGARUEX_VERSION "0.5.7"
 
 namespace
 {
@@ -2363,6 +2363,9 @@ void TabMultiplayer(float s)
     ImGui::SameLine();
     ModeButton("Connect", 2, 110 * s);
 
+    if (g_mpSel == 0) {
+        ImGui::Checkbox("Expanded AI", &g_expandedAI); // (the same setting as in the Host options)
+    }
     if (g_mpSel == 1) {
         const AdminStatus& a = g_link.st;
         std::string t;

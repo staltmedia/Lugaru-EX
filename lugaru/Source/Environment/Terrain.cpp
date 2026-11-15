@@ -408,6 +408,26 @@ void Terrain::UpdateVertexArray(int whichx, int whichy)
             triangles[(i * (size - 1) * 2) + (j * 2) + 1][2].z = j * scale + 1 * scale;
         }
     }
+    // LugaruEX lighting: each vertex's smooth normal and the sun term DoShadows baked into its
+    // colour (green channel: colour = sun * term + ambient, clamped), for the surface pass
+    {
+        const size_t total = sizeof(vArray) / sizeof(vArray[0]) / 9 * 4;
+        if (exNArray.size() != total) {
+            exNArray.assign(total, 0.f);
+        }
+        const int start = whichx * patch_elements + whichy * patch_elements * subdivision;
+        const int count = numtris[whichx][whichy] * 3;
+        for (int v = 0; v < count; v++) {
+            const GLfloat* p = &vArray[start + v * 9];
+            const int ii = std::max(0, std::min(size - 1, (int)lroundf(p[0] / scale)));
+            const int jj = std::max(0, std::min(size - 1, (int)lroundf(p[2] / scale)));
+            GLfloat* o = &exNArray[(start / 9 + v) * 4];
+            o[0] = normals[ii][jj].x;
+            o[1] = normals[ii][jj].y;
+            o[2] = normals[ii][jj].z;
+            o[3] = light.color[1] > .001f ? std::max(0.f, std::min(1.f, (p[4] - light.ambient[1]) / light.color[1])) : 1.f;
+        }
+    }
 }
 
 // LugaruEX: the terrain's random detail (snow and desert carve it into the heights)
@@ -1061,6 +1081,11 @@ void Terrain::draw(int layer)
                         EX::SetLodBias(blurness);
                     } else if (environment == desertenvironment) {
                         EX::SetLodBias(0);
+                    }
+                    if (!layer && !exNArray.empty() && EX::LightingRecordingTerrain()) {
+                        // (every patch once, whichever layers draw it)
+                        const int start = i * patch_elements + j * patch_elements * subdivision;
+                        EX::LightingRecordTerrain(&vArray[start], &exNArray[start / 9 * 4], numtris[i][j] * 3);
                     }
                     if (!layer && textureness[i][j] != allsecond) {
                         drawpatch(i, j, opacity);

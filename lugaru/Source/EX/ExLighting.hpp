@@ -49,6 +49,10 @@ enum
 void LightingDrawKind(int kind); // what the next models drawn are (LK_NONE = not recorded)
 void LightingRecordDraw(const float* vArray, int vertices, bool colorLayout, unsigned tex, const unsigned short* idx = nullptr); // Model::draw / drawdifftex (idx: vertices = index count)
 bool LightingRecording(); // models drawn now are recorded (Enhanced)
+/** Terrain::draw: one ground patch (vertices of 9 floats: xyz rgba uv; n: 4 floats each =
+ * smooth normal + the sun term the game baked into its colour), drawn with the camera matrix */
+bool LightingRecordingTerrain();
+void LightingRecordTerrain(const float* v, const float* n, int vertices);
 // the next recorded draw's world matrix and whether the game lights it (saves asking the driver)
 void LightingNextDraw(const float* world, bool lit);
 /** this frame uses real sun shadows: the old blob shadows are not drawn */

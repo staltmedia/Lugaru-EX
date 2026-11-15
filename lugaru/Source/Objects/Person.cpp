@@ -6000,15 +6000,7 @@ int Person::DrawSkeleton()
             calcrot = 1;
         }
 
-        // LugaruEX first person: in the view that looks through this character's eyes it is
-        // drawn without its head (the game's own headless model); other views see it whole
-        const bool exNoHead = EX::FirstPersonActive(id);
-        if (exNoHead != exHeadHidden) {
-            exHeadHidden = exNoHead;
-            updatedelay = 0; // (rebuild the mesh now)
-            normalsupdatedelay = 0;
-        }
-        if (headless || exNoHead) {
+        if (headless) {
             headmorphness = 0;
             headmorphstart = 6;
             headmorphend = 6;

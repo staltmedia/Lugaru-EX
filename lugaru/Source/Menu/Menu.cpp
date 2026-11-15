@@ -54,6 +54,19 @@ extern bool winfreeze;
 
 extern void toggleFullscreen();
 
+// LugaruEX: a level that didn't load (a mod campaign naming a map it doesn't have, a
+// missing challenge) leaves the player on the main menu; the menu's level starts used to
+// go on into the half-loaded level and crashed there
+static void exLevelMissing()
+{
+    gameon = 0;
+    mainmenu = 1;
+    loading = 0;
+    stillloading = 0;
+    visibleloading = false;
+    Menu::Load();
+}
+
 int entername = 0;
 std::string newusername = "";
 unsigned newuserselected = 0;
@@ -557,7 +570,10 @@ void Menu::startChallengeLevel(int selected)
     } else {
         LoadStuff();
     }
-    LoadLevel(selected);
+    if (!LoadLevel(selected)) {
+        exLevelMissing();
+        return;
+    }
     campaign = 0;
 
     mainmenu = 0;
@@ -827,7 +843,10 @@ void Menu::Tick()
                         } else {
                             LoadStuff();
                         }
-                        LoadLevel(-1);
+                        if (!LoadLevel(-1)) {
+                            exLevelMissing();
+                            break;
+                        }
 
                         mainmenu = 0;
                         gameon = 1;
@@ -1091,6 +1110,10 @@ bool Menu::startLevelByName(const std::string& name, bool tutorial)
         LoadStuff();
     }
     bool ok = LoadLevel(name, tutorial); // LugaruEX: the tutorial runs in tutorial mode (online guests too)
+    if (!ok) {
+        exLevelMissing();
+        return false;
+    }
     campaign = 0;
     mainmenu = 0;
     gameon = 1;
@@ -1125,7 +1148,10 @@ void Menu::startCampaignLevel(int idx, bool fromTick)
     actuallevel = idx;
     visibleloading = true;
     stillloading = 1;
-    LoadLevel(campaignlevels[actuallevel].mapname.c_str());
+    if (!LoadLevel(campaignlevels[actuallevel].mapname.c_str())) {
+        exLevelMissing();
+        return;
+    }
     campaign = 1;
     mainmenu = 0;
     gameon = 1;

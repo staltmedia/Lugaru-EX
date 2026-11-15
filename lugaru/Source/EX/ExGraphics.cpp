@@ -20,6 +20,11 @@ the Free Software Foundation; either version 2 of the License, or
 #include <cstdio>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <SDL_syswm.h>
+#include <windows.h>
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
 #endif
@@ -37,6 +42,15 @@ namespace EX
 static float maxAniso = 0;
 static int g_refresh = 0;
 static int g_extraRows = 0; // borderless: rows past the monitor's bottom edge
+
+// test runs (LUGARUEX_TEST_NOINPUT or LUGARUEX_TEST_BACKGROUND): the window opens behind
+// everything, never takes the keyboard focus and never grabs or hides the mouse, so
+// automated runs don't get in the way of whoever is using the PC
+bool TestBackground()
+{
+    static const bool bg = getenv("LUGARUEX_TEST_BACKGROUND") || getenv("LUGARUEX_TEST_NOINPUT");
+    return bg;
+}
 
 int BorderlessExtraRows()
 {
@@ -60,6 +74,11 @@ void PreWindowGLAttributes(int msaa)
 static SDL_Window* tryCreate(int& width, int& height, bool grabInput, SDL_GLContext* outCtx, int msaa)
 {
     PreWindowGLAttributes(msaa);
+    if (TestBackground()) {
+        cfg.displayMode = DISPLAY_WINDOWED; // (a test never takes over the screen)
+        grabInput = false;
+        SDL_SetHint(SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN, "1");
+    }
 
     int display = cfg.monitor;
     if (display < 0 || display >= SDL_GetNumVideoDisplays()) {
@@ -139,6 +158,15 @@ static SDL_Window* tryCreate(int& width, int& height, bool grabInput, SDL_GLCont
         fprintf(stderr, "LugaruEX: SDL_CreateWindow(%dx%d msaa=%d) failed: %s\n", width, height, msaa, SDL_GetError());
         return NULL;
     }
+#ifdef _WIN32
+    if (TestBackground()) {
+        SDL_SysWMinfo wm;
+        SDL_VERSION(&wm.version);
+        if (SDL_GetWindowWMInfo(win, &wm)) {
+            SetWindowPos(wm.info.win.window, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+#endif
 
     if (cfg.displayMode == DISPLAY_FULLSCREEN) {
         // exact size; the requested refresh rate, else the highest one available

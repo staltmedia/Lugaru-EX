@@ -17,6 +17,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "EX/ExLocal.hpp"
 #include "Game.hpp"
 #include "Menu/Menu.hpp"
+#include "Tutorial.hpp"
 #include "Utils/Input.hpp"
 
 #include <algorithm>
@@ -465,9 +466,160 @@ bool PadRead(const std::string& id, PadInput& o)
     return true;
 }
 
+// ---------------------------------------------------------------- which input player 1 uses
+// (for texts that name buttons: the tutorial). Whatever was used last wins; with a controller
+// connected and nothing pressed yet, the controller.
+static Uint32 g_p1PadTime = 0, g_p1KeyTime = 0;
+
+void NoteKeyboardMouse()
+{
+    g_p1KeyTime = SDL_GetTicks() + 1;
+}
+
+static bool p1PadBusy(SDL_GameController* gc)
+{
+    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
+        if (SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)b)) {
+            return true;
+        }
+    }
+    const SDL_GameControllerAxis axes[] = { SDL_CONTROLLER_AXIS_LEFTX, SDL_CONTROLLER_AXIS_LEFTY, SDL_CONTROLLER_AXIS_RIGHTX,
+                                            SDL_CONTROLLER_AXIS_RIGHTY, SDL_CONTROLLER_AXIS_TRIGGERLEFT, SDL_CONTROLLER_AXIS_TRIGGERRIGHT };
+    for (auto a : axes) {
+        if (abs(SDL_GameControllerGetAxis(gc, a)) > 12000) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static SDL_GameController* viewPad()
+{
+    SDL_GameController* gc = activePad();
+    if (!gc && !g_pads.empty()) {
+        gc = g_pads.front().gc;
+    }
+    return gc;
+}
+
+bool ViewUsesPad()
+{
+    static const char* force = getenv("LUGARUEX_TEST_PADTEXT"); // test hook: 1 = controller texts, 0 = keyboard
+    if (force) {
+        return atoi(force) != 0;
+    }
+    if (ViewSlot() > 0) {
+        return true; // players 2 and up always play on a controller
+    }
+    if (!activePad()) {
+        return false;
+    }
+    return g_p1PadTime >= g_p1KeyTime;
+}
+
+// a button's name as printed on that kind of controller
+static std::string buttonName(int code)
+{
+    SDL_GameController* gc = viewPad();
+    const SDL_GameControllerType t = gc ? SDL_GameControllerGetType(gc) : SDL_CONTROLLER_TYPE_UNKNOWN;
+    static const char* forceType = getenv("LUGARUEX_TEST_PADTYPE"); // test hook: xbox | ps | switch
+    const bool ps = forceType ? strcmp(forceType, "ps") == 0 : (t == SDL_CONTROLLER_TYPE_PS3 || t == SDL_CONTROLLER_TYPE_PS4 || t == SDL_CONTROLLER_TYPE_PS5);
+    const bool sw = forceType ? strcmp(forceType, "switch") == 0 : (t == SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO || t == SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR);
+    switch (code) {
+        case PAD_LT:
+            return ps ? "L2" : sw ? "ZL" : "LT";
+        case PAD_RT:
+            return ps ? "R2" : sw ? "ZR" : "RT";
+        case SDL_CONTROLLER_BUTTON_A:
+            return ps ? "Cross" : "A";
+        case SDL_CONTROLLER_BUTTON_B:
+            return ps ? "Circle" : "B";
+        case SDL_CONTROLLER_BUTTON_X:
+            return ps ? "Square" : "X";
+        case SDL_CONTROLLER_BUTTON_Y:
+            return ps ? "Triangle" : "Y";
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+            return ps ? "L1" : sw ? "L" : "LB";
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+            return ps ? "R1" : sw ? "R" : "RB";
+        case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+            return ps ? "L3" : "the left stick";
+        case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
+            return ps ? "R3" : "the right stick";
+        case SDL_CONTROLLER_BUTTON_BACK:
+            return ps ? (t == SDL_CONTROLLER_TYPE_PS5 ? "Create" : "Share") : sw ? "-" : "View";
+        case SDL_CONTROLLER_BUTTON_START:
+            return ps ? "Options" : sw ? "+" : "Menu";
+        case SDL_CONTROLLER_BUTTON_GUIDE:
+            return ps ? "PS" : sw ? "Home" : "Guide";
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            return "D-pad up";
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            return "D-pad down";
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            return "D-pad left";
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            return "D-pad right";
+        default:
+            return "?";
+    }
+}
+
+std::string KeyText(int key)
+{
+    if (!ViewUsesPad()) {
+        return Input::keyToChar(key);
+    }
+    if (key == Game::jumpkey) {
+        return buttonName(g_binds.jump);
+    }
+    if (key == Game::crouchkey) {
+        return buttonName(g_binds.crouch);
+    }
+    if (key == Game::attackkey) {
+        return buttonName(g_binds.attack);
+    }
+    if (key == Game::drawkey) {
+        return buttonName(g_binds.draw);
+    }
+    if (key == Game::throwkey) {
+        return buttonName(g_binds.thrw);
+    }
+    return Input::keyToChar(key);
+}
+
+const char* KeyWord()
+{
+    return ViewUsesPad() ? "button" : "key";
+}
+
+std::string PauseText()
+{
+    return ViewUsesPad() ? buttonName(g_binds.pause) : "escape";
+}
+
+std::string SkipText()
+{
+    return ViewUsesPad() ? buttonName(SDL_CONTROLLER_BUTTON_RIGHTSTICK) : "'tab'";
+}
+
 void PadContribute(bool* down, int numKeys)
 {
     g_p1PadWalk = false;
+    {
+        // which input player 1 used last (keyboard keys and mouse buttons are in `down` already)
+        bool keys = false;
+        for (int k = 1; k < numKeys && !keys; k++) {
+            keys = down[k];
+        }
+        if (keys) {
+            g_p1KeyTime = SDL_GetTicks() + 1;
+        }
+        SDL_GameController* p1 = activePad();
+        if (p1 && (p1PadBusy(p1) || g_p1PadTime == 0)) {
+            g_p1PadTime = SDL_GetTicks() + 1;
+        }
+    }
     auto set = [&](int k) {
         if (k > 0 && k < numKeys) {
             down[k] = true;
@@ -501,6 +653,9 @@ void PadContribute(bool* down, int numKeys)
     }
     if (held(gc, g_binds.draw)) {
         set(Game::drawkey);
+    }
+    if (Tutorial::active && held(gc, SDL_CONTROLLER_BUTTON_RIGHTSTICK)) {
+        set(SDL_SCANCODE_TAB); // (clicking the right stick skips a tutorial step, like Tab)
     }
     if (held(gc, g_binds.thrw)) {
         set(Game::throwkey);

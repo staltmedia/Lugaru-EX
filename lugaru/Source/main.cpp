@@ -217,6 +217,9 @@ SDL_bool sdlEventProc(const SDL_Event& e)
             if (!noInput) {
                 pendingMouseH += e.motion.xrel;
                 pendingMouseV += e.motion.yrel;
+                if (abs(e.motion.xrel) + abs(e.motion.yrel) > 3) {
+                    EX::NoteKeyboardMouse(); // (texts name keyboard keys again)
+                }
             }
         } break;
 
@@ -343,8 +346,10 @@ bool SetUp()
     EX::InitGLExtras();
     EX::LightingInit();
 
-    SDL_ShowCursor(0);
-    if (!commandLineOptions[NOMOUSEGRAB].last()->type()) {
+    if (!EX::TestBackground()) {
+        SDL_ShowCursor(0);
+    }
+    if (!commandLineOptions[NOMOUSEGRAB].last()->type() && !EX::TestBackground()) {
         SDL_SetRelativeMouseMode(SDL_TRUE);
     }
 

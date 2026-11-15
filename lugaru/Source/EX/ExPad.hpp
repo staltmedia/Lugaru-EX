@@ -42,7 +42,6 @@ struct PadInput
     bool jump = false, crouch = false, attack = false, draw = false, thrw = false;
     bool pause = false, lighting = false;
     bool walk = false;          // walk instead of run (a light push of the left stick; Ctrl on a keyboard)
-    bool firstPerson = false;   // (online) this player looks through its eyes: the host turns its body at the limit
     float lookX = 0, lookY = 0; // right stick, shaped, -1..1
 };
 /** player 1 walks: Ctrl held, or player 1's controller stick pushed only lightly */
@@ -55,6 +54,15 @@ bool PadRead(const std::string& id, PadInput& out);
 /** vibrate a controller: strength 0..1 for ms milliseconds (a weaker rumble never cuts a stronger one short) */
 void PadRumble(const std::string& id, float strength, int ms);
 float PadLookSpeed();
+
+/** texts that name inputs (the tutorial): does the player of the view being drawn use a
+    controller (player 1: whatever they used last), and the name of a game key there */
+bool ViewUsesPad();
+std::string KeyText(int key);   // a bound action: its button on that controller, else the key
+const char* KeyWord();          // "button" / "key"
+std::string PauseText();        // the pause button / "escape"
+std::string SkipText();         // the tutorial skip: right stick click / 'tab'
+void NoteKeyboardMouse();       // the mouse moved (player 1 is on keyboard and mouse)
 
 /** keyboard key (SDL scancode) that cycles lighting looks, default R */
 int LightingKey();

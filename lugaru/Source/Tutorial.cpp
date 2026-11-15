@@ -19,6 +19,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "Tutorial.hpp"
+#include "EX/ExPad.hpp"
 #include "EX/ExConfig.hpp"
 #include "Audio/Sounds.hpp"
 #include "Audio/openal_wrapper.hpp"
@@ -798,9 +799,14 @@ void Tutorial::DrawTextInfo()
             string = "BASIC MOVEMENT:";
             break;
         case 3:
-            string = "You can move the mouse to rotate the camera.";
+            string = EX::ViewUsesPad() ? "You can move the right stick to rotate the camera." : "You can move the mouse to rotate the camera.";
             break;
         case 4:
+            if (EX::ViewUsesPad()) {
+                string = "Try using the left stick to move around.";
+                string2 = "All movement is relative to the camera.";
+                break;
+            }
             string = std::string("Try using the ") + Input::keyToChar(Game::forwardkey);
             string += std::string(", ") + Input::keyToChar(Game::leftkey);
             string += std::string(", ") + Input::keyToChar(Game::backkey);
@@ -808,31 +814,31 @@ void Tutorial::DrawTextInfo()
             string2 = "All movement is relative to the camera.";
             break;
         case 5:
-            string = std::string("Please press ") + Input::keyToChar(Game::jumpkey) + " to jump.";
+            string = std::string("Please press ") + EX::KeyText(Game::jumpkey) + " to jump.";
             string2 = "You can hold it longer to jump higher.";
             break;
         case 6:
-            string = std::string("You can press ") + Input::keyToChar(Game::crouchkey) + " to crouch.";
+            string = std::string("You can press ") + EX::KeyText(Game::crouchkey) + " to crouch.";
             string2 = "You can jump higher from a crouching position.";
             break;
         case 7:
-            string = std::string("While running, you can press ") + Input::keyToChar(Game::crouchkey) + " to roll.";
+            string = std::string("While running, you can press ") + EX::KeyText(Game::crouchkey) + " to roll.";
             break;
         case 8:
             string = "While crouching, you can sneak around silently";
-            string2 = "using the movement keys.";
+            string2 = EX::ViewUsesPad() ? "using the left stick." : "using the movement keys.";
             break;
         case 9:
-            string = "Release the crouch key while sneaking and hold the movement keys";
+            string = EX::ViewUsesPad() ? "Release the crouch button while sneaking and keep pushing the stick" : "Release the crouch key while sneaking and hold the movement keys";
             string2 = "to run animal-style.";
             break;
         case 10:
             string = "ADVANCED MOVEMENT:";
             break;
         case 11:
-            string = std::string("When you jump at a wall, you can hold ") + Input::keyToChar(Game::jumpkey) + " again";
+            string = std::string("When you jump at a wall, you can hold ") + EX::KeyText(Game::jumpkey) + " again";
             string2 = "during impact to perform a walljump.";
-            string3 = "Be sure to use the movement keys to press against the wall";
+            string3 = EX::ViewUsesPad() ? "Be sure to push the left stick against the wall" : "Be sure to use the movement keys to press against the wall";
             break;
         case 12:
             string = "While in the air, you can press crouch to flip.";
@@ -846,7 +852,7 @@ void Tutorial::DrawTextInfo()
             string2 = "in the middle of the training area.";
             break;
         case 15:
-            string = std::string("Press ") + Input::keyToChar(Game::attackkey) + " to attack when you are near an enemy.";
+            string = std::string("Press ") + EX::KeyText(Game::attackkey) + " to attack when you are near an enemy.";
             string2 = "You can punch by standing still near an enemy and attacking.";
             break;
         case 16:
@@ -868,8 +874,8 @@ void Tutorial::DrawTextInfo()
             break;
         case 20:
             string = "Your most powerful individual attack is the rabbit kick.";
-            string2 = std::string("Run at the enemy while holding ") + Input::keyToChar(Game::attackkey) + ", and press";
-            string3 = std::string("the jump key (") + Input::keyToChar(Game::jumpkey) + ") to attack.";
+            string2 = std::string("Run at the enemy while holding ") + EX::KeyText(Game::attackkey) + ", and press";
+            string3 = std::string("the jump ") + EX::KeyWord() + " (" + EX::KeyText(Game::jumpkey) + ") to attack.";
             break;
         case 21:
             string = "This attack is devastating if timed correctly.";
@@ -888,11 +894,11 @@ void Tutorial::DrawTextInfo()
         case 23:
             string = "Another important attack is the wall kick. When an enemy";
             string2 = "is near a wall, perform a walljump nearby and hold";
-            string3 = "the attack key during impact with the wall.";
+            string3 = std::string("the attack ") + EX::KeyWord() + " during impact with the wall.";
             break;
         case 24:
             string = "You can tackle enemies by running at them animal-style";
-            string2 = std::string("and pressing jump (") + Input::keyToChar(Game::jumpkey) + ") or attack (" + Input::keyToChar(Game::attackkey) + ").";
+            string2 = std::string("and pressing jump (") + EX::KeyText(Game::jumpkey) + ") or attack (" + EX::KeyText(Game::attackkey) + ").";
             string3 = "This is especially useful when they are running away.";
             break;
         case 25:
@@ -908,7 +914,7 @@ void Tutorial::DrawTextInfo()
         case 28:
             string = "If you attack, you will notice that the enemy now sometimes";
             string2 = "catches your attack and uses it against you. Hold";
-            string3 = std::string("crouch (") + Input::keyToChar(Game::crouchkey) + ") after attacking to escape from reversals.";
+            string3 = std::string("crouch (") + EX::KeyText(Game::crouchkey) + ") after attacking to escape from reversals.";
             break;
         case 29:
             string = "Try escaping from two more reversals in a row.";
@@ -917,7 +923,7 @@ void Tutorial::DrawTextInfo()
             string = "Good!";
             break;
         case 31:
-            string = std::string("To reverse an attack, you must tap crouch (") + Input::keyToChar(Game::crouchkey) + ") during the";
+            string = std::string("To reverse an attack, you must tap crouch (") + EX::KeyText(Game::crouchkey) + ") during the";
             string2 = "enemy's attack. You must also be close to the enemy;";
             string3 = "this is especially important against armed opponents.";
             break;
@@ -952,11 +958,11 @@ void Tutorial::DrawTextInfo()
             break;
         case 40:
             string = "Stand, roll or handspring over the knife";
-            string2 = std::string("while pressing ") + Input::keyToChar(Game::throwkey) + " to pick it up.";
-            string3 = "You can crouch and press the same key to drop it again.";
+            string2 = std::string("while pressing ") + EX::KeyText(Game::throwkey) + " to pick it up.";
+            string3 = std::string("You can crouch and press the same ") + EX::KeyWord() + " to drop it again.";
             break;
         case 41:
-            string = std::string("You can equip and unequip weapons using the ") + Input::keyToChar(Game::drawkey) + " key.";
+            string = std::string("You can equip and unequip weapons using the ") + EX::KeyText(Game::drawkey) + " " + EX::KeyWord() + ".";
             string2 = "Sometimes it is best to keep them unequipped to";
             string3 = "prevent enemies from taking them. ";
             break;
@@ -984,7 +990,7 @@ void Tutorial::DrawTextInfo()
             break;
         case 47:
             string = "Long weapons like the sword and staff are also useful for defense;";
-            string2 = "you can parry enemy weapon attacks by pressing the attack key";
+            string2 = std::string("you can parry enemy weapon attacks by pressing the attack ") + EX::KeyWord();
             string3 = "at the right time. Please try parrying the enemy's attacks!";
             break;
         case 48:
@@ -993,7 +999,7 @@ void Tutorial::DrawTextInfo()
             string3 = "spin smash is slower and more powerful.";
             break;
         case 49:
-            string = std::string("When facing an enemy, you can throw the knife with ") + Input::keyToChar(Game::throwkey) + ".";
+            string = std::string("When facing an enemy, you can throw the knife with ") + EX::KeyText(Game::throwkey) + ".";
             string2 = "It is possible to throw the knife while flipping,";
             string3 = "but it is very inaccurate.";
             break;
@@ -1029,8 +1035,8 @@ void Tutorial::DrawTextInfo()
         Game::text->glPrintOutlined(.7, 1, .7, opacity, screenwidth / 2 - 7.6 * p.size() * EX::HudWidth() / 1024 * .8, screenheight / 16 + screenheight * 4 / 5 - 64 * EX::HudWidth() / 1024, p, 1, 1.5 * EX::HudWidth() / 1024 * .8, screenwidth, screenheight);
     }
 
-    string = "Press 'tab' to skip to the next item.";
-    string2 = "Press escape at any time to";
+    string = EX::ViewUsesPad() ? "Click " + EX::SkipText() + " to skip to the next item." : "Press 'tab' to skip to the next item.";
+    string2 = "Press " + EX::PauseText() + " at any time to";
     string3 = "pause or exit the tutorial.";
 
     Game::text->glPrintOutlined(0.5, 0.5, 0.5, 1, screenwidth / 2 - 7.6 * string.size() * EX::HudWidth() / 1024 * .8, 0 + screenheight * 1 / 10, string, 1, 1.5 * EX::HudWidth() / 1024 * .8, screenwidth, screenheight);

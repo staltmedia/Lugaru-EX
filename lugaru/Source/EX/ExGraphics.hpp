@@ -25,6 +25,8 @@ void PreWindowGLAttributes(int msaa);
  * to the actual drawable size. Returns NULL on failure.
  */
 SDL_Window* CreateGameWindow(int& width, int& height, bool grabInput, SDL_GLContext* outCtx);
+/** a test run that stays out of the way: window behind everything, no focus, mouse left alone */
+bool TestBackground();
 
 /**
  * Rows the borderless window reaches past the bottom of its monitor (0 or 1): an

@@ -352,8 +352,8 @@ void Game::cmd_dispatch(const string cmd)
     for (char& ch : word) {
         ch = (char)tolower((unsigned char)ch);
     }
-    // view-only commands work for everyone (they change nothing in the shared game)
-    const bool viewOnly = word == "firstperson" || word == "thirdperson" || word == "fps";
+    // the fps counter works for everyone (it changes nothing in the shared game)
+    const bool viewOnly = word == "fps";
     if (EX::NetIsGuest() && !viewOnly) {
         // LugaruEX: online, only the host uses game commands (the game runs on the host's PC)
         for (int k = 14; k >= 1; k--) {
@@ -1872,6 +1872,20 @@ void Game::ProcessDevInput()
                         Person::players[j]->oldcoords = Person::players[j]->realoldcoords = Person::players[j]->coords;
                     }
                 }
+                // ",partner@X": the first other player stands X in front of player 1, on the same line
+                if (const char* pa = strstr(foeEnv, "partner@")) {
+                    for (unsigned j = 1; j < Person::players.size(); j++) {
+                        if (Person::players[j]->isPlayerControlled()) {
+                            Person& q = *Person::players[j];
+                            q.coords = p1.coords + fwd * (float)atof(pa + 8);
+                            q.coords.y = std::max(p1.coords.y, terrain.getHeight(q.coords.x, q.coords.z));
+                            q.oldcoords = q.realoldcoords = q.coords;
+                            q.yaw = q.targetyaw = roughDirectionTo(q.coords, p1.coords);
+                            printf("EXTEST partner: person %d %.1f in front of player 1\n", (int)j, atof(pa + 8));
+                            break;
+                        }
+                    }
+                }
                 // ",knife" / ",sword" / ",staff": player 1 starts holding one
                 const int give = strstr(foeEnv, "knife") ? knife : strstr(foeEnv, "sword") ? sword : strstr(foeEnv, "staff") ? staff : 0;
                 if (give && p1.creature != wolftype) {
@@ -1893,12 +1907,18 @@ void Game::ProcessDevInput()
 #include "Animation/Animation.def"
 #undef DECLARE_ANIM
             };
-            static int last[2] = { -1, -1 }, lastFree[2] = { 0, 0 };
-            static float lastDmg[2] = { 0, 0 };
-            const int who[2] = { 0, foe };
-            for (int w = 0; w < 2; w++) {
+            static int last[3] = { -1, -1, -1 }, lastFree[3] = { 0, 0, 0 };
+            static float lastDmg[3] = { 0, 0, 0 };
+            int partner = 0;
+            for (unsigned j = 1; j < Person::players.size() && !partner; j++) {
+                if (Person::players[j]->isPlayerControlled()) {
+                    partner = (int)j;
+                }
+            }
+            const int who[3] = { 0, foe, partner };
+            for (int w = 0; w < (partner ? 3 : 2); w++) {
                 Person& p = *Person::players[who[w]];
-                const char* label = w ? "foe" : "p1";
+                const char* label = w == 2 ? "p2" : w ? "foe" : "p1";
                 if (p.animTarget != last[w]) {
                     last[w] = p.animTarget;
                     const int n = (int)(sizeof(names) / sizeof(names[0]));
@@ -1987,13 +2007,33 @@ void Game::ProcessDevInput()
             printf("EXTEST knife now %.2f over the ground\n", std::min(w.position.y, w.tippoint.y) - terrain.getHeight(w.position.x, w.position.z));
         }
     }
-    // test hook LUGARUEX_TEST_PEOPLE=s: everyone in the level at that time (pose type, place,
-    // ground under them, state) - missing / buried characters
+    // test hook LUGARUEX_TEST_CONSOLE=s: the console opens at that time (and stays open)
     {
-        static const float at = getenv("LUGARUEX_TEST_PEOPLE") ? (float)atof(getenv("LUGARUEX_TEST_PEOPLE")) : -1.f;
+        static const float at = getenv("LUGARUEX_TEST_CONSOLE") ? (float)atof(getenv("LUGARUEX_TEST_CONSOLE")) : -1.f;
         static bool done = false;
         if (at >= 0 && !done && leveltime > at) {
             done = true;
+            console = true;
+            printf("EXTEST console opened (leveltime %.1f)\n", leveltime);
+        }
+    }
+    // test hook LUGARUEX_TEST_PEOPLE=s: everyone in the level at that time (pose type, place,
+    // ground under them, state) - missing / buried characters
+    {
+        // (several times: LUGARUEX_TEST_PEOPLE=1,6 - each line then starts with the time)
+        static std::vector<float> ats;
+        static size_t next = 0;
+        static bool parsed = false;
+        if (!parsed) {
+            parsed = true;
+            for (const char* s = getenv("LUGARUEX_TEST_PEOPLE"); s && *s;) {
+                ats.push_back((float)atof(s));
+                s = strchr(s, ',');
+                s = s ? s + 1 : nullptr;
+            }
+        }
+        if (next < ats.size() && leveltime > ats[next]) {
+            next++;
             for (size_t i = 0; i < Person::players.size(); i++) {
                 Person& p = *Person::players[i];
                 if (p.isPlayerControlled() && i > 0) {
@@ -2007,8 +2047,23 @@ void Game::ProcessDevInput()
                     printf("EXTEST coop %d: %.1f from player 1, nearest enemy %.1f, %.2f over the ground\n", (int)i,
                            std::sqrt(distsq(&p.coords, &Person::players[0]->coords)), nearEnemy, p.coords.y - terrain.getHeight(p.coords.x, p.coords.z));
                 }
-                printf("EXTEST person %d: %s active=%d at %.2f,%.2f,%.2f ground %.2f free=%d dead=%d ai=%d anim=%d/%d scale %.3f yaw %.0f (camera %.0f)\n", (int)i,
-                       p.creature == wolftype ? "wolf" : "rabbit", p.howactive, p.coords.x, p.coords.y, p.coords.z, terrain.getHeight(p.coords.x, p.coords.z),
+                // an object right over the head (buried under a block) / under the feet
+                bool roof = false, floor = false;
+                for (const auto& o : Object::objects) {
+                    if (o->type == treeleavestype || o->type == bushtype || o->type == firetype) {
+                        continue;
+                    }
+                    XYZ a = p.coords, b = p.coords, hit;
+                    a.y += p.scale * 3;
+                    b.y += 12;
+                    roof = roof || o->model.LineCheck(&a, &b, &hit, &o->position, &o->yaw) != -1;
+                    a = b = p.coords;
+                    a.y += .5f;
+                    b.y -= 1.2f;
+                    floor = floor || o->model.LineCheck(&a, &b, &hit, &o->position, &o->yaw) != -1;
+                }
+                printf("EXTEST t%.0f person %d: %s active=%d at %.2f,%.2f,%.2f ground %.2f roof=%d floor=%d free=%d dead=%d ai=%d anim=%d/%d scale %.3f yaw %.0f (camera %.0f)\n", leveltime, (int)i,
+                       p.creature == wolftype ? "wolf" : "rabbit", p.howactive, p.coords.x, p.coords.y, p.coords.z, terrain.getHeight(p.coords.x, p.coords.z), roof, floor,
                        p.skeleton.free, p.dead, p.aitype, p.animCurrent, p.animTarget, p.scale, p.yaw, -yaw + 180);
             }
         }
@@ -3595,28 +3650,40 @@ void doPlayerCollisions()
                                                                          Person::players[i]->skeleton.free) &&
                                                                         (Person::players[k]->animTarget != getupfrombackanim && Person::players[k]->animTarget != getupfromfrontanim ||
                                                                          Person::players[k]->skeleton.free)) {
-                                                                        // LugaruEX: the original rule with "player 1" read as "a human player"
-                                                                        // (k < i, so a human is k when one is in the pair). A standing player is
-                                                                        // never bowled over by a flying body: only while ragdolling from their own
-                                                                        // jump kick (rabbitkickragdoll). 0.4.0 let flying bodies knock over any
-                                                                        // player not mid-attack, so the enemy a jump kick sent flying knocked
-                                                                        // the kicker down (and hurt them) as soon as the kick ended.
+                                                                        // LugaruEX: bodies hit everyone, players too - a kicked or thrown body, a
+                                                                        // knocked-over one, a player's own ragdoll (a missed jump kick) - as they
+                                                                        // hit enemies in the original; only targeting leaves partners alone. A
+                                                                        // player is never hit by the body they just hit themselves (nor it by them)
+                                                                        // while it flies: the enemy a jump kick sends off used to knock the kicker
+                                                                        // down as the kick ended (exSparedBy).
                                                                         const bool hk = k == 0 || Person::players[k]->isPlayerControlled();
                                                                         const bool hi = i == 0 || Person::players[i]->isPlayerControlled();
-                                                                        if ((((!hk && findLengthfast(&rotatetarget) > 150 ||
-                                                                               hk && findLengthfast(&rotatetarget) > 50 && Person::players[k]->rabbitkickragdoll) &&
-                                                                              normaldotproduct(rotatetarget, Person::players[k]->coords - Person::players[i]->coords) > 0) &&
-                                                                             (hk ||
-                                                                              Person::players[i]->skeleton.oldfree == 1 && Animation::animations[Person::players[k]->animCurrent].attack == neutral ||
-                                                                              /*i!=0&&*/ Person::players[k]->skeleton.oldfree == 1 && Animation::animations[Person::players[i]->animCurrent].attack == neutral)) ||
-                                                                            (Person::players[i]->animTarget == jumpupanim || Person::players[i]->animTarget == jumpdownanim || Person::players[i]->isFlip()) &&
-                                                                                (Person::players[k]->animTarget == jumpupanim || Person::players[k]->animTarget == jumpdownanim || Person::players[k]->isFlip()) &&
-                                                                                (hk || hi) && // (the original: player 1 only)
-                                                                                !Person::players[i]->skeleton.oldfree && !Person::players[k]->skeleton.oldfree) {
-                                                                            //If hit by body
-                                                                            if (((!hi || Person::players[i]->skeleton.free) && (!hk || Person::players[k]->skeleton.free)) ||
-                                                                                (Animation::animations[Person::players[i]->animTarget].height == highheight &&
-                                                                                 Animation::animations[Person::players[k]->animTarget].height == highheight)) {
+                                                                        Person& pi = *Person::players[i];
+                                                                        Person& pk = *Person::players[k];
+                                                                        if (hk && pk.hasvictim && pk.victim.get() == &pi && pi.skeleton.free) {
+                                                                            pi.exSparedBy = &pk;
+                                                                            pi.exSparedUntil = leveltime + 1.5f;
+                                                                        }
+                                                                        if (hi && pi.hasvictim && pi.victim.get() == &pk && pk.skeleton.free) {
+                                                                            pk.exSparedBy = &pi;
+                                                                            pk.exSparedUntil = leveltime + 1.5f;
+                                                                        }
+                                                                        const bool ownHit = (pi.exSparedBy == &pk && leveltime < pi.exSparedUntil) ||
+                                                                                            (pk.exSparedBy == &pi && leveltime < pk.exSparedUntil);
+                                                                        if (!ownHit &&
+                                                                            ((((findLengthfast(&rotatetarget) > 150 ||
+                                                                                hk && findLengthfast(&rotatetarget) > 50 && pk.rabbitkickragdoll) &&
+                                                                               normaldotproduct(rotatetarget, pk.coords - pi.coords) > 0) &&
+                                                                              (hk && pk.rabbitkickragdoll ||
+                                                                               pi.skeleton.oldfree == 1 && Animation::animations[pk.animCurrent].attack == neutral ||
+                                                                               pk.skeleton.oldfree == 1 && Animation::animations[pi.animCurrent].attack == neutral)) ||
+                                                                             (pi.animTarget == jumpupanim || pi.animTarget == jumpdownanim || pi.isFlip()) &&
+                                                                                 (pk.animTarget == jumpupanim || pk.animTarget == jumpdownanim || pk.isFlip()) &&
+                                                                                 (hk || hi) && // (the original: player 1 only)
+                                                                                 !pi.skeleton.oldfree && !pk.skeleton.oldfree)) {
+                                                                            //If hit by body (LugaruEX: a standing player too, like everyone else;
+                                                                            // the original only while player 1 was a ragdoll)
+                                                                            {
                                                                                 if (!Tutorial::active) {
                                                                                     emit_sound_at(heavyimpactsound, Person::players[i]->coords);
                                                                                 }
@@ -3843,7 +3910,11 @@ void Game::Tick()
         }
 
         if (console) {
-            freeze = 1;
+            // LugaruEX: the console only stops the game for a single local player; online and
+            // in split screen everyone else plays on (the keyboard goes to the console: Input::Tick)
+            if (!EX::NetIsHost() && !EX::NetIsGuest() && !EX::LocalSplit()) {
+                freeze = 1;
+            }
 
             inputText(consoletext[0], &consoleselected);
             if (!waiting) {
@@ -4377,24 +4448,6 @@ void Game::Tick()
 
                         Person::players[i]->targetheadyaw = camyaw;
                         Person::players[i]->targetheadpitch = campitch;
-                        // LugaruEX first person: standing, the head follows the camera; at 60
-                        // degrees the body turns with it (a body that never turned left you
-                        // looking over your own shoulder)
-                        Person& fp = *Person::players[i];
-                        if (EX::FirstPersonOf((int)i) && !fp.skeleton.free && !fp.dead && (fp.isIdle() || fp.isCrouch())) {
-                            float rel = 0 - fp.yaw - camyaw + 180;
-                            rel = fmodf(rel, 360.f);
-                            if (rel > 180) {
-                                rel -= 360;
-                            }
-                            if (rel < -180) {
-                                rel += 360;
-                            }
-                            const float lim = 60;
-                            if (rel > lim || rel < -lim) {
-                                fp.yaw = fp.targetyaw = -camyaw + 180 + (rel > 0 ? -lim : lim);
-                            }
-                        }
                     }
                     if (Dialog::inDialog()) {
                         Person::players[i]->targetheadyaw = 180 - roughDirection(Dialog::currentScene().participantfacing[i]);
@@ -5724,11 +5777,14 @@ void Game::TickOnceAfter()
                     actuallevel = campaignlevels[actuallevel].nextlevel.front();
                     visibleloading = true;
                     stillloading = 1;
-                    LoadLevel(campaignlevels[actuallevel].mapname.c_str());
-                    campaign = 1;
-                    mainmenu = 0;
-                    gameon = 1;
-                    pause_sound(stream_menutheme);
+                    if (LoadLevel(campaignlevels[actuallevel].mapname.c_str())) { // (else: back on the main menu)
+                        campaign = 1;
+                        mainmenu = 0;
+                        gameon = 1;
+                        pause_sound(stream_menutheme);
+                    } else {
+                        Menu::Load();
+                    }
 
                     stealthloading = 0;
                 }
@@ -5895,28 +5951,6 @@ static void exCameraUpdate()
             viewer.y = max((double)viewer.y, terrain.getHeight(viewer.x, viewer.z) + .6);
             if (cameraloc.y < terrain.getHeight(cameraloc.x, cameraloc.z)) {
                 cameraloc.y = terrain.getHeight(cameraloc.x, cameraloc.z);
-            }
-            // LugaruEX first person (console "firstperson"): the camera at the eyes, after
-            // every third-person check, so nothing can push it away or hide the view (the
-            // own head isn't drawn in this view: Person::DrawSkeleton)
-            if (EX::FirstPersonActive(EX::ViewPerson())) {
-                Person& vp = *Person::players[EX::ViewPerson()];
-                XYZ eye = vp.jointPos(head);
-                if (vp.skeleton.free) {
-                    // knocked down or dead: a ragdoll's joints are already turned (as its
-                    // held weapons are placed in DrawSkeleton); step out of the head along
-                    // neck -> head so the eye isn't inside its own body
-                    XYZ out = vp.jointPos(head) - vp.jointPos(neck);
-                    float ol = sqrtf(out.x * out.x + out.y * out.y + out.z * out.z);
-                    eye = eye * vp.scale + vp.coords;
-                    if (ol > 1e-4f) { eye += out * (vp.scale * .5f / ol); eye.y += vp.scale * .25f; }
-                    viewer = eye;
-                } else {
-                    eye = DoRotation(DoRotation(DoRotation(eye, 0, 0, vp.tilt), vp.tilt2, 0, 0), 0, vp.yaw, 0) * vp.scale + vp.coords +
-                          vp.currentoffset * (1 - vp.target) * vp.scale + vp.targetoffset * vp.target * vp.scale;
-                    viewer = eye + facing * (vp.scale * .6f); // (the eyes are at the front of the head)
-                }
-                viewer.y = max((double)viewer.y, terrain.getHeight(viewer.x, viewer.z) + .05); // (a body lying face down)
             }
         }
         if (camerashake > .8) {

@@ -1,4 +1,4 @@
-LugaruEX 0.5.3 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.5.4 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -179,8 +179,8 @@ Launcher
     character stays behind as an enemy. Play works again when the game ends.
     In the game the host can do the same in the console (~): kick <name>,
     ban <name>, unban <name> (the start of a name is enough). Only the host
-    can use game commands in an online game (firstperson, thirdperson and
-    fps work for everyone).
+    can use game commands in an online game (fps works for everyone). The
+    console never pauses an online or split-screen game for the others.
   With a controller: D-pad / left stick move between the settings, A
   selects (opens a list, ticks a box), B closes a list, LB / RB switch tabs,
   Start plays.
@@ -310,7 +310,10 @@ Tutorial together
   waits until every player has done it ("2/3 players done"; when you're done
   it says "Done - waiting for the others"). Everyone gets their own knife and
   sword, and the sparring partner goes after whoever still has to do the
-  current step. Tab still skips a step for everyone.
+  current step. Tab (or clicking the right stick) skips a step for everyone.
+  The texts name the buttons of what you play with: a controller's own
+  buttons (Xbox, PlayStation or Switch names) or the keyboard and mouse,
+  switching to whichever player 1 used last.
 
 Controller in game
   Left stick / D-pad move, right stick looks. Default buttons: A jump,
@@ -336,8 +339,10 @@ Bodies, score and time
   The game's own moves on bodies work on a dead partner's body too (drop kick
   it when no fight is on, crouch-stab with a knife, ground-stab with a sword,
   smash with a staff, jump down on it), and every player can stomp bodies.
-  As in the original, a flying body knocks over enemies but not a standing
-  player (a jump kick that lands sends you off in a backflip; a missed one
+  Bodies hit everyone, partners too: a kicked or thrown body, one knocked
+  over, a player's own ragdoll after a missed jump kick. Only aiming leaves
+  partners alone. You are never hit by the body you just hit yourself (a jump
+  kick that lands sends you off in a backflip; a missed one
   drops you), and a thrown knife that hits a partner hurts them like anyone
   (no bonus for it).
   Score works as in the original: going straight on to the next level keeps
@@ -357,11 +362,7 @@ In game
   ~          cycles: developer console -> stats display (fps; online also
              ping, lost snapshots, jitter, delay) -> off. The first time the
              console opens it lists every command (dev tools are always on)
-  Console commands for your own view (everyone, also online guests):
-             firstperson - the camera at your eyes (narrower view, nothing can
-             block it; turning far turns your body; works while down and
-             when watching another player); thirdperson - back to normal;
-             fps - a frame counter top right (fps again hides it)
+  Console fps  a frame counter top right (fps again hides it)
   Shift+K    skip to the next level (challenge or campaign)
   Left Alt + a letter = developer keys, e.g. Alt+M map editor, Alt+B slow
              motion, Alt+H invincible, Alt+N ragdoll, Alt+C free camera

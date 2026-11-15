@@ -419,6 +419,10 @@ public:
     bool exOldAttack = false;
     bool exRealAttack = false;
     bool exWalk = false; // a player asks to walk instead of run (Ctrl / a light stick push)
+    // a body a player just hit (jump kick, throw...) never knocks that player over, nor they it,
+    // while it flies (GameTick person collisions); compared only, never followed
+    const Person* exSparedBy = nullptr;
+    float exSparedUntil = 0;
     int exTarget = 0;
     // score pop-up in the middle of this player's own screen
     int exPopBonus = 0, exPopValue = 0;
@@ -427,7 +431,6 @@ public:
     std::string exSkinPath;
     // custom model folder ("Models/Custom/rabbit/Name/"; "" = the creature's own files)
     std::string exModelDir;
-    bool exHeadHidden = false; // drawn without its head last time (first person, its own view)
     bool exPoseReady = false; // online guest: limb rotations computed at least once
     std::string exOutfit; // the launcher's Clothes choice ("" = the level's own)
     int exSkinState = -1; // free * 4 + dead when the mesh was last skinned

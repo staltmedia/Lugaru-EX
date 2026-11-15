@@ -21,11 +21,14 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Utils/Input.hpp"
 #include "EX/ExNet.hpp"
 #include "EX/ExPad.hpp"
+#include "EX/ExLocal.hpp"
 #include "Game.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+
+extern int mainmenu;
 
 bool keyDown[SDL_NUM_SCANCODES + 6];
 bool keyPressed[SDL_NUM_SCANCODES + 6];
@@ -101,6 +104,15 @@ void Input::Tick()
     }
     if (EX::ChatBlocksKeys()) {
         memset(now, 0, SDL_NUM_SCANCODES); // typing a chat line: the keyboard is the chat's (mouse and pads still play)
+    }
+    if (Game::console && !mainmenu && (EX::NetIsHost() || EX::NetIsGuest() || EX::LocalSplit())) {
+        // the console open in a game that runs on behind it (online, split screen): the
+        // keyboard types into the console, only its own key (to close it) still counts
+        const bool closeKey = Game::consolekey < SDL_NUM_SCANCODES && now[Game::consolekey];
+        memset(now, 0, SDL_NUM_SCANCODES);
+        if (Game::consolekey < SDL_NUM_SCANCODES) {
+            now[Game::consolekey] = closeKey;
+        }
     }
     EX::PadContribute(now, SDL_NUM_SCANCODES + 6);
     static const bool noInput = getenv("LUGARUEX_TEST_NOINPUT") != nullptr; // test hook: ignore real keys/buttons

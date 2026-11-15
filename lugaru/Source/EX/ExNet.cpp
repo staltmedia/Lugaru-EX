@@ -3066,7 +3066,6 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
                 in.fwd = btn & 1, in.back = btn & 2, in.left = btn & 4, in.right = btn & 8;
                 in.jump = btn & 16, in.crouch = btn & 32, in.attack = btn & 64, in.draw = btn & 128, in.thrw = btn & 256;
                 in.walk = btn & 512; // (older guests never set it: they run)
-                in.firstPerson = btn & 1024;
                 LocalRemoteInput(c->slots[k], in, yaw, pitch, c->connected);
             }
         }
@@ -4094,8 +4093,7 @@ void NetFrame(double dt)
                 in.attack = !testWalk && ((int)(now() * 2)) % 5 == 0;
             }
             const int btn = (in.fwd ? 1 : 0) | (in.back ? 2 : 0) | (in.left ? 4 : 0) | (in.right ? 8 : 0) | (in.jump ? 16 : 0) |
-                            (in.crouch ? 32 : 0) | (in.attack ? 64 : 0) | (in.draw ? 128 : 0) | (in.thrw ? 256 : 0) | (in.walk ? 512 : 0) |
-                            (FirstPerson() ? 1024 : 0);
+                            (in.crouch ? 32 : 0) | (in.attack ? 64 : 0) | (in.draw ? 128 : 0) | (in.thrw ? 256 : 0) | (in.walk ? 512 : 0);
             w.u16(btn);
             w.f32(yaw);
             w.f32(pitch);

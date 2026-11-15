@@ -81,12 +81,6 @@ bool DialogAdvancePressed();     // the owner pressed attack this step
 /** during a dialogue scene: a co-op player who has no part in it is not drawn (nor their
     weapons and shadow), so idle partners don't stand in the middle of the shots */
 bool HiddenInScene(int person);
-/** console firstperson / thirdperson: the camera at the eyes of a view's own player */
-void SetFirstPerson(bool on);
-bool FirstPerson();
-/** that person looks through its own eyes (a local player: this PC's setting; an online guest: theirs) */
-bool FirstPersonOf(int person);
-bool FirstPersonActive(int person); // this view looks through this person's eyes now
 /** the human player AI `self` goes after (closest living one, with hysteresis) */
 int AITarget(Person& self);
 bool AllHumansDead();

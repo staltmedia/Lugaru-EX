@@ -166,6 +166,11 @@ GLvoid Game::ReSizeGLScene(float fov, float pnear)
     // LugaruEX: a little less vertical view than the original 90 degrees (more
     // cinematic, still wide), and per split-screen view sizing
     GLdouble fh = tan(fov * (M_PI / 360)) * pnear * 0.88 * EX::ViewFovScale();
+    // first person: the third-person view's width bends everything near the eye (fisheye),
+    // so it gets about 62 degrees vertical (~95 across at 16:9) instead of ~82
+    if (!mainmenu && gameon && EX::FirstPersonActive(EX::ViewPerson())) {
+        fh *= 0.68;
+    }
     GLdouble fw = fh * ar;
     glFrustum(-fw, fw, -fh, fh, pnear, viewdistance);
 

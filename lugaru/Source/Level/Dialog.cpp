@@ -241,6 +241,12 @@ void Dialog::play()
 {
     for (unsigned i = 0; i < scenes.size(); i++) {
         int playerId = scenes[i].participantfocus;
+        // LugaruEX: a scene's character number past the level's own characters is an added
+        // co-op player (or nobody): they stay where they are (they were put into the scene,
+        // among its enemies); player 1 is placed as in the original
+        if (playerId < 0 || playerId >= (int)Person::players.size() || (playerId > 0 && Person::players[playerId]->isPlayerControlled())) {
+            continue;
+        }
         Person::players.at(playerId)->coords = participantlocation[playerId];
         Person::players[playerId]->yaw = participantyaw[playerId];
         Person::players[playerId]->targetyaw = participantyaw[playerId];

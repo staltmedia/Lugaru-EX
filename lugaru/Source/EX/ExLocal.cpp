@@ -83,6 +83,8 @@ struct Slot
     bool netConnected = false;
     bool removed = false; // kicked by the host: its character became an enemy, the seat is gone
     float lookYaw = 0, lookPitch = 0; // tutorial: camera at the last "looking around" check
+    XYZ spawnAt;            // where it was put next to player 1
+    bool following = false; // not moved by its player yet: kept beside player 1 when the game moves player 1 (scenes)
 };
 
 static std::vector<Slot> g_slots;
@@ -524,9 +526,104 @@ static bool clearSpot(const XYZ& from, const XYZ& to, float h)
         if (o->model.LineCheck(&a, &b, &hit, &o->position, &o->yaw) != -1) {
             return false;
         }
+        // and from high above down to the feet: a line from inside a rock or wall out of its
+        // top isn't seen by the check above (faces only count from their outside), and a
+        // wall taller than that line hid it completely
+        b.y = to.y + 30.f;
+        if (o->model.LineCheck(&b, &a, &hit, &o->position, &o->yaw) != -1) {
+            return false;
+        }
     }
     return true;
 }
+
+// something to stand on: the ground, or an object right under the feet (a platform)
+static bool supportedSpot(const XYZ& at)
+{
+    if (at.y - terrain.getHeight(at.x, at.z) < .6f) {
+        return true;
+    }
+    for (const auto& o : Object::objects) {
+        if (o->type == treeleavestype || o->type == bushtype || o->type == firetype) {
+            continue;
+        }
+        XYZ a = at, b = at, hit;
+        a.y += .5f;
+        b.y -= 1.2f;
+        if (o->model.LineCheck(&a, &b, &hit, &o->position, &o->yaw) != -1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// a free spot near player 1 for another player: the slot's own place beside them first,
+// then rings further out (on player 1's level, else on the ground); none at all: player 1's
+// own spot. Never inside or under an object, never off the edge of a platform.
+static XYZ spotNear(Person& p1, int slotIndex, bool log)
+{
+    static const float side[4][2] = { { 1.1f, 0 }, { -1.1f, 0 }, { 0, -1.3f }, { 1.1f, -1.3f } };
+    const float h = std::max(.5f, p1.scale * 4); // about chest height
+    std::vector<XYZ> tries;
+    {
+        XYZ o;
+        o.x = side[(slotIndex + 3) & 3][0];
+        o.y = 0;
+        o.z = side[(slotIndex + 3) & 3][1];
+        tries.push_back(DoRotation(o, 0, p1.yaw, 0));
+    }
+    for (float r : { 1.1f, 1.8f, 2.6f, 3.6f, 5.f, 7.f }) {
+        for (int k = 0; k < 8; k++) {
+            XYZ o;
+            o.x = r * cosf((k * 45.f + slotIndex * 20.f) * 3.14159265f / 180.f);
+            o.y = 0;
+            o.z = r * sinf((k * 45.f + slotIndex * 20.f) * 3.14159265f / 180.f);
+            tries.push_back(o);
+        }
+    }
+    for (size_t k = 0; k < tries.size(); k++) {
+        XYZ at = p1.coords + tries[k];
+        const float ground = terrain.getHeight(at.x, at.z);
+        // player 1 a little above the ground has not landed yet (levels start them in the
+        // air): the others go on the ground; only well above it (a roof, a platform) on
+        // player 1's level
+        const bool p1High = p1.coords.y - terrain.getHeight(p1.coords.x, p1.coords.z) > 2.f;
+        for (int level = p1High ? 0 : 1; level < 2; level++) {
+            XYZ spot = at;
+            if (level == 1 && !p1High) {
+                spot.y = ground;
+            } else if (level == 1) {
+                if (spot.y - ground < .6f || spot.y - ground > 3.f) {
+                    break; // (already on the ground, or player 1 is far above it)
+                }
+                spot.y = ground; // beside a low step player 1 stands on
+            }
+            spot.y = std::max(spot.y, ground);
+            // nobody already standing there (a level's own character on the spot knocked the
+            // new player over at once)
+            bool crowded = false;
+            for (const auto& o : Person::players) {
+                const float dx = o->coords.x - spot.x, dz = o->coords.z - spot.z, dy = o->coords.y - spot.y;
+                crowded = crowded || (o.get() != &p1 && dx * dx + dz * dz < (o->isPlayerControlled() ? 1.2f * 1.2f : 1.5f * 1.5f) && fabsf(dy) < 2.5f); // (a character sitting or lying takes more room)
+            }
+            if (!crowded && supportedSpot(spot) && clearSpot(p1.coords, spot, h)) {
+                if (log && k > 0) {
+                    printf("LugaruEX: player %d's usual spot is blocked - starts %.1f from player 1\n", slotIndex + 1, std::sqrt(tries[k].x * tries[k].x + tries[k].z * tries[k].z));
+                }
+                return spot;
+            }
+        }
+    }
+    if (log) {
+        printf("LugaruEX: no free spot near player 1 - player %d starts on the same spot\n", slotIndex + 1);
+    }
+    return p1.coords;
+}
+
+// player 1 as last seen by LocalFrame (also set when players are put next to it: a scene
+// that moves player 1 in the first step of a level is seen as a move)
+static XYZ g_p1Last;
+static const Person* g_p1Was = nullptr;
 
 static void spawn(Slot& s, int slotIndex, bool tutorial)
 {
@@ -545,36 +642,12 @@ static void spawn(Slot& s, int slotIndex, bool tutorial)
     p.whichskin = lvl ? g_levelSkin : p1.whichskin;
     p.scale = lvl ? g_levelScale : p1.scale;
 
-    // next to player 1: right, left, behind - or the first other spot around that isn't
-    // inside, under or behind something (a level starting player 1 on a platform or by a
-    // box put the others under it); none free: player 1's own spot
-    static const float off[4][2] = { { 0, 0 }, { 1.1f, 0 }, { -1.1f, 0 }, { 0, -1.3f } };
-    static const float more[8][2] = { { 1.1f, 0 }, { -1.1f, 0 }, { 0, -1.3f }, { 0, 1.3f }, { .8f, -.8f }, { -.8f, -.8f }, { .8f, .8f }, { -.8f, .8f } };
-    const float h = std::max(.5f, p1.scale * 4); // about chest height
-    bool placed = false;
-    for (int k = -1; k < 8 && !placed; k++) {
-        XYZ o;
-        o.x = k < 0 ? off[slotIndex & 3][0] : more[k][0];
-        o.y = 0;
-        o.z = k < 0 ? off[slotIndex & 3][1] : more[k][1];
-        o = DoRotation(o, 0, p1.yaw, 0);
-        XYZ at = p1.coords + o;
-        const float ground = terrain.getHeight(at.x, at.z);
-        if (at.y < ground) {
-            at.y = ground;
-        }
-        if ((o.x == 0 && o.z == 0) || clearSpot(p1.coords, at, h)) {
-            p.coords = at;
-            placed = true;
-            if (k >= 0) {
-                printf("LugaruEX: player %d's usual spot is blocked - starts at another next to player 1\n", slotIndex + 1);
-            }
-        }
-    }
-    if (!placed) {
-        p.coords = p1.coords;
-        printf("LugaruEX: no free spot next to player 1 - the new player starts on the same spot\n");
-    }
+    // next to player 1 (spotNear: free, with something to stand on)
+    p.coords = spotNear(p1, slotIndex, true);
+    s.spawnAt = p.coords;
+    s.following = true; // (kept beside player 1 until this player moves: see LocalFrame)
+    g_p1Was = &p1;
+    g_p1Last = p1.coords;
     p.oldcoords = p.realoldcoords = p.coords;
     p.yaw = p.targetyaw = p1.yaw;
 
@@ -718,6 +791,35 @@ void LocalFrame(double dt)
     }
     if (changed) {
         autoLayout();
+    }
+
+    // Players who haven't moved yet stay with player 1 when the game puts player 1 somewhere
+    // else (a level's opening scene moves player 1 to it: the others were left at the start,
+    // often among the enemies of that scene). Once they move they are on their own.
+    if (!NetIsGuest() && Game::gameon && !Game::loading && !Person::players.empty() && personValid(g_slots[0])) {
+        Person& p1 = *Person::players[0];
+        const bool jumped = g_p1Was == &p1 && distsq(&p1.coords, &g_p1Last) > 3.f * 3.f; // (not walking: put there)
+        g_p1Was = &p1;
+        g_p1Last = p1.coords;
+        for (size_t i = 1; i < g_slots.size(); i++) {
+            Slot& s = g_slots[i];
+            if (!s.following || !personValid(s)) {
+                continue;
+            }
+            Person& p = *Person::players[s.person];
+            if (p.dead || p.skeleton.free || distsq(&p.coords, &s.spawnAt) > 1.5f * 1.5f) {
+                s.following = false; // (moved, hit or fallen: playing now)
+                printf("LugaruEX: player %d plays on from %.1f away from where it started (%s)\n", (int)i + 1, std::sqrt(distsq(&p.coords, &s.spawnAt)), p.dead ? "dead" : p.skeleton.free ? "knocked down" : "moved");
+                continue;
+            }
+            if (jumped) {
+                p.coords = p.oldcoords = p.realoldcoords = s.spawnAt = spotNear(p1, (int)i, false);
+                p.yaw = p.targetyaw = p1.yaw;
+                p.velocity = 0;
+                s.viewValid = false;
+                printf("LugaruEX: player %d moved along with player 1\n", (int)i + 1);
+            }
+        }
     }
 
     // right stick look for players 2..4 (player 1 goes through the mouse path)
@@ -1615,5 +1717,45 @@ void LocalReapplyRemoteLooks()
             applySlotCharacter(s, *Person::players[s.person], Tutorial::active);
         }
     }
+}
+} // namespace EX
+
+namespace EX
+{
+// ------------------------------------------------------------------ first person
+// Console "firstperson" / "thirdperson": the camera sits at the eyes of whoever a view
+// watches: its own player (also knocked down or dead) or the one it spectates.
+static bool g_firstPerson = false;
+
+void SetFirstPerson(bool on)
+{
+    g_firstPerson = on;
+    printf("LugaruEX: %s camera\n", on ? "first person" : "third person");
+}
+
+bool FirstPerson()
+{
+    return g_firstPerson;
+}
+
+bool FirstPersonOf(int person)
+{
+    for (auto& s : g_slots) {
+        if (s.remote && personValid(s) && s.person == person) {
+            return s.netConnected && s.net.firstPerson; // an online guest's own choice
+        }
+    }
+    return g_firstPerson;
+}
+
+bool FirstPersonActive(int person)
+{
+    if (!g_firstPerson || person < 0 || person >= (int)Person::players.size()) {
+        return false;
+    }
+    const Person& p = *Person::players[person];
+    // the person this view watches: its own player, alive or a body, or whoever it spectates
+    (void)p;
+    return person == ViewPerson();
 }
 } // namespace EX

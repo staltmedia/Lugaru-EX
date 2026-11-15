@@ -150,6 +150,19 @@ bool load_image(const char* file_name, ImageRec& tex)
 {
     Game::LoadingScreen();
 
+    // LugaruEX: the file's own first bytes decide (old mods have JPEGs named .png and the
+    // other way round); the name only when they say nothing
+    if (FILE* f = fopen(file_name, "rb")) {
+        unsigned char head[4] = { 0, 0, 0, 0 };
+        const size_t n = fread(head, 1, 4, f);
+        fclose(f);
+        if (n == 4 && head[0] == 0x89 && head[1] == 'P' && head[2] == 'N' && head[3] == 'G') {
+            return load_png(file_name, tex);
+        }
+        if (n >= 3 && head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF) {
+            return load_jpg(file_name, tex);
+        }
+    }
     const char* ptr = strrchr((char*)file_name, '.');
     if (ptr) {
         if (strcasecmp(ptr + 1, "png") == 0) {

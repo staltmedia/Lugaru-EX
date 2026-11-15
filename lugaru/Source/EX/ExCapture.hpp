@@ -23,6 +23,9 @@ namespace EX
 {
 void CaptureFrame();    // right before presenting a frame (after the colour-blind filter)
 void CaptureShutdown(); // at exit: finish a recording so the file is complete
+/** console "fps": a frames-per-second number in the top-right corner */
+void SetFpsCounter(bool on);
+bool FpsCounter();
 bool CaptureRecording();
 }
 

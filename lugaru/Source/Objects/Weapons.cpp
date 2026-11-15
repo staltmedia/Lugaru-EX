@@ -196,6 +196,24 @@ void Weapon::doStuff(int i)
     }
     oldposition = position;
     oldtippoint = tippoint;
+    // LugaruEX: a weapon lying still with nothing under it any more (it came to rest on a
+    // character or body that moved away, was dropped with no speed, or stopped in the air
+    // because its "resting" time never started over) falls again: the normal physics
+    // takes it down to the ground or the object below
+    if (owner == -1 && !(velocity.x || velocity.y || velocity.z) && (position.x || position.z)) {
+        exRestCheck -= multiplier;
+        if (exRestCheck <= 0) {
+            exRestCheck = .25f;
+            if (!exSomethingUnder()) {
+                velocity = 0;
+                velocity.y = -.5f;
+                tipvelocity = velocity;
+                physics = 1;
+                hitsomething = 0;
+                freetime = 0;
+            }
+        }
+    }
     if (owner == -1 && (velocity.x || velocity.y || velocity.z) && !physics) { // if the weapon is flying
         position += velocity * multiplier;
         tippoint += velocity * multiplier;
@@ -1246,4 +1264,33 @@ void Weapon::exGuestTip()
     wm.rotate(smallrotation, 1, 0, 0);
     wm.rotate(smallrotation2, 0, 1, 0);
     wm.point(0, 0, length, tippoint.x, tippoint.y, tippoint.z);
+}
+
+// LugaruEX: is there ground or an object right under either end of this (free) weapon
+bool Weapon::exSomethingUnder()
+{
+    XYZ* ends[2] = { &position, &tippoint };
+    for (XYZ* e : ends) {
+        if (e->y - terrain.getHeight(e->x, e->z) < .3f) {
+            return true;
+        }
+    }
+    const float patch = terrain.size / subdivision * terrain.scale;
+    const int px = std::max(0, std::min(subdivision - 1, (int)(position.x / patch)));
+    const int pz = std::max(0, std::min(subdivision - 1, (int)(position.z / patch)));
+    for (unsigned k = 0; k < terrain.patchobjects[px][pz].size(); k++) {
+        Object& o = *Object::objects[terrain.patchobjects[px][pz][k]];
+        if (o.type == treeleavestype) {
+            continue;
+        }
+        for (XYZ* e : ends) {
+            XYZ a = *e, b = *e, hit;
+            a.y += .1f;
+            b.y -= .4f;
+            if (o.model.LineCheck(&a, &b, &hit, &o.position, &o.yaw) != -1) {
+                return true;
+            }
+        }
+    }
+    return false;
 }

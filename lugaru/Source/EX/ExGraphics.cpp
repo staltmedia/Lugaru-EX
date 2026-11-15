@@ -15,6 +15,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "EX/ExProfile.hpp"
 #include "Graphic/gamegl.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -108,9 +109,29 @@ static SDL_Window* tryCreate(int& width, int& height, bool grabInput, SDL_GLCont
             x = bounds.x;
             y = bounds.y;
             break;
-        default:
+        default: {
             flags |= SDL_WINDOW_RESIZABLE; // windowed: drag the edges or maximize
+            // A window as big as the monitor (or bigger) had its title bar and edges off the
+            // screen: it looked like fullscreen and couldn't be moved or resized. One that
+            // doesn't fit the desktop with its frame opens maximized instead (a real window,
+            // as big as it can be); the others are centred in the desktop's free area.
+            SDL_Rect usable;
+            if (SDL_GetDisplayUsableBounds(display, &usable) == 0) {
+                float ddpi = 0, hdpi = 0, vdpi = 0;
+                const float k = (SDL_GetDisplayDPI(display, &ddpi, &hdpi, &vdpi) == 0 && hdpi > 0) ? hdpi / 96.f : 1.f;
+                const int frameW = (int)(16 * k), frameH = (int)(48 * k); // (edges, title bar)
+                if (width > usable.w - frameW || height > usable.h - frameH) {
+                    flags |= SDL_WINDOW_MAXIMIZED;
+                    const float s = std::min((usable.w - frameW) / (float)width, (usable.h - frameH) / (float)height);
+                    width = std::max(320, (int)(width * s));
+                    height = std::max(240, (int)(height * s));
+                    printf("LugaruEX: a %dx%d window doesn't fit the desktop with its frame - opening it maximized\n", cfg.width, cfg.height);
+                }
+                x = usable.x + (usable.w - width) / 2;
+                y = usable.y + (usable.h - height + frameH - frameW) / 2;
+            }
             break;
+        }
     }
 
     SDL_Window* win = SDL_CreateWindow("Lugaru HD (LugaruEX)", x, y, width, height, flags);
@@ -161,6 +182,15 @@ static SDL_Window* tryCreate(int& width, int& height, bool grabInput, SDL_GLCont
         g_refresh = cur.refresh_rate;
     }
     printf("LugaruEX: window %dx%d on display %d, %d Hz, simulation %d Hz\n", width, height, SDL_GetWindowDisplayIndex(win), g_refresh, SimRate());
+    {
+        int wx = 0, wy = 0, ww = 0, wh = 0;
+        SDL_GetWindowPosition(win, &wx, &wy);
+        SDL_GetWindowSize(win, &ww, &wh);
+        const Uint32 f = SDL_GetWindowFlags(win);
+        printf("LugaruEX: window at %d,%d size %dx%d:%s%s%s%s\n", wx, wy, ww, wh, (f & SDL_WINDOW_FULLSCREEN) ? " fullscreen" : "",
+               (f & SDL_WINDOW_BORDERLESS) ? " borderless" : "", (f & SDL_WINDOW_RESIZABLE) ? " resizable" : "",
+               (f & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS)) ? "" : " with a frame");
+    }
     return win;
 }
 

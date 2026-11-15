@@ -256,7 +256,8 @@ static void animateFakePads()
     }
     for (size_t n = 0; n < g_fakeIds.size(); n++) {
         SDL_Joystick* j = SDL_JoystickFromInstanceID(g_fakeIds[n]);
-        if (!j || n == 0) {
+        static const bool still = strstr(getenv("LUGARUEX_FAKE_PADS"), "still") != nullptr; // ("N,still": they only stand there)
+        if (!j || n == 0 || still) {
             continue;
         }
         const float ph = n * 1.7f;

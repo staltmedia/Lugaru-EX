@@ -347,8 +347,15 @@ void Game::cmd_dispatch(const string cmd)
 {
     int i, n_cmds = sizeof(cmd_names) / sizeof(cmd_names[0]);
 
-    if (EX::NetIsGuest()) {
-        // LugaruEX: online, only the host uses commands (the game runs on the host's PC)
+    // (command names in any case: "Kick Bob" works like "kick Bob")
+    std::string word = cmd.substr(0, cmd.find(' '));
+    for (char& ch : word) {
+        ch = (char)tolower((unsigned char)ch);
+    }
+    // view-only commands work for everyone (they change nothing in the shared game)
+    const bool viewOnly = word == "firstperson" || word == "thirdperson" || word == "fps";
+    if (EX::NetIsGuest() && !viewOnly) {
+        // LugaruEX: online, only the host uses game commands (the game runs on the host's PC)
         for (int k = 14; k >= 1; k--) {
             consoletext[k] = consoletext[k - 1];
         }
@@ -356,11 +363,6 @@ void Game::cmd_dispatch(const string cmd)
         consoleselected = 0;
         emit_sound_np(consolefailsound);
         return;
-    }
-    // (command names in any case: "Kick Bob" works like "kick Bob")
-    std::string word = cmd.substr(0, cmd.find(' '));
-    for (char& ch : word) {
-        ch = (char)tolower((unsigned char)ch);
     }
     for (i = 0; i < n_cmds; i++) {
         if (word == string(cmd_names[i])) {
@@ -1966,10 +1968,71 @@ void Game::ProcessDevInput()
         XYZ down;
         down = 0;
         down.y = -1;
-        w.drop(down, down);
+        if (strstr(getenv("LUGARUEX_TEST_DROPKNIFE"), "still")) {
+            w.drop(down, down);
+            w.velocity = 0; // (",still": left in the air with no speed - it must fall)
+            w.tipvelocity = 0;
+        } else {
+            w.drop(down, down);
+        }
         w.bloody = 2;
         w.blooddrip = 5;
         printf("EXTEST knife %d dropped at %.1f,%.1f,%.1f\n", (int)weapons.size() - 1, ahead.x, ahead.y, ahead.z);
+    }
+    if (exTestKnifeDone && exTestKnife > 0) { // (where it is two seconds later)
+        static bool told = false;
+        if (!told && leveltime > exTestKnife + 2 && !weapons.empty()) {
+            told = true;
+            Weapon& w = weapons.back();
+            printf("EXTEST knife now %.2f over the ground\n", std::min(w.position.y, w.tippoint.y) - terrain.getHeight(w.position.x, w.position.z));
+        }
+    }
+    // test hook LUGARUEX_TEST_PEOPLE=s: everyone in the level at that time (pose type, place,
+    // ground under them, state) - missing / buried characters
+    {
+        static const float at = getenv("LUGARUEX_TEST_PEOPLE") ? (float)atof(getenv("LUGARUEX_TEST_PEOPLE")) : -1.f;
+        static bool done = false;
+        if (at >= 0 && !done && leveltime > at) {
+            done = true;
+            for (size_t i = 0; i < Person::players.size(); i++) {
+                Person& p = *Person::players[i];
+                if (p.isPlayerControlled() && i > 0) {
+                    // a co-op player: how far from player 1, how near the nearest enemy
+                    float nearEnemy = 1e9f;
+                    for (auto& e : Person::players) {
+                        if (!e->isPlayerControlled() && !e->dead) {
+                            nearEnemy = std::min(nearEnemy, std::sqrt(distsq(&e->coords, &p.coords)));
+                        }
+                    }
+                    printf("EXTEST coop %d: %.1f from player 1, nearest enemy %.1f, %.2f over the ground\n", (int)i,
+                           std::sqrt(distsq(&p.coords, &Person::players[0]->coords)), nearEnemy, p.coords.y - terrain.getHeight(p.coords.x, p.coords.z));
+                }
+                printf("EXTEST person %d: %s active=%d at %.2f,%.2f,%.2f ground %.2f free=%d dead=%d ai=%d anim=%d/%d scale %.3f yaw %.0f (camera %.0f)\n", (int)i,
+                       p.creature == wolftype ? "wolf" : "rabbit", p.howactive, p.coords.x, p.coords.y, p.coords.z, terrain.getHeight(p.coords.x, p.coords.z),
+                       p.skeleton.free, p.dead, p.aitype, p.animCurrent, p.animTarget, p.scale, p.yaw, -yaw + 180);
+            }
+        }
+    }
+    // test hook LUGARUEX_TEST_LOOKAT=i[,dist]: player 1 stands a few steps from person i, facing it
+    {
+        static const char* la = getenv("LUGARUEX_TEST_LOOKAT");
+        static bool placed = false;
+        if (la && !placed && leveltime > .1f && !Person::players.empty()) {
+            const int who = atoi(la);
+            const char* c = strchr(la, ',');
+            const float dist = c ? (float)atof(c + 1) : 4.f;
+            if (who > 0 && who < (int)Person::players.size()) {
+                placed = true;
+                Person& p1 = *Person::players[0];
+                const Person& t = *Person::players[who];
+                p1.coords = t.coords;
+                p1.coords.x += dist;
+                p1.coords.y = std::max(t.coords.y, terrain.getHeight(p1.coords.x, p1.coords.z));
+                p1.velocity = 0;
+                yaw = la[strlen(la) - 1] == 'r' ? -90 : 90; // (",r": the other way)
+                p1.yaw = p1.targetyaw = 90;
+            }
+        }
     }
     // (LUGARUEX_TEST_GIVE: where player 1's weapons are, 3 s in)
     static int exGiveLogged = 0; // (every 1.5 s from 1.5 s on, 4 times)
@@ -4314,6 +4377,24 @@ void Game::Tick()
 
                         Person::players[i]->targetheadyaw = camyaw;
                         Person::players[i]->targetheadpitch = campitch;
+                        // LugaruEX first person: standing, the head follows the camera; at 60
+                        // degrees the body turns with it (a body that never turned left you
+                        // looking over your own shoulder)
+                        Person& fp = *Person::players[i];
+                        if (EX::FirstPersonOf((int)i) && !fp.skeleton.free && !fp.dead && (fp.isIdle() || fp.isCrouch())) {
+                            float rel = 0 - fp.yaw - camyaw + 180;
+                            rel = fmodf(rel, 360.f);
+                            if (rel > 180) {
+                                rel -= 360;
+                            }
+                            if (rel < -180) {
+                                rel += 360;
+                            }
+                            const float lim = 60;
+                            if (rel > lim || rel < -lim) {
+                                fp.yaw = fp.targetyaw = -camyaw + 180 + (rel > 0 ? -lim : lim);
+                            }
+                        }
                     }
                     if (Dialog::inDialog()) {
                         Person::players[i]->targetheadyaw = 180 - roughDirection(Dialog::currentScene().participantfacing[i]);
@@ -5814,6 +5895,28 @@ static void exCameraUpdate()
             viewer.y = max((double)viewer.y, terrain.getHeight(viewer.x, viewer.z) + .6);
             if (cameraloc.y < terrain.getHeight(cameraloc.x, cameraloc.z)) {
                 cameraloc.y = terrain.getHeight(cameraloc.x, cameraloc.z);
+            }
+            // LugaruEX first person (console "firstperson"): the camera at the eyes, after
+            // every third-person check, so nothing can push it away or hide the view (the
+            // own head isn't drawn in this view: Person::DrawSkeleton)
+            if (EX::FirstPersonActive(EX::ViewPerson())) {
+                Person& vp = *Person::players[EX::ViewPerson()];
+                XYZ eye = vp.jointPos(head);
+                if (vp.skeleton.free) {
+                    // knocked down or dead: a ragdoll's joints are already turned (as its
+                    // held weapons are placed in DrawSkeleton); step out of the head along
+                    // neck -> head so the eye isn't inside its own body
+                    XYZ out = vp.jointPos(head) - vp.jointPos(neck);
+                    float ol = sqrtf(out.x * out.x + out.y * out.y + out.z * out.z);
+                    eye = eye * vp.scale + vp.coords;
+                    if (ol > 1e-4f) { eye += out * (vp.scale * .5f / ol); eye.y += vp.scale * .25f; }
+                    viewer = eye;
+                } else {
+                    eye = DoRotation(DoRotation(DoRotation(eye, 0, 0, vp.tilt), vp.tilt2, 0, 0), 0, vp.yaw, 0) * vp.scale + vp.coords +
+                          vp.currentoffset * (1 - vp.target) * vp.scale + vp.targetoffset * vp.target * vp.scale;
+                    viewer = eye + facing * (vp.scale * .6f); // (the eyes are at the front of the head)
+                }
+                viewer.y = max((double)viewer.y, terrain.getHeight(viewer.x, viewer.z) + .05); // (a body lying face down)
             }
         }
         if (camerashake > .8) {

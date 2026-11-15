@@ -42,6 +42,7 @@ struct PadInput
     bool jump = false, crouch = false, attack = false, draw = false, thrw = false;
     bool pause = false, lighting = false;
     bool walk = false;          // walk instead of run (a light push of the left stick; Ctrl on a keyboard)
+    bool firstPerson = false;   // (online) this player looks through its eyes: the host turns its body at the limit
     float lookX = 0, lookY = 0; // right stick, shaped, -1..1
 };
 /** player 1 walks: Ctrl held, or player 1's controller stick pushed only lightly */

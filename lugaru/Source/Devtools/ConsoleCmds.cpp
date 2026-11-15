@@ -20,6 +20,8 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "Devtools/ConsoleCmds.hpp"
 #include "EX/ExNet.hpp"
+#include "EX/ExLocal.hpp"
+#include "EX/ExCapture.hpp"
 
 #include <cctype>
 
@@ -871,4 +873,24 @@ void ch_ban(const char* args)
 void ch_unban(const char* args)
 {
     exKickCommand(args, 2, "unban");
+}
+
+// LugaruEX: the camera at your character's eyes / back behind it
+void ch_firstperson(const char*)
+{
+    EX::SetFirstPerson(true);
+    exConsoleReply("First person: the camera is at your eyes (thirdperson goes back)");
+}
+
+void ch_thirdperson(const char*)
+{
+    EX::SetFirstPerson(false);
+    exConsoleReply("Third person");
+}
+
+// LugaruEX: a frames-per-second number in the top right corner (fps again hides it)
+void ch_fps(const char*)
+{
+    EX::SetFpsCounter(!EX::FpsCounter());
+    exConsoleReply(EX::FpsCounter() ? "FPS counter on (fps hides it)" : "FPS counter off");
 }

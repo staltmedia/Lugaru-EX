@@ -65,6 +65,8 @@ public:
     XYZ position;
     XYZ tippoint;
     unsigned exHeldAt = 0; // LugaruEX: SDL ticks when its holder was last drawn (that is when a held weapon's position is set)
+    float exRestCheck = 0;     // LugaruEX: time to the next "anything under me" check (lying still)
+    bool exSomethingUnder();
     XYZ velocity;
     XYZ tipvelocity;
     bool missed;

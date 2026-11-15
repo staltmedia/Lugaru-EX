@@ -1,4 +1,4 @@
-LugaruEX 0.5.2 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.5.3 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -44,8 +44,12 @@ Updates
 
 Mods
   The Mods tab installs mods: drag mod .zip files onto the launcher (or Add
-  mod...). A mod is a zip of game files laid out like Data (Textures, Maps,
-  Sounds, Models, Campaigns...); only game data is unpacked, never programs.
+  mod...). Any layout works: a Data folder, the game's folders, folders like
+  "This goes into Maps", or loose files - each file is sorted by what it is
+  (maps, campaigns, pictures, sounds, models), and Mac / Windows leftovers
+  are dropped. A campaign named main.txt (made to replace the game's own)
+  becomes the mod's own campaign next to the main one, with its world map.
+  Only game data is unpacked, never programs.
   Tick a mod to switch it on; the higher one in the list wins when two change
   the same file (Up / Down). Right-click a mod (X on a controller) to delete
   it. New campaigns from mods appear in the game's campaign list; a mod with
@@ -93,7 +97,8 @@ crash also writes crash.dmp on Windows (on Linux the log lists where).
 
 Launcher
   Graphics: monitor, any resolution (incl. ultrawide / custom), windowed
-  (resizable) / borderless / exclusive fullscreen, MSAA, anisotropic
+  (resizable; a size too big for the desktop opens maximized) / borderless /
+  exclusive fullscreen, MSAA, anisotropic
   filtering, V-Sync (off / on / adaptive), FPS cap, field of view, texture
   quality, Shaders (off = only the original 2005 look), High Resolution
   Textures (uses the Overrides folder), colour blind mode (Deuteranopia,
@@ -174,7 +179,8 @@ Launcher
     character stays behind as an enemy. Play works again when the game ends.
     In the game the host can do the same in the console (~): kick <name>,
     ban <name>, unban <name> (the start of a name is enough). Only the host
-    can use console commands in an online game.
+    can use game commands in an online game (firstperson, thirdperson and
+    fps work for everyone).
   With a controller: D-pad / left stick move between the settings, A
   selects (opens a list, ticks a box), B closes a list, LB / RB switch tabs,
   Start plays.
@@ -187,6 +193,9 @@ Local split-screen co-op (up to 4 players)
   score is shared: it shows once, in the top-left screen. Bonus pop-ups
   ("Solid hit", combos...) show on the screen of the player who earned them.
   Smaller screens are a little more zoomed in.
+  - Extra players (split screen and online) start next to player 1, on a
+    free spot (never inside a wall or on a level character), and move along
+    if the level moves player 1 at the start (opening scenes).
   - Plug a controller in during play and that player drops in next to
     player 1. Unplug one and that player just stops until the same
     controller comes back.
@@ -348,11 +357,18 @@ In game
   ~          cycles: developer console -> stats display (fps; online also
              ping, lost snapshots, jitter, delay) -> off. The first time the
              console opens it lists every command (dev tools are always on)
+  Console commands for your own view (everyone, also online guests):
+             firstperson - the camera at your eyes (narrower view, nothing can
+             block it; turning far turns your body; works while down and
+             when watching another player); thirdperson - back to normal;
+             fps - a frame counter top right (fps again hides it)
   Shift+K    skip to the next level (challenge or campaign)
   Left Alt + a letter = developer keys, e.g. Alt+M map editor, Alt+B slow
              motion, Alt+H invincible, Alt+N ragdoll, Alt+C free camera
 
 Game changes
+  - A weapon left hanging in the air (dropped over a ledge, its rock gone)
+    falls to the ground.
   - No profile name screen; all challenge levels unlocked; campaign "Level
     Select" (any level, scores and times still recorded); Shift+K skips
     levels in the campaign too. The campaign map still shows your journey:

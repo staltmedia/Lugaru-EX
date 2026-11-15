@@ -15,19 +15,6 @@ namespace
 const uint64_t kMaxModBytes = 1024ull * 1024 * 1024; // unpacked size of one mod
 const int kMaxModFiles = 50000;
 
-// the folders of the game's Data folder: a mod is found by these
-const char* kDataFolders[] = { "textures", "maps", "sounds", "models", "campaigns", "animations", "skeleton", "dialogues", "music", "fonts" };
-
-bool isDataFolder(const std::string& n)
-{
-    const std::string l = fsu::Lower(n);
-    for (const char* d : kDataFolders) {
-        if (l == d) {
-            return true;
-        }
-    }
-    return false;
-}
 
 // game data only: images, sounds, text, models and the extension-less files the game
 // uses (maps, skeletons, animations); never programs or scripts
@@ -151,154 +138,218 @@ std::string peek(Zip& zip, mz_uint index, size_t want)
     return s;
 }
 
-// Older Lugaru mods are loose files with a readme saying where each goes ("put TCT in
-// Maps, TempleChallenge.txt in Campaigns"): sort them by what they are. Extension-less
-// files that start like a Lugaru map (a big-endian version number) are maps; .txt files
-// that start with "Campaign Levels:" are campaigns, other .txt files are readmes;
-// images, sounds and models go to Textures, Sounds and Models.
-bool collectLoose(Zip& zip, const std::vector<std::pair<mz_uint, std::vector<std::string>>>& files, std::vector<Item>& items, int& modTxtIndex,
-                  std::string& error, int& skipped)
+// What a file in a mod zip is, worked out from its path and its contents, so a mod can come
+// in any layout: a Data folder, the game's folders at the top, folders named for where
+// their files go ("This goes into Maps", "Textures folder"), or loose files (the readme
+// said where each one goes). Mac and Windows leftovers are dropped.
+
+// the game folder a folder name stands for: exactly ("Textures"), or as a word in a phrase
+// ("This goes into Maps", "put in sound folder"); "" if none (or more than one)
+std::string canonFolder(const std::string& lowName)
 {
-    // everything in one top folder (the zip of a folder): that folder is the mod
-    std::string top = files.empty() || files[0].second.size() < 2 ? "" : files[0].second[0];
-    for (auto& f : files) {
-        if (f.second.size() < 2 || f.second[0] != top) {
-            top.clear();
-        }
-    }
-    uint64_t total = 0;
-    for (auto& f : files) {
-        const std::vector<std::string>& parts = f.second;
-        if (parts.size() != (top.empty() ? 1u : 2u)) {
-            skipped++; // deeper folders that aren't game folders
+    static const std::map<std::string, std::string> exact = {
+        { "textures", "Textures" }, { "maps", "Maps" }, { "sounds", "Sounds" }, { "models", "Models" }, { "campaigns", "Campaigns" },
+        { "animations", "Animations" }, { "skeleton", "Skeleton" }, { "dialogues", "Dialogues" }, { "music", "Music" }, { "fonts", "Fonts" },
+    };
+    auto it = exact.find(lowName);
+    return it == exact.end() ? std::string() : it->second;
+}
+std::string phraseFolder(const std::string& lowName)
+{
+    static const std::map<std::string, std::string> words = {
+        { "texture", "Textures" }, { "textures", "Textures" }, { "map", "Maps" }, { "maps", "Maps" }, { "level", "Maps" },
+        { "levels", "Maps" }, { "sound", "Sounds" }, { "sounds", "Sounds" }, { "model", "Models" }, { "models", "Models" },
+        { "campaign", "Campaigns" }, { "campaigns", "Campaigns" }, { "animation", "Animations" }, { "animations", "Animations" },
+        { "skeleton", "Skeleton" }, { "skeletons", "Skeleton" }, { "music", "Music" },
+    };
+    // only a folder that tells you where to put it ("This goes into Maps", "Textures folder",
+    // "put in sounds") or is just the word ("Map"): a mod's own name like "Sven Campaign" isn't
+    static const std::set<std::string> say = { "goes", "go", "into", "in", "put", "copy", "folder", "dir", "directory", "place", "add", "to" };
+    std::string found, word;
+    bool clash = false, told = false;
+    int count = 0;
+    for (char c : lowName + " ") {
+        if (isalnum((unsigned char)c)) {
+            word += c;
             continue;
         }
-        const std::string name = parts.back(), low = fsu::Lower(name);
-        const size_t dot = low.rfind('.');
-        const std::string ext = dot == std::string::npos ? "" : low.substr(dot + 1);
-        std::string folder;
-        if (low == "mod.txt") {
-            modTxtIndex = (int)f.first;
-            continue;
-        }
-        if (ext.empty()) {
-            const std::string head = peek(zip, f.first, 4);
-            const uint32_t v = head.size() == 4 ? ((uint32_t)(uint8_t)head[0] << 24 | (uint32_t)(uint8_t)head[1] << 16 | (uint32_t)(uint8_t)head[2] << 8 |
-                                                   (uint8_t)head[3])
-                                                : 0;
-            if (v >= 1 && v <= 64) {
-                folder = "Maps";
+        if (!word.empty()) {
+            count++;
+            told |= say.count(word) != 0;
+            auto it = words.find(word);
+            if (it != words.end()) {
+                clash |= !found.empty() && found != it->second;
+                found = it->second;
             }
-        } else if (ext == "txt") {
-            if (fsu::Lower(peek(zip, f.first, 256)).find("campaign levels:") != std::string::npos) {
-                folder = "Campaigns";
-            }
-        } else if (ext == "json") {
-            if (peek(zip, f.first, 4096).find("\"map\"") != std::string::npos) {
-                folder = "Maps"; // OSS Lugaru's json maps
-            }
-        } else if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "tga" || ext == "bmp") {
-            folder = "Textures";
-        } else if (ext == "ogg" || ext == "wav" || ext == "mp3") {
-            folder = "Sounds";
-        } else if (ext == "solid") {
-            folder = "Models";
         }
-        if (folder.empty()) {
-            skipped++; // readmes, programs, anything unknown
-            continue;
-        }
-        mz_zip_archive_file_stat st;
-        mz_zip_reader_file_stat(&zip.z, f.first, &st);
-        total += st.m_uncomp_size;
-        items.push_back({ f.first, folder + "/" + name, st.m_uncomp_size });
+        word.clear();
     }
-    if (items.empty()) {
-        error = "no game files in it (no maps, campaigns, textures, sounds or models)";
-        return false;
-    }
-    if (total > kMaxModBytes || (int)items.size() > kMaxModFiles) {
-        error = "it is too big (over 1 GB or 50000 files)";
-        return false;
-    }
-    return true;
+    return clash || (!told && count != 1) ? std::string() : found;
 }
 
-// the entries that make up the mod: below the most common data root (a "Data" folder,
-// or the folder that holds Textures/, Maps/...), data files only
+// does a file fit the game folder its path names (else it is sorted by its contents)
+bool fitsFolder(const std::string& folder, const std::string& name, Zip& zip, mz_uint index)
+{
+    const std::string low = fsu::Lower(name);
+    const size_t dot = low.rfind('.');
+    const std::string ext = dot == std::string::npos ? "" : low.substr(dot + 1);
+    const bool image = ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "tga" || ext == "bmp";
+    const bool sound = ext == "ogg" || ext == "wav" || ext == "mp3";
+    if (folder == "Textures" || folder == "Fonts") {
+        return image;
+    }
+    if (folder == "Sounds" || folder == "Music") {
+        return sound;
+    }
+    if (folder == "Models") {
+        return ext == "solid" || ext.empty() || image; // (custom models: skeleton files and Skin.png too)
+    }
+    if (folder == "Campaigns") {
+        return ext == "txt" && fsu::Lower(peek(zip, index, 256)).find("campaign levels:") != std::string::npos;
+    }
+    if (folder == "Maps") {
+        return ext.empty() || ext == "json";
+    }
+    if (folder == "Skeleton" || folder == "Animations") {
+        return ext.empty();
+    }
+    return isDataFile(name); // (Dialogues and the rest)
+}
+
+bool isJunk(const std::vector<std::string>& parts)
+{
+    for (const std::string& p : parts) {
+        const std::string l = fsu::Lower(p);
+        if (l == "__macosx" || p[0] == '.') {
+            return true; // Mac resource forks (._name), .DS_Store, hidden folders
+        }
+    }
+    const std::string l = fsu::Lower(parts.back());
+    return l == "thumbs.db" || l == "desktop.ini" || l == "icon\r";
+}
+
+// what a file is by its contents (no folder said): "" = not game data
+std::string sniff(Zip& zip, mz_uint index, const std::string& name, bool strongOnly)
+{
+    const std::string low = fsu::Lower(name);
+    const size_t dot = low.rfind('.');
+    const std::string ext = dot == std::string::npos ? "" : low.substr(dot + 1);
+    if (ext.empty()) {
+        const std::string head = peek(zip, index, 4);
+        const uint32_t v = head.size() == 4 ? ((uint32_t)(uint8_t)head[0] << 24 | (uint32_t)(uint8_t)head[1] << 16 | (uint32_t)(uint8_t)head[2] << 8 |
+                                               (uint8_t)head[3])
+                                            : 0;
+        return v >= 1 && v <= 64 ? "Maps" : ""; // (a Lugaru map starts with its version)
+    }
+    if (ext == "txt") {
+        return fsu::Lower(peek(zip, index, 256)).find("campaign levels:") != std::string::npos ? "Campaigns" : "";
+    }
+    if (ext == "json") {
+        return peek(zip, index, 4096).find("\"map\"") != std::string::npos ? "Maps" : ""; // OSS Lugaru's json maps
+    }
+    if (strongOnly) {
+        return ""; // (a mod laid out in folders: loose pictures next to them are its readme's)
+    }
+    if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "tga" || ext == "bmp") {
+        return "Textures";
+    }
+    if (ext == "ogg" || ext == "wav" || ext == "mp3") {
+        return "Sounds";
+    }
+    if (ext == "solid") {
+        return "Models";
+    }
+    return "";
+}
+
+// the entries that make up the mod, each with its place in the game's Data layout
 bool collect(Zip& zip, std::vector<Item>& items, int& modTxtIndex, std::string& error, int& skipped)
 {
-    std::string modTxtRel;
     modTxtIndex = -1;
+    size_t modTxtDepth = 0;
     const mz_uint n = mz_zip_reader_get_num_files(&zip.z);
-    std::map<std::string, int> votes; // root prefix -> entries under it
-    std::vector<std::pair<mz_uint, std::vector<std::string>>> files;
+    struct File
+    {
+        mz_uint index;
+        std::vector<std::string> parts;
+        std::string folder; // the game folder its path names ("" = none)
+        size_t restFrom = 0; // the parts after that folder
+        uint64_t size = 0;
+    };
+    std::vector<File> files;
+    bool anyHint = false;
     for (mz_uint i = 0; i < n; i++) {
         mz_zip_archive_file_stat st;
         if (!mz_zip_reader_file_stat(&zip.z, i, &st) || st.m_is_directory) {
             continue;
         }
-        std::vector<std::string> parts;
-        if (!safeParts(st.m_filename, parts)) {
+        File f;
+        f.index = i;
+        f.size = st.m_uncomp_size;
+        if (!safeParts(st.m_filename, f.parts)) {
             error = std::string("unsafe path in the zip: ") + st.m_filename;
             return false;
         }
-        files.push_back({ i, parts });
-        for (size_t k = 0; k < parts.size(); k++) {
-            std::string root;
-            for (size_t j = 0; j < k; j++) {
-                root += parts[j] + "/";
-            }
-            if (fsu::Lower(parts[k]) == "data" && k + 1 < parts.size()) {
-                votes[root + parts[k] + "/"]++;
-                break;
-            }
-            if (isDataFolder(parts[k]) && k + 1 < parts.size()) {
-                votes[root]++;
-                break;
-            }
+        if (isJunk(f.parts)) {
+            continue;
         }
-    }
-    if (votes.empty()) {
-        return collectLoose(zip, files, items, modTxtIndex, error, skipped);
-    }
-    std::string root;
-    int best = -1;
-    for (auto& v : votes) {
-        if (v.second > best || (v.second == best && v.first.size() < root.size())) {
-            best = v.second;
-            root = v.first;
-        }
-    }
-    uint64_t total = 0;
-    for (auto& f : files) {
-        std::string path;
-        for (size_t j = 0; j < f.second.size(); j++) {
-            path += (j ? "/" : "") + f.second[j];
-        }
-        mz_zip_archive_file_stat st;
-        mz_zip_reader_file_stat(&zip.z, f.first, &st);
-        if (fsu::Lower(f.second.back()) == "mod.txt") {
+        if (fsu::Lower(f.parts.back()) == "mod.txt") {
             // the mod's description: the one nearest the top of the zip
-            if (modTxtRel.empty() || std::count(path.begin(), path.end(), '/') < std::count(modTxtRel.begin(), modTxtRel.end(), '/')) {
-                modTxtRel = path;
-                modTxtIndex = (int)f.first;
+            if (modTxtIndex < 0 || f.parts.size() < modTxtDepth) {
+                modTxtIndex = (int)i;
+                modTxtDepth = f.parts.size();
             }
             continue;
         }
-        if (path.compare(0, root.size(), root) != 0) {
-            continue; // outside the mod's data (readme files and such)
+        // folders to read: those after a "Data" folder if there is one
+        size_t from = 0;
+        for (size_t k = 0; k + 1 < f.parts.size(); k++) {
+            if (fsu::Lower(f.parts[k]) == "data") {
+                from = k + 1;
+            }
         }
-        const std::string rel = path.substr(root.size());
-        if (rel.find('/') == std::string::npos || !isDataFile(f.second.back())) {
-            skipped++; // loose files next to the data folders, programs, scripts
+        // a folder named exactly like a game folder (the nearest the top), else one whose
+        // name says it ("This goes into Maps"; the nearest the file)
+        for (size_t k = from; k + 1 < f.parts.size() && f.folder.empty(); k++) {
+            f.folder = canonFolder(fsu::Lower(f.parts[k]));
+            f.restFrom = k + 1;
+        }
+        for (size_t k = f.parts.size() - 1; f.folder.empty() && k-- > from;) {
+            f.folder = phraseFolder(fsu::Lower(f.parts[k]));
+            f.restFrom = k + 1;
+        }
+        anyHint |= !f.folder.empty();
+        files.push_back(f);
+    }
+    std::set<std::string> taken;
+    uint64_t total = 0;
+    for (File& f : files) {
+        std::string rel;
+        if (!f.folder.empty() && !fitsFolder(f.folder, f.parts.back(), zip, f.index)) {
+            f.folder.clear(); // (a readme in "This goes into Maps", a picture in Campaigns...)
+        }
+        if (!f.folder.empty()) {
+            rel = f.folder;
+            for (size_t k = f.restFrom; k < f.parts.size(); k++) {
+                rel += "/" + f.parts[k];
+            }
+        } else {
+            const std::string folder = sniff(zip, f.index, f.parts.back(), anyHint);
+            if (folder.empty()) {
+                skipped++; // readmes, previews, anything unknown
+                continue;
+            }
+            rel = folder + "/" + f.parts.back();
+        }
+        if (!taken.insert(fsu::Lower(rel)).second) {
+            skipped++; // (the same file twice: the first one counts)
             continue;
         }
-        total += st.m_uncomp_size;
-        items.push_back({ f.first, rel, st.m_uncomp_size });
+        total += f.size;
+        items.push_back({ f.index, rel, f.size });
     }
     if (items.empty()) {
-        error = "no game files in it";
+        error = "no game files in it (no maps, campaigns, textures, sounds or models)";
         return false;
     }
     if (total > kMaxModBytes || (int)items.size() > kMaxModFiles) {
@@ -472,6 +523,81 @@ bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std:
     for (int k = 2; fsu::IsDir(fsu::Join(modsDir, folder)) || fsu::IsFile(fsu::Join(modsDir, folder)); k++) {
         folder = Mod_SafeName(name) + " " + std::to_string(k);
     }
+    // A campaign called "main" was made to replace the game's own (the old way to install
+    // one): it becomes this mod's campaign instead, next to the main one. With a single
+    // campaign, its world map (Textures/World.png) becomes that campaign's map only.
+    {
+        std::string camp; // (campaign names can't hold spaces)
+        for (char c : folder) {
+            if (c != ' ') {
+                camp += c;
+            }
+        }
+        std::vector<Item*> campaigns;
+        Item* world = nullptr;
+        for (Item& it : items) {
+            const std::string l = fsu::Lower(it.rel);
+            if (l.compare(0, 10, "campaigns/") == 0 && l.find('/', 10) == std::string::npos && l.size() > 14 && l.compare(l.size() - 4, 4, ".txt") == 0) {
+                campaigns.push_back(&it);
+            }
+            if (l == "textures/world.png" || l == "textures/world.jpg") {
+                world = &it;
+            }
+        }
+        for (Item* c : campaigns) {
+            if (fsu::Lower(c->rel) == "campaigns/main.txt") {
+                c->rel = "Campaigns/" + camp + ".txt";
+            }
+        }
+        if (campaigns.size() == 1 && world) {
+            const std::string stem = campaigns[0]->rel.substr(10, campaigns[0]->rel.size() - 14);
+            world->rel = "Textures/" + stem + "/World" + world->rel.substr(world->rel.rfind('.'));
+        }
+    }
+    // no mod.txt: describe the mod with the start of its readme
+    std::string description;
+    if (modTxt < 0) {
+        mz_uint best = 0;
+        size_t bestDepth = 99;
+        const mz_uint n = mz_zip_reader_get_num_files(&zip.z);
+        for (mz_uint i = 0; i < n; i++) {
+            mz_zip_archive_file_stat st;
+            std::vector<std::string> parts;
+            if (!mz_zip_reader_file_stat(&zip.z, i, &st) || st.m_is_directory || !safeParts(st.m_filename, parts) || isJunk(parts)) {
+                continue;
+            }
+            std::string l = fsu::Lower(parts.back());
+            l.erase(std::remove(l.begin(), l.end(), ' '), l.end());
+            const bool readme = l == "readme" || l.compare(0, 7, "readme.") == 0 || l == "readme.txt";
+            if (readme && parts.size() < bestDepth && st.m_uncomp_size < (1u << 20)) {
+                best = i;
+                bestDepth = parts.size();
+            }
+        }
+        if (bestDepth < 99) {
+            std::string t = peek(zip, best, 2000), para;
+            for (char& c : t) {
+                if (c == '\r' || c == '\t') {
+                    c = c == '\t' ? ' ' : '\n';
+                }
+            }
+            size_t a = 0;
+            while (a < t.size() && para.empty()) { // the first paragraph that says something
+                size_t b = t.find("\n\n", a);
+                para = fsu::Trim(t.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                a = b == std::string::npos ? t.size() : b + 2;
+            }
+            for (char& c : para) {
+                if (c == '\n' || (unsigned char)c < 32 || (unsigned char)c > 126) {
+                    c = ' ';
+                }
+            }
+            if (para.size() > 200) {
+                para = para.substr(0, 197) + "...";
+            }
+            description = para;
+        }
+    }
     // unpack into a hidden folder first, so a failed install leaves nothing behind
     const std::string tmp = fsu::Join(modsDir, ".installing");
     fsu::RemoveTree(tmp);
@@ -480,9 +606,31 @@ bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std:
         fsu::RemoveTree(tmp);
         return false;
     }
+    // campaign files written on old Macs end their lines with CR only: the game's end text
+    // needs them as lines
+    for (const std::string& c : fsu::List(fsu::Join(tmp, "Campaigns"), false)) {
+        const std::string p = fsu::Join(fsu::Join(tmp, "Campaigns"), c);
+        std::string t, o;
+        if (fsu::ReadAll(p, t) && t.find('\r') != std::string::npos) {
+            for (size_t i = 0; i < t.size(); i++) {
+                if (t[i] == '\r') {
+                    o += '\n';
+                    if (i + 1 < t.size() && t[i + 1] == '\n') {
+                        i++;
+                    }
+                } else {
+                    o += t[i];
+                }
+            }
+            fsu::WriteAll(p, o);
+        }
+    }
     addLevelPackCampaign(tmp, folder);
     if (modTxtData.empty()) {
         modTxtData = "name=" + folder + "\n"; // (a second copy shows as "Name 2")
+        if (!description.empty()) {
+            modTxtData += "description=" + description + "\n";
+        }
     }
     fsu::WriteAll(fsu::Join(tmp, "mod.txt"), modTxtData);
     if (!fsu::Rename(tmp, fsu::Join(modsDir, folder))) {

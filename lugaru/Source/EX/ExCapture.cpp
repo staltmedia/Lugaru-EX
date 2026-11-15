@@ -128,6 +128,56 @@ static void note(const char* s)
     printf("LugaruEX: %s\n", s);
 }
 
+// console "fps": frames per second as a plain number in the top-right corner of the window
+// (counted over half a second; drawn after the capture, so never in screenshots or videos)
+static bool g_fpsOn = false;
+
+void SetFpsCounter(bool on)
+{
+    g_fpsOn = on;
+}
+
+bool FpsCounter()
+{
+    return g_fpsOn;
+}
+
+static void drawFps(int W, int H)
+{
+    static Uint64 since = 0;
+    static int frames = 0, shown = 0;
+    const Uint64 now = SDL_GetPerformanceCounter();
+    if (!since) {
+        since = now;
+    }
+    frames++;
+    const double dt = (double)(now - since) / SDL_GetPerformanceFrequency();
+    if (dt >= .5) {
+        shown = (int)(frames / dt + .5);
+        frames = 0;
+        since = now;
+    }
+    if (!g_fpsOn || !Game::text) {
+        return;
+    }
+    const std::string s = std::to_string(shown);
+    const float size = 1.5f * H / 768.f;
+    const float margin = 20.f * H / 768.f;
+    const float x = W - margin - s.size() * 10.f * size;
+    const float y = H - margin - 16.f * size;
+    glPushAttrib(GL_ALL_ATTRIB_BITS);
+    glViewport(0, 0, W, H);
+    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_FOG);
+    Game::text->glPrintOutlined(1, 1, 1, 1, x, y, s, 1, size, (float)W, (float)H);
+    glPopAttrib();
+}
+
 // top-right, the game's font, fading like the lighting name; drawn after the capture
 static void drawNote(int W, int H)
 {
@@ -144,7 +194,7 @@ static void drawNote(int W, int H)
     const float size = 1.5f * H / 768.f;
     const float margin = 20.f * H / 768.f;
     const float x = W - margin - g_note.size() * 10.f * size;
-    const float y = H - margin - 16.f * size;
+    const float y = H - margin - 16.f * size - (g_fpsOn ? 24.f * size : 0.f); // (under the fps counter)
     glPushAttrib(GL_ALL_ATTRIB_BITS);
     glViewport(0, 0, W, H);
     glDisable(GL_SCISSOR_TEST); // (split screen draws each view inside a scissor box)
@@ -1003,6 +1053,7 @@ void CaptureFrame()
             }
         }
     }
+    drawFps(W, H);
     drawNote(W, H);
 }
 

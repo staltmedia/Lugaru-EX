@@ -200,7 +200,10 @@ void Weapon::doStuff(int i)
     // character or body that moved away, was dropped with no speed, or stopped in the air
     // because its "resting" time never started over) falls again: the normal physics
     // takes it down to the ground or the object below
-    if (owner == -1 && !(velocity.x || velocity.y || velocity.z) && (position.x || position.z)) {
+    if (owner != -1 || velocity.x || velocity.y || velocity.z) {
+        exInTree = false; // (picked up or moving again)
+    }
+    if (owner == -1 && !exInTree && !(velocity.x || velocity.y || velocity.z) && (position.x || position.z)) {
         exRestCheck -= multiplier;
         if (exRestCheck <= 0) {
             exRestCheck = .25f;
@@ -230,6 +233,7 @@ void Weapon::doStuff(int i)
                         Object::objects[k]->model.MakeDecal(breakdecal, DoRotation(colpoint - Object::objects[k]->position, 0, -Object::objects[k]->yaw, 0), .1, 1, Random() % 360);
                         normalrot = DoRotation(Object::objects[k]->model.Triangles[whichhit].facenormal, 0, Object::objects[k]->yaw, 0);
                         velocity = 0;
+                        exInTree = true; // (stuck in the trunk: the "nothing under it" check leaves it there)
                         if (type == knife) {
                             position = colpoint - normalrot * .1;
                         } else if (type == sword) {

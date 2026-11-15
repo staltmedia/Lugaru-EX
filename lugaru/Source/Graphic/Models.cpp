@@ -28,6 +28,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <stdexcept>
 #include <tuple>
 
 extern float multiplier;
@@ -278,6 +279,25 @@ int Model::SphereCheckPossible(XYZ* p1, float radius, XYZ* move, float* rotate)
     return firstintersecting;
 }
 
+// LugaruEX: a damaged or hostile .solid file (mods, players' shared looks) can't make the
+// game allocate a negative size or read vertices outside the model; valid files load as before
+static void exCheckModelCounts(FILE* f, short vertexNum, short triangleNum, const std::string& filename)
+{
+    if (vertexNum < 0 || triangleNum < 0) {
+        fclose(f);
+        throw std::runtime_error("damaged model file: " + filename);
+    }
+}
+
+static void exCheckTriangle(TexturedTriangle& t, short vertexNum)
+{
+    for (short& v : t.vertex) {
+        if (v < 0 || v >= vertexNum) {
+            v = 0;
+        }
+    }
+}
+
 void Model::UpdateVertexArray()
 {
     if (type != normaltype && type != decalstype) {
@@ -452,6 +472,7 @@ bool Model::loadnotex(const std::string& filename)
 
     fseek(tfile, 0, SEEK_SET);
     funpackf(tfile, "Bs Bs", &vertexNum, &triangleNum);
+    exCheckModelCounts(tfile, vertexNum, triangleNum, filename);
 
     // read the model data
     deallocate();
@@ -473,6 +494,7 @@ bool Model::loadnotex(const std::string& filename)
         Triangles[i].vertex[0] = vertex[0];
         Triangles[i].vertex[1] = vertex[2];
         Triangles[i].vertex[2] = vertex[4];
+        exCheckTriangle(Triangles[i], vertexNum);
         funpackf(tfile, "Bf Bf Bf", &Triangles[i].gx[0], &Triangles[i].gx[1], &Triangles[i].gx[2]);
         funpackf(tfile, "Bf Bf Bf", &Triangles[i].gy[0], &Triangles[i].gy[1], &Triangles[i].gy[2]);
     }
@@ -511,6 +533,7 @@ bool Model::load(const std::string& filename)
 
     fseek(tfile, 0, SEEK_SET);
     funpackf(tfile, "Bs Bs", &vertexNum, &triangleNum);
+    exCheckModelCounts(tfile, vertexNum, triangleNum, filename);
 
     // read the model data
     deallocate();
@@ -533,6 +556,7 @@ bool Model::load(const std::string& filename)
         Triangles[i].vertex[0] = vertex[0];
         Triangles[i].vertex[1] = vertex[2];
         Triangles[i].vertex[2] = vertex[4];
+        exCheckTriangle(Triangles[i], vertexNum);
         funpackf(tfile, "Bf Bf Bf", &Triangles[i].gx[0], &Triangles[i].gx[1], &Triangles[i].gx[2]);
         funpackf(tfile, "Bf Bf Bf", &Triangles[i].gy[0], &Triangles[i].gy[1], &Triangles[i].gy[2]);
     }
@@ -571,6 +595,7 @@ bool Model::loaddecal(const std::string& filename)
 
     fseek(tfile, 0, SEEK_SET);
     funpackf(tfile, "Bs Bs", &vertexNum, &triangleNum);
+    exCheckModelCounts(tfile, vertexNum, triangleNum, filename);
 
     // read the model data
 
@@ -594,6 +619,7 @@ bool Model::loaddecal(const std::string& filename)
         Triangles[i].vertex[0] = vertex[0];
         Triangles[i].vertex[1] = vertex[2];
         Triangles[i].vertex[2] = vertex[4];
+        exCheckTriangle(Triangles[i], vertexNum);
         funpackf(tfile, "Bf Bf Bf", &Triangles[i].gx[0], &Triangles[i].gx[1], &Triangles[i].gx[2]);
         funpackf(tfile, "Bf Bf Bf", &Triangles[i].gy[0], &Triangles[i].gy[1], &Triangles[i].gy[2]);
     }
@@ -632,6 +658,7 @@ bool Model::loadraw(const std::string& filename)
 
     fseek(tfile, 0, SEEK_SET);
     funpackf(tfile, "Bs Bs", &vertexNum, &triangleNum);
+    exCheckModelCounts(tfile, vertexNum, triangleNum, filename);
 
     // read the model data
     deallocate();
@@ -653,6 +680,7 @@ bool Model::loadraw(const std::string& filename)
         Triangles[i].vertex[0] = vertex[0];
         Triangles[i].vertex[1] = vertex[2];
         Triangles[i].vertex[2] = vertex[4];
+        exCheckTriangle(Triangles[i], vertexNum);
         funpackf(tfile, "Bf Bf Bf", &Triangles[i].gx[0], &Triangles[i].gx[1], &Triangles[i].gx[2]);
         funpackf(tfile, "Bf Bf Bf", &Triangles[i].gy[0], &Triangles[i].gy[1], &Triangles[i].gy[2]);
     }

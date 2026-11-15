@@ -50,6 +50,9 @@ void Joint::load(FILE* tfile, std::vector<Joint>& joints)
     funpackf(tfile, "Bi Bi", &label, &hasgun);
     funpackf(tfile, "Bb", &lower);
     funpackf(tfile, "Bi", &parentID);
+    if (hasparent && (parentID < 0 || parentID >= (int)joints.size())) {
+        hasparent = false; // LugaruEX: a damaged file's parent can't point outside the skeleton
+    }
     if (hasparent) {
         parent = &joints[parentID];
     } else {

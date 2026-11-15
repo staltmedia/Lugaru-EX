@@ -60,7 +60,7 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.5.4" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.5.5" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
@@ -309,12 +309,8 @@ static bool SaveIni(const Settings& s)
       << "; 0 = half size, 1 = full size\r\n"
       << "TextureQuality=" << s.texq << "\r\n"
       << "TextureOverrides=" << s.overrides << "\r\n"
-      << "; HUD and menus always keep their proportions on wide screens\r\n"
-      << "HUDAspect=1\r\n"
       << "; colour blind filter: 0 off, 1 deuteranopia, 2 protanopia, 3 tritanopia\r\n"
       << "Colorblind=" << s.colorblind << "\r\n"
-      << "; (old) the game now starts in the Enhanced look when Shaders=1; R switches looks for that game only\r\n"
-      << "Lighting=" << s.lighting << "\r\n"
       << "; 0 = shaders off (Original look only)\r\n"
       << "Shaders=" << s.shaders << "\r\n"
       << "\r\n[Engine]\r\n"
@@ -1549,12 +1545,10 @@ static std::wstring ServerStatus(const ServerEntry& e)
     if (e.info.version != EX_LAUNCHER_VERSION) {
         return L"Version " + widen(e.info.version); // (can't be joined from this version)
     }
-    std::wstring s = e.info.inGame ? L"In game" : L"In menu";
+    // "In game" / "Waiting", ", Private" when it has a password (nothing more: cleaner)
+    std::wstring s = e.info.inGame ? L"In game" : L"Waiting";
     if (e.info.password) {
-        s += L", locked";
-    }
-    if (e.info.shareMods) {
-        s += L", mods";
+        s += L", Private";
     }
     return s;
 }
@@ -1680,7 +1674,7 @@ static void FillServerList()
         const bool own = IsOwnServer(e);
         const int players = own ? 1 + (int)g_admin.players.size() : e.info.players;
         const std::wstring count = !e.answered ? L"-" : e.info.maxPlayers > 0 ? std::to_wstring(players) + L"/" + std::to_wstring(e.info.maxPlayers) : std::to_wstring(players);
-        const std::wstring status = own ? L"Yours" + std::wstring(e.info.password ? L", locked" : L"") : ServerStatus(e);
+        const std::wstring status = own ? L"Yours" + std::wstring(e.info.password ? L", Private" : L"") : ServerStatus(e);
         const std::wstring ping = own ? L"" : e.answered && e.pingMs >= 0 ? std::to_wstring(e.pingMs) + L" ms" : L"-";
         MpRow r;
         r.server = i;
@@ -1757,7 +1751,7 @@ static void UpdateHostStatus()
         t = L"The game is running.";
     } else {
         t = MpCheck(IDC_LAN) ? L"Play starts your server on your network (LAN, Radmin, Hamachi, ZeroTier...)."
-                             : L"Play starts your server: it shows in the Steam server list.";
+                             : L"Play starts your server: in the Steam list, or join by IP.";
     }
     SetDlgItemTextW(g_mp, IDC_MP_HOSTSTATUS, t.c_str());
 }
@@ -3620,9 +3614,72 @@ static bool RunSetupIfNeeded(HINSTANCE inst)
     return true;
 }
 
+// Text boxes get a plain right-click menu (Undo, Cut, Copy, Paste, Delete, Select all)
+// instead of Windows' own, which adds reading order, Unicode control characters and IME items.
+static LRESULT CALLBACK PlainEditProc(HWND w, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR)
+{
+    if (msg == WM_CONTEXTMENU) {
+        enum { kUndo = 1, kCut, kCopy, kPaste, kDelete, kAll };
+        const LONG style = GetWindowLongW(w, GWL_STYLE);
+        const bool readOnly = (style & ES_READONLY) != 0, secret = (style & ES_PASSWORD) != 0;
+        DWORD a = 0, b = 0;
+        SendMessageW(w, EM_GETSEL, (WPARAM)&a, (LPARAM)&b);
+        const bool sel = b > a, text = GetWindowTextLengthW(w) > 0;
+        const bool canPaste = !readOnly && IsClipboardFormatAvailable(CF_UNICODETEXT);
+        HMENU m = CreatePopupMenu();
+        AppendMenuW(m, (!readOnly && SendMessageW(w, EM_CANUNDO, 0, 0)) ? MF_STRING : MF_GRAYED, kUndo, L"Undo");
+        AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(m, (sel && !readOnly && !secret) ? MF_STRING : MF_GRAYED, kCut, L"Cut");
+        AppendMenuW(m, (sel && !secret) ? MF_STRING : MF_GRAYED, kCopy, L"Copy");
+        AppendMenuW(m, canPaste ? MF_STRING : MF_GRAYED, kPaste, L"Paste");
+        AppendMenuW(m, (sel && !readOnly) ? MF_STRING : MF_GRAYED, kDelete, L"Delete");
+        AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(m, text ? MF_STRING : MF_GRAYED, kAll, L"Select all");
+        POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
+        if (lp == (LPARAM)-1) { // Shift+F10 / menu key: under the box
+            RECT r;
+            GetWindowRect(w, &r);
+            p.x = r.left;
+            p.y = r.bottom;
+        }
+        if (GetFocus() != w) {
+            SetFocus(w);
+        }
+        const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, w, NULL);
+        DestroyMenu(m);
+        switch (cmd) {
+            case kUndo: SendMessageW(w, WM_UNDO, 0, 0); break;
+            case kCut: SendMessageW(w, WM_CUT, 0, 0); break;
+            case kCopy: SendMessageW(w, WM_COPY, 0, 0); break;
+            case kPaste: SendMessageW(w, WM_PASTE, 0, 0); break;
+            case kDelete: SendMessageW(w, WM_CLEAR, 0, 0); break;
+            case kAll: SendMessageW(w, EM_SETSEL, 0, -1); break;
+        }
+        return 0;
+    }
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(w, PlainEditProc, 7);
+    }
+    return DefSubclassProc(w, msg, wp, lp);
+}
+
+static LRESULT CALLBACK PlainEditHook(int code, WPARAM wp, LPARAM lp)
+{
+    if (code == HCBT_CREATEWND) {
+        wchar_t cls[16] = {};
+        GetClassNameW((HWND)wp, cls, 16);
+        if (lstrcmpiW(cls, L"Edit") == 0) {
+            SetWindowSubclass((HWND)wp, PlainEditProc, 7, 0);
+        }
+    }
+    return CallNextHookEx(NULL, code, wp, lp);
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 {
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    // every text box made on this thread (dialog edits, combo box edits) gets the plain menu
+    SetWindowsHookExW(WH_CBT, PlainEditHook, NULL, GetCurrentThreadId());
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
     g_exeDir = ExeDir();

@@ -29,7 +29,13 @@ struct ModEntry // one item of the [Mods] List
 // unpack a mod zip into modsDir/<name>/ (a new folder: name from mod.txt or the zip's file name).
 // Rejects zips with no game data in them and anything outside the mod's folder; skips
 // files that are not game data (programs, scripts). folderOut = the new folder's name.
-bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std::string& folderOut, std::string& error);
+// skippedOut: how many files were left out (readmes, pictures of the mod, programs...)
+bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std::string& folderOut, std::string& error, int* skippedOut = nullptr);
+// What the launchers call for anything the player picks or drops: a mod .zip (also a zip
+// inside a zip, or a zip with another extension) or an unpacked mod folder. Anything else
+// (.rar, .7z...) gets an error that says what to do. note = what was left out and why
+// ("" when everything was used).
+bool Mod_Install(const std::string& path, const std::string& modsDir, std::string& folderOut, std::string& error, std::string& note);
 // unpack a zip made by Mod_PackFolder (online sharing) into destDir, with the same checks
 // (maxBytes: a smaller limit on the unpacked size than a mod's, e.g. for players' looks; 0 = the mod limit)
 bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::string& error, uint64_t maxBytes = 0);

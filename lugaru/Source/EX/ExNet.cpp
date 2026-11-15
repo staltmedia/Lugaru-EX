@@ -278,6 +278,8 @@ enum Role
 };
 static Role g_role = R_NONE;
 static bool g_steam = false; // this session goes through Steam (see "Steam" below)
+static bool g_directToo = false; // a Steam host that also takes players by IP on its UDP port
+static bool g_helperUp = false;  // the Steam helper said hello (see "Steam" below)
 static SOCKET g_sock = INVALID_SOCKET;
 static int g_port = 27015;
 static bool g_lan = false;
@@ -294,7 +296,7 @@ static void maskedIp(const sockaddr_in& a, char* out, size_t n)
 {
     const uint8_t* b = (const uint8_t*)&a.sin_addr.s_addr;
     if (b[0] == 127) {
-        snprintf(out, n, g_steam ? "Steam" : "this PC");
+        snprintf(out, n, g_steam && g_helperUp ? "Steam" : "this PC");
     } else {
         snprintf(out, n, "%u.%u.x.x", b[0], b[1]);
     }
@@ -668,7 +670,6 @@ static std::string myName()
 // so no player sees another's IP address. Its control packets start with "LGXS".
 static const uint32_t kSteamCtl = 0x5358474C;
 static sockaddr_in g_helperAddr;      // the helper's control socket
-static bool g_helperUp = false;
 static double g_lastKeep = 0;
 static std::map<uint16_t, std::string> g_steamIdents; // host: helper port -> "steam:<id>" of that guest
 static std::string g_steamCode;       // host: the lobby code to give friends
@@ -928,8 +929,12 @@ void NetInit()
         computeMyPrints(); // (which mods are on here: compared with the other side's)
     }
     if (g_steam) {
-        // through Steam: a port on this PC only (any free one), and the helper does the rest
-        if (!openSocket(0, false, true)) {
+        // through Steam the helper carries the Steam players (from 127.0.0.1). A host also
+        // listens on its UDP port, so players without Steam (or with Steam not running) can
+        // still join by IP / LAN / VPN; nothing about that port is published. Port taken:
+        // Steam only, on a port of this PC.
+        g_directToo = cfg.mpMode == "host" && openSocket(g_port, true);
+        if (!g_directToo && !openSocket(0, false, true)) {
             fprintf(stderr, "LugaruEX net: can't open a local port for Steam\n");
             return;
         }
@@ -937,8 +942,9 @@ void NetInit()
         if (cfg.mpMode == "host") {
             g_role = R_HOST;
             g_nonce = ((uint64_t)rd() << 32) ^ rd() ^ (uint64_t)SDL_GetPerformanceCounter();
-            printf("LugaruEX net: hosting through Steam as \"%s\"%s, %s%s\n", netinfo::StripColours(cfg.mpServerName).c_str(),
-                   cfg.mpHostPassword.empty() ? "" : " (password)", maxPlayersText().c_str(), cfg.mpListed ? " (in the server list)" : " (unlisted)");
+            printf("LugaruEX net: hosting through Steam%s as \"%s\"%s, %s%s\n",
+                   g_directToo ? (" and on UDP port " + std::to_string(g_port)).c_str() : " (this PC's port only)",
+                   netinfo::StripColours(cfg.mpServerName).c_str(), cfg.mpHostPassword.empty() ? "" : " (password)", maxPlayersText().c_str(), cfg.mpListed ? " (in the server list)" : " (unlisted)");
             hostPrepareMods();
             lookStart();
             startHelper({ "host", std::to_string(boundPort()), cfg.mpListed ? "1" : "0" });
@@ -2880,7 +2886,8 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
         }
         // who it is, for bans: the Steam account (through Steam) or the address
         std::string ident;
-        if (g_steam && from.sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
+        // (a game on this PC that joins by IP while no helper runs is a direct player)
+        if (g_steam && g_helperUp && from.sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
             auto it = g_steamIdents.find(ntohs(from.sin_port));
             if (it == g_steamIdents.end()) {
                 return; // (the helper hasn't said whose this port is yet: bans need it; they ask again)
@@ -2911,7 +2918,8 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
             // the same PC back (it restarted the game: a new token): its old seats, not new ones
             for (auto& o : g_clients) {
                 // (through Steam every guest is at 127.0.0.1: there the helper's port is the player)
-                const bool same = o.addr.sin_addr.s_addr == from.sin_addr.s_addr && (!g_steam || o.addr.sin_port == from.sin_port);
+                const bool steamPeer = g_steam && g_helperUp && from.sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+                const bool same = o.addr.sin_addr.s_addr == from.sin_addr.s_addr && (!steamPeer || o.addr.sin_port == from.sin_port);
                 if (!o.connected && same) {
                     c = &o;
                     c->token = token;
@@ -4509,7 +4517,10 @@ void NetDrawOverlay()
     }
     if (g_role == R_HOST && g_steam && mainmenu && (g_steamCode.empty() || !g_steamError.empty())) {
         // until the server is in Steam's list (or why it isn't)
-        const std::string line = !g_steamError.empty() ? g_steamError : "Making a Steam lobby...";
+        std::string line = !g_steamError.empty() ? g_steamError : "Making a Steam lobby...";
+        if (!g_steamError.empty() && g_directToo) {
+            line += " - players can still join by IP (UDP port " + std::to_string(g_port) + ")";
+        }
         const float size = 1.2f * screenheight / 768.f;
         glPushAttrib(GL_ALL_ATTRIB_BITS);
         glEnable(GL_TEXTURE_2D);

@@ -65,7 +65,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.5.4"
+#define LUGARUEX_VERSION "0.5.5"
 
 namespace
 {
@@ -909,24 +909,31 @@ std::string ModsText()
 
 void InstallMods(const std::vector<std::string>& zips)
 {
-    std::string done, failed;
-    for (const std::string& z : zips) {
-        if (z.size() < 4 || Lower(z.substr(z.size() - 4)) != ".zip") {
+    std::string done, failed, notes;
+    for (std::string z : zips) {
+        if (z.compare(0, 7, "file://") == 0) {
+            z = z.substr(7); // (some desktops drop a URI)
+        }
+        if (z.empty()) {
             continue;
         }
-        std::string folder, err;
-        const std::string shown = z.substr(z.find_last_of("/\\") + 1);
-        if (Mod_InstallZip(z, ModsDir(), folder, err)) {
+        std::string folder, err, left;
+        const std::string shown = z.substr(z.find_last_of("/\\", z.size() - 2) + 1);
+        if (Mod_Install(z, ModsDir(), folder, err, left)) {
             done += (done.empty() ? "" : ", ") + shown;
             g_modOrder.insert(g_modOrder.begin(), { folder, true });
             g_modSel = 0;
+            if (!left.empty()) {
+                notes += "\n" + shown + ": " + left;
+            }
         } else {
             failed += "\n" + shown + ": " + err;
         }
     }
     RefreshMods();
-    if (!failed.empty()) {
-        g_message = "Some files could not be installed as mods:" + failed;
+    if (!failed.empty() || !notes.empty()) {
+        g_message = (!failed.empty() ? "Some files could not be installed as mods:" + failed : std::string()) +
+                    (!notes.empty() ? (failed.empty() ? "" : "\n\n") + std::string("Installed, with a note:") + notes : std::string());
     }
     if (!done.empty()) {
         g_modNote = "Installed: " + done + ". New mods are on and at the top of the list.";
@@ -954,7 +961,7 @@ std::vector<std::string> PickZips()
     std::vector<wchar_t> buf(32768, 0);
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFilter = L"Mods (*.zip)\0*.zip\0All files\0*.*\0";
+    ofn.lpstrFilter = L"Mods (*.zip, *.rar, *.7z)\0*.zip;*.rar;*.7z\0All files\0*.*\0";
     ofn.lpstrFile = buf.data();
     ofn.nMaxFile = (DWORD)buf.size();
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
@@ -980,8 +987,8 @@ std::vector<std::string> PickZips()
     return out;
 #else
     const char* cmds[] = {
-        "zenity --file-selection --multiple --separator='\n' --title='Choose mod zip files' --file-filter='Mods | *.zip *.ZIP' 2>/dev/null",
-        "kdialog --getopenfilename \"$HOME\" '*.zip' --multiple --separate-output --title 'Choose mod zip files' 2>/dev/null",
+        "zenity --file-selection --multiple --separator='\n' --title='Choose mod zip files' --file-filter='Mods | *.zip *.ZIP *.rar *.7z' --file-filter='All files | *' 2>/dev/null",
+        "kdialog --getopenfilename \"$HOME\" '*.zip *.rar *.7z' --multiple --separate-output --title 'Choose mod zip files' 2>/dev/null",
     };
     for (const char* c : cmds) {
         const std::string tool = std::string(c).substr(0, std::string(c).find(' '));
@@ -1106,12 +1113,8 @@ bool SaveIni()
     line("; 0 = half size, 1 = full size");
     ki("TextureQuality", s.texq);
     ki("TextureOverrides", s.overrides);
-    line("; HUD and menus always keep their proportions on wide screens");
-    ki("HUDAspect", 1);
     line("; colour blind filter: 0 off, 1 deuteranopia, 2 protanopia, 3 tritanopia");
     ki("Colorblind", s.colorblind);
-    line("; (old) the game now starts in the Enhanced look when Shaders=1; R switches looks for that game only");
-    ki("Lighting", s.lighting);
     line("; 0 = shaders off (Original look only)");
     ki("Shaders", s.shaders);
     line("");
@@ -2342,7 +2345,7 @@ void TabMultiplayer(float s)
             t = "The game is running.";
         } else {
             t = g_lan ? "Play starts your server on your network (LAN, Radmin, Hamachi, ZeroTier...)."
-                      : "Play starts your server: it shows in the Steam server list.";
+                      : "Play starts your server: in the Steam list, or join by IP.";
         }
         ImGui::TextUnformatted(t.c_str());
         ImGui::SetNextItemOpen(g_mpAdvanced);
@@ -2454,12 +2457,9 @@ void TabMultiplayer(float s)
             const std::string count = !e.answered ? "-" : e.info.maxPlayers > 0 ? std::to_string(players) + "/" + std::to_string(e.info.maxPlayers) : std::to_string(players);
             ImGui::TextUnformatted(count.c_str());
             ImGui::TableNextColumn();
-            std::string st = own ? "Yours" : !e.answered ? "No answer" : e.info.version != LUGARUEX_VERSION ? "Version " + e.info.version : (e.info.inGame ? "In game" : "In menu");
+            std::string st = own ? "Yours" : !e.answered ? "No answer" : e.info.version != LUGARUEX_VERSION ? "Version " + e.info.version : (e.info.inGame ? "In game" : "Waiting");
             if (e.answered && e.info.password) {
-                st += ", locked";
-            }
-            if (!own && e.answered && e.info.shareMods) {
-                st += ", mods";
+                st += ", Private"; // ("In game" / "Waiting" alone: no password)
             }
             ImGui::TextUnformatted(st.c_str());
             ImGui::TableNextColumn();
@@ -2644,7 +2644,7 @@ void TabMods(float s)
     }
     ImGui::PushTextWrapPos(avail);
     ImGui::TextDisabled("%s", !g_modNote.empty() ? g_modNote.c_str()
-                              : g_modOrder.empty() ? "No mods yet. Drag mod .zip files onto this window, or use Add mod... A mod is a zip of game files (Textures, Maps, Sounds, Campaigns...)."
+                              : g_modOrder.empty() ? "No mods yet. Drag a mod (its .zip or its unpacked folder) onto this window, or use Add mod... A mod is a zip of game files (Textures, Maps, Sounds, Campaigns...)."
                                                    : "Ticked mods are on; the higher one wins when two change the same file. Right-click a mod (X on a controller) to delete it.");
     ImGui::PopTextWrapPos();
     (void)s;

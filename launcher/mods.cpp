@@ -70,10 +70,10 @@ void note(const std::wstring& s)
 
 void defaultNote()
 {
-    note(g_order.empty() ? L"No mods yet. Drag mod .zip files onto this window, or use Add mod... "
+    note(g_order.empty() ? L"No mods yet. Drag a mod (its .zip or its unpacked folder) onto this window, or use Add mod... "
                            L"A mod is a zip of game files (Textures, Maps, Sounds, Campaigns...)."
                          : L"Ticked mods are on; the higher one wins when two change the same file. "
-                           L"Right-click a mod to delete it. Drag more .zip files onto this window to add them.");
+                           L"Right-click a mod to delete it. Drag more mods (.zip or folder) onto this window to add them.");
 }
 
 void fill(int select)
@@ -163,7 +163,7 @@ void addMods()
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = GetAncestor(g_page, GA_ROOT);
-    ofn.lpstrFilter = L"Mods (*.zip)\0*.zip\0All files\0*.*\0";
+    ofn.lpstrFilter = L"Mods (*.zip, *.rar, *.7z)\0*.zip;*.rar;*.7z\0All files\0*.*\0";
     ofn.lpstrFile = buf.data();
     ofn.nMaxFile = (DWORD)buf.size();
     ofn.lpstrTitle = L"Choose mod zip files";
@@ -214,19 +214,22 @@ void Mods_Init(HWND page, const std::wstring& exDir, const std::wstring& iniPath
 
 void Mods_Install(const std::vector<std::wstring>& zips)
 {
-    std::wstring done, failed;
+    std::wstring done, failed, notes;
     int first = -1;
     HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT));
     for (const std::wstring& z : zips) {
-        if (z.size() < 4 || _wcsicmp(z.c_str() + z.size() - 4, L".zip") != 0) {
+        if (z.empty()) {
             continue;
         }
-        std::string folder, err;
-        const std::wstring shown = z.substr(z.find_last_of(L"\\/") + 1);
-        if (Mod_InstallZip(U8(z), g_modsDir, folder, err)) {
+        std::string folder, err, left;
+        const std::wstring shown = z.substr(z.find_last_of(L"\\/", z.size() - 2) + 1);
+        if (Mod_Install(U8(z), g_modsDir, folder, err, left)) {
             done += (done.empty() ? L"" : L", ") + shown;
             g_order.insert(g_order.begin(), { folder, true });
             first = 0;
+            if (!left.empty()) {
+                notes += L"\n" + shown + L": " + W(left);
+            }
         } else {
             failed += L"\n" + shown + L": " + W(err);
         }
@@ -235,6 +238,9 @@ void Mods_Install(const std::vector<std::wstring>& zips)
     fill(first);
     if (!failed.empty()) {
         MessageBoxW(GetAncestor(g_page, GA_ROOT), (L"Some files could not be installed as mods:" + failed).c_str(), L"LugaruEX", MB_ICONWARNING);
+    }
+    if (!notes.empty()) {
+        MessageBoxW(GetAncestor(g_page, GA_ROOT), (L"Installed, with a note:" + notes).c_str(), L"LugaruEX", MB_ICONINFORMATION);
     }
     if (!done.empty()) {
         note(L"Installed: " + done + L". New mods are on and at the top of the list.");

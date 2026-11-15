@@ -22,6 +22,8 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "Utils/binio.h"
 
+#include <algorithm>
+
 extern float multiplier;
 extern bool freeze;
 
@@ -60,18 +62,19 @@ void Muscle::load(FILE* tfile, int vertexNum, std::vector<Joint>& joints)
     funpackf(tfile, "Bf Bf Bf Bf Bf Bi Bi", &length, &targetlength, &minlength, &maxlength, &strength, &type, &numvertices);
 
     // read vertices
+    numvertices = std::min(std::max(numvertices, 0), 1 << 20); // (LugaruEX: a damaged count)
     for (int j = 0; j < numvertices; j++) {
         funpackf(tfile, "Bi", &vertice);
-        if (vertice < vertexNum) {
+        if (vertice >= 0 && vertice < vertexNum) {
             vertices.push_back(vertice);
         }
     }
 
     // read more info
     funpackf(tfile, "Bb Bi", &visible, &parentID);
-    parent1 = &joints[parentID];
+    parent1 = &joints[parentID >= 0 && parentID < (int)joints.size() ? parentID : 0]; // (LugaruEX: never outside the skeleton)
     funpackf(tfile, "Bi", &parentID);
-    parent2 = &joints[parentID];
+    parent2 = &joints[parentID >= 0 && parentID < (int)joints.size() ? parentID : 0];
 }
 
 void Muscle::loadVerticesLow(FILE* tfile, int vertexNum)
@@ -82,9 +85,10 @@ void Muscle::loadVerticesLow(FILE* tfile, int vertexNum)
     funpackf(tfile, "Bi", &numvertices);
 
     // read vertices
+    numvertices = std::min(std::max(numvertices, 0), 1 << 20); // (LugaruEX: a damaged count)
     for (int j = 0; j < numvertices; j++) {
         funpackf(tfile, "Bi", &vertice);
-        if (vertice < vertexNum) {
+        if (vertice >= 0 && vertice < vertexNum) {
             verticeslow.push_back(vertice);
         }
     }
@@ -98,9 +102,10 @@ void Muscle::loadVerticesClothes(FILE* tfile, int vertexNum)
     funpackf(tfile, "Bi", &numvertices);
 
     // read vertices
+    numvertices = std::min(std::max(numvertices, 0), 1 << 20); // (LugaruEX: a damaged count)
     for (int j = 0; j < numvertices; j++) {
         funpackf(tfile, "Bi", &vertice);
-        if (vertice < vertexNum) {
+        if (vertice >= 0 && vertice < vertexNum) {
             verticesclothes.push_back(vertice);
         }
     }

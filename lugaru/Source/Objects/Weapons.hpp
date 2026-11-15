@@ -66,6 +66,7 @@ public:
     XYZ tippoint;
     unsigned exHeldAt = 0; // LugaruEX: SDL ticks when its holder was last drawn (that is when a held weapon's position is set)
     float exRestCheck = 0;     // LugaruEX: time to the next "anything under me" check (lying still)
+    bool exInTree = false;     // LugaruEX: thrown into a tree trunk and stuck there (as in the original)
     bool exSomethingUnder();
     XYZ velocity;
     XYZ tipvelocity;

@@ -26,6 +26,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <algorithm>
 #include <cstdio>
+#include <stdexcept>
 
 std::vector<Animation> Animation::animations;
 
@@ -142,6 +143,12 @@ Animation::Animation(const std::string& filename, anim_height_type aheight, anim
 
     // read numframes, joints to know how much memory to allocate
     funpackf(tfile, "Bi Bi", &numframes, &numjoints);
+    // LugaruEX: a damaged or hostile file (mods, files shared online) can't make the game
+    // allocate without end or index past the skeleton's joints
+    if (numframes < 1 || numframes > 100000 || numjoints < 1 || numjoints > max_joints) {
+        fclose(tfile);
+        throw std::runtime_error("damaged animation file: " + filepath);
+    }
 
     // allocate memory for everything
 
@@ -185,4 +192,9 @@ Animation::Animation(const std::string& filename, anim_height_type aheight, anim
     endoffset /= numjoints;
     offset = endoffset;
     offset.y = 0;
+    // every frame holds max_joints joints (the extra ones zero), so a skeleton with more
+    // joints than this file never reads past the end (valid pairs match: no change)
+    for (i = 0; i < frames.size(); i++) {
+        frames[i].joints.resize(max_joints);
+    }
 }

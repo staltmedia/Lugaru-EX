@@ -1,4 +1,4 @@
-LugaruEX 0.5.4 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.5.5 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -43,13 +43,20 @@ Updates
   saves are kept.
 
 Mods
-  The Mods tab installs mods: drag mod .zip files onto the launcher (or Add
-  mod...). Any layout works: a Data folder, the game's folders, folders like
-  "This goes into Maps", or loose files - each file is sorted by what it is
-  (maps, campaigns, pictures, sounds, models), and Mac / Windows leftovers
-  are dropped. A campaign named main.txt (made to replace the game's own)
-  becomes the mod's own campaign next to the main one, with its world map.
-  Only game data is unpacked, never programs.
+  The Mods tab installs mods: drag a mod onto the launcher - its .zip or its
+  unpacked folder (or Add mod...). Any layout works: a Data folder, the game's
+  folders, folders like "This goes into Maps", loose files, or the mod's zip
+  inside another zip - each file is sorted by what it is (maps, campaigns,
+  pictures, sounds, models), and Mac / Windows leftovers are dropped. A
+  campaign named main.txt (made to replace the game's own) becomes the mod's
+  own campaign next to the main one, with its world map.
+  Only game data is unpacked, never programs: a mod that came with its own
+  Lugaru.exe gets its maps, textures and sounds, and the launcher says what
+  was left out. A .rar or .7z mod: unpack it first (Windows: right-click >
+  Extract All, or 7-Zip) and drop the folder. Texture and sound packs (gore,
+  HD skins...) work the same way: their files replace the game's while the
+  mod is ticked. The game reads pictures as .png / .jpg and sounds as .ogg /
+  .mp3 / .wav; other formats are pointed out when you install.
   Tick a mod to switch it on; the higher one in the list wins when two change
   the same file (Up / Down). Right-click a mod (X on a controller) to delete
   it. New campaigns from mods appear in the game's campaign list; a mod with
@@ -169,9 +176,9 @@ Launcher
     different mods and either one has Mod share off, the guest can't join
     (it says why).
     Servers: one list of servers on Steam, on your network / VPN, and the
-    ones you joined before, with players, status (In game / In menu, locked,
-    mods) and ping. Double click a server to see who is there (a password
-    protected server hides its players).
+    ones you joined before, with players, status (In game or Waiting, plus
+    ", Private" when it has a password) and ping. Double click a server to see
+    who is there (a private server hides its players).
     While an online game runs the launcher stays open. Your own server is
     at the top of the list with everyone on it: right click a player to
     Kick them (they can't come back for 5 minutes) or Ban them (until you
@@ -241,9 +248,12 @@ Online co-op
   Play. You wait in the menu ("Waiting for host...") until the host is in
   a level. A wrong password asks again; a full server or different mods
   show on that screen.
-  Without Steam: the host ticks LAN / VPN under Host options; the others
-  find the server in the list (same network or VPN) or type the host's IP
-  (then the people you play with know your address).
+  Without Steam: players who don't have Steam (or the free game) type the
+  host's IP to join a Steam server too, the same as LAN / VPN below. A host
+  without Steam ticks LAN / VPN under Host options; the others find the
+  server in the list (same network or VPN) or type the host's IP (then the
+  people you play with know your address). A free copy and a Steam copy play
+  together: levels that differ come from the host.
   - Chat: press T in a level (unless T is bound to an action), type, Enter
     sends, Escape cancels. The line floats over your character's head for
     everyone for a few seconds and fades; nearer players' text is bigger.

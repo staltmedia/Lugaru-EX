@@ -487,7 +487,7 @@ std::string Mod_SafeName(const std::string& name)
     return r.empty() ? std::string("Mod") : r;
 }
 
-bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std::string& folderOut, std::string& error)
+bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std::string& folderOut, std::string& error, int* skippedOut)
 {
     Zip zip(zipPath);
     if (!zip.ok) {
@@ -499,6 +499,9 @@ bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std:
     int skipped = 0;
     if (!collect(zip, items, modTxt, error, skipped)) {
         return false;
+    }
+    if (skippedOut) {
+        *skippedOut = skipped;
     }
     // the mod's name: mod.txt's name=, else the zip's file name
     std::string name = fsu::BaseName(zipPath);
@@ -640,6 +643,222 @@ bool Mod_InstallZip(const std::string& zipPath, const std::string& modsDir, std:
     }
     folderOut = folder;
     return true;
+}
+
+namespace
+{
+std::string extOf(const std::string& path)
+{
+    const std::string b = fsu::BaseName(path);
+    const size_t dot = b.rfind('.');
+    return dot == std::string::npos ? std::string() : fsu::Lower(b.substr(dot + 1));
+}
+
+bool isOtherArchive(const std::string& ext)
+{
+    static const std::set<std::string> a = { "rar", "7z", "tar", "gz", "tgz", "xz", "bz2", "zst", "cab", "lzh", "arj", "sit", "sitx", "dmg" };
+    return a.count(ext) != 0;
+}
+
+bool isProgram(const std::string& ext)
+{
+    static const std::set<std::string> p = { "exe", "dll", "bat", "cmd", "com", "scr", "msi", "ps1", "vbs", "js", "jar", "app", "dylib", "so", "sh", "py" };
+    return p.count(ext) != 0;
+}
+
+// pictures and sounds in formats the game can't read (it reads .png/.jpg and .ogg/.mp3/.wav)
+bool isUnreadableAsset(const std::string& ext)
+{
+    static const std::set<std::string> u = { "tga", "bmp", "dds", "tif", "tiff", "gif", "psd", "webp", "flac", "m4a", "aac", "wma" };
+    return u.count(ext) != 0;
+}
+
+// what to tell the player about files that were left out or won't work ("" = nothing worth
+// saying: readmes and the like are left out quietly)
+std::string leftOutNote(int programs, const std::string& firstProgram, int unreadable, const std::string& firstUnreadable)
+{
+    std::string t;
+    if (programs > 0) {
+        t = "Left out " + firstProgram + (programs > 1 ? " and " + std::to_string(programs - 1) + " other program file(s)" : std::string()) +
+            ": only game data is installed (maps, textures, sounds, models...). A mod that needs its own Lugaru.exe only works in part.";
+    }
+    if (unreadable > 0) {
+        t += (t.empty() ? "" : " ") + firstUnreadable + (unreadable > 1 ? " and " + std::to_string(unreadable - 1) + " other file(s)" : std::string()) +
+             " can't be used: the game reads pictures as .png or .jpg and sounds as .ogg, .mp3 or .wav.";
+    }
+    return t;
+}
+
+// zip an unpacked mod folder (files that could be game data, mod.txt and readmes) so it goes
+// through the same installer as a downloaded zip
+bool zipFolder(const std::string& folder, const std::string& zipPath, int& programs, std::string& firstProgram, int& unreadable, std::string& firstUnreadable)
+{
+    std::vector<std::string> files;
+    listFiles(folder, "", files);
+    std::sort(files.begin(), files.end());
+    FILE* f = fsu::Open(zipPath, "wb");
+    if (!f) {
+        return false;
+    }
+    mz_zip_archive z;
+    memset(&z, 0, sizeof(z));
+    bool ok = mz_zip_writer_init_cfile(&z, f, 0);
+    uint64_t total = 0;
+    int added = 0;
+    for (const std::string& rel : files) {
+        if (!ok) {
+            break;
+        }
+        const std::string base = fsu::BaseName(rel);
+        if (isProgram(extOf(base))) {
+            if (programs++ == 0) {
+                firstProgram = base;
+            }
+            continue;
+        }
+        if (isUnreadableAsset(extOf(base)) && unreadable++ == 0) {
+            firstUnreadable = base;
+        }
+        if (!isDataFile(base) || ++added > kMaxModFiles) {
+            continue;
+        }
+        std::string data;
+        if (!fsu::ReadAll(fsu::Join(folder, rel), data)) {
+            continue;
+        }
+        total += data.size();
+        if (total > kMaxModBytes) {
+            ok = false;
+            break;
+        }
+        ok = mz_zip_writer_add_mem(&z, rel.c_str(), data.data(), data.size(), MZ_NO_COMPRESSION);
+    }
+    ok = ok && mz_zip_writer_finalize_archive(&z);
+    mz_zip_writer_end(&z);
+    fclose(f);
+    return ok;
+}
+} // namespace
+
+bool Mod_Install(const std::string& rawPath, const std::string& modsDir, std::string& folderOut, std::string& error, std::string& note)
+{
+    note.clear();
+    std::string path = rawPath;
+    while (path.size() > 3 && (path.back() == '/' || path.back() == '\\')) {
+        path.pop_back();
+    }
+    const std::string tmp = fsu::Join(modsDir, ".adding");
+    if (fsu::IsDir(path)) {
+        // an unpacked mod; named after its folder (the one above when it is the "Data" folder itself)
+        std::string name = fsu::BaseName(path);
+        if (fsu::Lower(name) == "data" && !fsu::BaseName(fsu::Parent(path)).empty()) {
+            name = fsu::BaseName(fsu::Parent(path));
+        }
+        fsu::RemoveTree(tmp);
+        fsu::MakeDirs(tmp);
+        const std::string zip = fsu::Join(tmp, Mod_SafeName(name) + ".zip");
+        int programs = 0, unreadable = 0;
+        std::string firstProgram, firstUnreadable;
+        if (!zipFolder(path, zip, programs, firstProgram, unreadable, firstUnreadable)) {
+            fsu::RemoveTree(tmp);
+            error = "couldn't read the folder (or it is over 1 GB)";
+            return false;
+        }
+        const bool ok = Mod_InstallZip(zip, modsDir, folderOut, error);
+        fsu::RemoveTree(tmp);
+        if (!ok && programs > 0 && error.compare(0, 13, "no game files") == 0) {
+            error = "it only has programs (" + firstProgram + "): LugaruEX mods are game data (maps, textures, sounds, models...)";
+        }
+        if (ok) {
+            note = leftOutNote(programs, firstProgram, unreadable, firstUnreadable);
+        }
+        return ok;
+    }
+    const std::string ext = extOf(path);
+    if (isOtherArchive(ext)) {
+        error = "it is a ." + ext + " archive: unpack it first (Windows: right-click > Extract All, or 7-Zip), then add the unpacked folder";
+        return false;
+    }
+    if (!fsu::IsFile(path)) {
+        error = "not found";
+        return false;
+    }
+    Zip zip(path);
+    if (!zip.ok) {
+        error = ext == "zip" ? std::string("the zip is damaged (download it again)") : "not a mod: add a mod's .zip file or its unpacked folder";
+        return false;
+    }
+    // programs in it (left out), and archives inside it (a mod zipped twice)
+    int programs = 0;
+    std::string firstProgram, firstUnreadable;
+    int unreadable = 0;
+    std::vector<mz_uint> innerZips;
+    std::string innerOther;
+    const mz_uint n = mz_zip_reader_get_num_files(&zip.z);
+    for (mz_uint i = 0; i < n; i++) {
+        mz_zip_archive_file_stat st;
+        std::vector<std::string> parts;
+        if (!mz_zip_reader_file_stat(&zip.z, i, &st) || st.m_is_directory || !safeParts(st.m_filename, parts) || isJunk(parts)) {
+            continue;
+        }
+        const std::string e = extOf(parts.back());
+        if (isUnreadableAsset(e) && unreadable++ == 0) {
+            firstUnreadable = parts.back();
+        }
+        if (isProgram(e) && programs++ == 0) {
+            firstProgram = parts.back();
+        }
+        if (e == "zip") {
+            innerZips.push_back(i);
+        } else if (isOtherArchive(e) && innerOther.empty()) {
+            innerOther = e;
+        }
+    }
+    if (Mod_InstallZip(path, modsDir, folderOut, error)) {
+        note = leftOutNote(programs, firstProgram, unreadable, firstUnreadable);
+        return true;
+    }
+    if (error.compare(0, 13, "no game files") != 0) {
+        return false;
+    }
+    static int unwrapping = 0; // (one zip inside another; not deeper)
+    if (innerZips.size() == 1 && unwrapping == 0) {
+        // the mod's own zip inside this one: install that, under this zip's name
+        std::string name = fsu::BaseName(path);
+        name = name.substr(0, name.rfind('.'));
+        const std::string tmpInner = fsu::Join(modsDir, ".adding-inner"); // (not .adding: installing it uses that)
+        fsu::RemoveTree(tmpInner);
+        fsu::MakeDirs(tmpInner);
+        const std::string inner = fsu::Join(tmpInner, Mod_SafeName(name) + ".zip");
+        mz_zip_archive_file_stat st;
+        bool ok = mz_zip_reader_file_stat(&zip.z, innerZips[0], &st) && st.m_uncomp_size <= kMaxModBytes;
+        if (ok) {
+            FILE* f = fsu::Open(inner, "wb");
+            ok = f && mz_zip_reader_extract_to_callback(&zip.z, innerZips[0], writeToFile, f, 0);
+            if (f) {
+                fclose(f);
+            }
+        }
+        if (!ok) {
+            error = "the zip is damaged (download it again)";
+        } else {
+            unwrapping++;
+            ok = Mod_Install(inner, modsDir, folderOut, error, note);
+            unwrapping--;
+        }
+        fsu::RemoveTree(tmpInner);
+        return ok;
+    }
+    if (innerZips.size() > 1) {
+        error = "it holds several zips: add each of them (unpack this one first)";
+    } else if (!innerOther.empty()) {
+        error = "the mod inside is a ." + innerOther + " archive: unpack it (Windows: right-click > Extract All, or 7-Zip), then add the unpacked folder";
+    } else if (programs > 0) {
+        error = "it only has programs (" + firstProgram + "): LugaruEX mods are game data (maps, textures, sounds, models...)";
+    } else if (unreadable > 0) {
+        error = "its files (" + firstUnreadable + ") are in formats the game can't read: pictures need to be .png or .jpg, sounds .ogg, .mp3 or .wav";
+    }
+    return false;
 }
 
 bool Mod_ExtractTo(const std::string& zipPath, const std::string& destDir, std::string& error, uint64_t maxBytes)

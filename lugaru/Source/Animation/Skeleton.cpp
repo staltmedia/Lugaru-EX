@@ -27,6 +27,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Utils/Folders.hpp"
 #include "EX/ExMath.hpp"
 
+#include <stdexcept>
 #include <vector>
 
 extern float multiplier;
@@ -758,6 +759,10 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
 
     // read num_joints
     funpackf(tfile, "Bi", &num_joints);
+    if (num_joints < 1 || num_joints > max_joints) { // LugaruEX: damaged or hostile file (mods, shared looks)
+        fclose(tfile);
+        throw std::runtime_error("damaged skeleton file: " + filename);
+    }
 
     joints.clear();
     joints.resize(num_joints);
@@ -769,6 +774,10 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
 
     // read num_muscles
     funpackf(tfile, "Bi", &num_muscles);
+    if (num_muscles < 0 || num_muscles > 4 * max_joints) {
+        fclose(tfile);
+        throw std::runtime_error("damaged skeleton file: " + filename);
+    }
 
     // allocate memory
     muscles.clear();
@@ -782,10 +791,12 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
     // read forwardjoints (?)
     for (j = 0; j < 3; j++) {
         funpackf(tfile, "Bi", &forwardjoints[j]);
+        forwardjoints[j] = forwardjoints[j] >= 0 && forwardjoints[j] < num_joints ? forwardjoints[j] : 0;
     }
     // read lowforwardjoints (?)
     for (j = 0; j < 3; j++) {
         funpackf(tfile, "Bi", &lowforwardjoints[j]);
+        lowforwardjoints[j] = lowforwardjoints[j] >= 0 && lowforwardjoints[j] < num_joints ? lowforwardjoints[j] : 0;
     }
 
     // ???
@@ -941,5 +952,10 @@ void Skeleton::Load(const std::string& filename, const std::string& lowfilename,
         }
     }
 
+    for (int j = 0; j < max_joints; j++) { // (a label no joint has: joint 0, never outside the skeleton)
+        if (jointlabels[j] < 0 || jointlabels[j] >= num_joints) {
+            jointlabels[j] = 0;
+        }
+    }
     free = 0;
 }

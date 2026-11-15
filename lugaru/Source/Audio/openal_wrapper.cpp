@@ -221,6 +221,14 @@ AL_API signed char OPENAL_3D_SetAttributes_(int channel, const XYZ& pos)
     return true;
 }
 
+// automated test runs (LUGARUEX_TEST_NOINPUT / LUGARUEX_TEST_BACKGROUND, see EX::TestBackground)
+// are silent; normal play is never muted by this
+static bool exTestMuted()
+{
+    static const bool m = getenv("LUGARUEX_TEST_BACKGROUND") || getenv("LUGARUEX_TEST_NOINPUT");
+    return m;
+}
+
 AL_API signed char OPENAL_Init(int mixrate, int maxsoftwarechannels, unsigned int flags)
 {
     if (initialized) {
@@ -248,6 +256,9 @@ AL_API signed char OPENAL_Init(int mixrate, int maxsoftwarechannels, unsigned in
 
     alcMakeContextCurrent(ctx);
     alcProcessContext(ctx);
+    if (exTestMuted()) {
+        alListenerf(AL_GAIN, 0); // test runs make no sound
+    }
 
     if (commandLineOptions[OPENALINFO]) {
         printf("AL_VENDOR: %s\n", (char*)alGetString(AL_VENDOR));
@@ -699,7 +710,7 @@ AL_API void OPENAL_SetSFXMasterVolume(int volume)
     if (!initialized) {
         return;
     }
-    ALfloat gain = ((ALfloat)volume) / 255.0f;
+    ALfloat gain = exTestMuted() ? 0.0f : ((ALfloat)volume) / 255.0f;
     alListenerf(AL_GAIN, gain);
 }
 

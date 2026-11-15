@@ -219,7 +219,6 @@ void LoadConfig()
     geti("display.texturequality", cfg.textureQuality);
     geti("display.textureoverrides", cfg.textureOverrides);
     cfg.hudAspect = 1; // LugaruEX: HUD and menus always keep their proportions (no stretched 4:3 option)
-    geti("display.lighting", cfg.lighting);
     geti("display.shaders", cfg.shaders);
     geti("display.colorblind", cfg.colorblind);
     geti("engine.simrate", cfg.simRate);
@@ -240,7 +239,6 @@ void LoadConfig()
             cfg.mpHostPassword.clear();
         }
     }
-    gets("multiplayer.joinpassword", cfg.mpJoinPassword);
     if (const char* pw = getenv("LUGARUEX_JOIN_PASSWORD")) {
         cfg.mpJoinPassword = pw; // the launcher's password window (not saved anywhere)
     }

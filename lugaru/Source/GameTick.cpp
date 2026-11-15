@@ -2007,6 +2007,54 @@ void Game::ProcessDevInput()
             printf("EXTEST knife now %.2f over the ground\n", std::min(w.position.y, w.tippoint.y) - terrain.getHeight(w.position.x, w.position.z));
         }
     }
+    // test hook LUGARUEX_TEST_TREEKNIFE=s: a knife is thrown at the nearest tree trunk; logs
+    // where it is 0.5 s and 3 s later (it must stay stuck in the trunk, as in the original)
+    {
+        static const float at = getenv("LUGARUEX_TEST_TREEKNIFE") ? (float)atof(getenv("LUGARUEX_TEST_TREEKNIFE")) : -1.f;
+        static int stage = 0;
+        static int which = -1;
+        if (at >= 0 && stage == 0 && leveltime > at && !Person::players.empty()) {
+            stage = 1;
+            int best = -1;
+            float bestd = 1e9f;
+            for (unsigned i = 0; i < Object::objects.size(); i++) {
+                if (Object::objects[i]->type == treetrunktype) {
+                    const float d = distsq(&Object::objects[i]->position, &Person::players[0]->coords);
+                    if (d < bestd) {
+                        bestd = d;
+                        best = i;
+                    }
+                }
+            }
+            if (best < 0) {
+                printf("EXTEST treeknife: no tree trunk in this level\n");
+            } else {
+                XYZ target = Object::objects[best]->position;
+                target.y = terrain.getHeight(target.x, target.z) + 1.2f; // (up the trunk)
+                XYZ from = target;
+                from.x += 4;
+                weapons.push_back(Weapon(knife, -1));
+                Weapon& w = weapons.back();
+                which = (int)weapons.size() - 1;
+                w.position = from;
+                w.tippoint = from;
+                w.tippoint.x -= .3f;
+                XYZ v = target - from;
+                Normalise(&v);
+                w.thrown(v * 40, false);
+                printf("EXTEST treeknife: thrown from %.1f,%.1f,%.1f at the trunk at %.1f,%.1f,%.1f\n", from.x, from.y, from.z, target.x, target.y, target.z);
+            }
+        }
+        if (stage >= 1 && which >= 0 && which < (int)weapons.size() && stage < 3) {
+            const float when = stage == 1 ? at + .5f : at + 3.f;
+            if (leveltime > when) {
+                Weapon& w = weapons[which];
+                printf("EXTEST treeknife %.1fs: at %.2f,%.2f,%.2f, %.2f over the ground, %s\n", leveltime - at, w.position.x, w.position.y, w.position.z,
+                       w.position.y - terrain.getHeight(w.position.x, w.position.z), w.exInTree ? "stuck in the tree" : "loose");
+                stage++;
+            }
+        }
+    }
     // test hook LUGARUEX_TEST_CONSOLE=s: the console opens at that time (and stays open)
     {
         static const float at = getenv("LUGARUEX_TEST_CONSOLE") ? (float)atof(getenv("LUGARUEX_TEST_CONSOLE")) : -1.f;

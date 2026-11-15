@@ -121,10 +121,10 @@ static std::string freshName(const char* ext)
 static std::string g_note;
 static Uint32 g_noteAt = 0;
 
-static void note(const char* s)
+static void note(const char* s, Uint32 delayMs = 0)
 {
     g_note = s;
-    g_noteAt = SDL_GetTicks();
+    g_noteAt = SDL_GetTicks() + delayMs;
     printf("LugaruEX: %s\n", s);
 }
 
@@ -181,7 +181,7 @@ static void drawFps(int W, int H)
 // top-right, the game's font, fading like the lighting name; drawn after the capture
 static void drawNote(int W, int H)
 {
-    if (!g_noteAt || !Game::text) {
+    if (!g_noteAt || !Game::text || (int)(SDL_GetTicks() - g_noteAt) < 0) {
         return;
     }
     const float age = (SDL_GetTicks() - g_noteAt) / 1000.f;
@@ -250,7 +250,9 @@ static void takeScreenshot(int W, int H)
         writePng(path, rgb, W, H);
         g_writing--;
     }).detach();
-    note("Screenshot saved");
+    // shown a moment later: F12 is also Steam's screenshot key, and Steam (or another
+    // screenshot tool) grabs a frame or two after the press - the notice must not be in it
+    note("Screenshot saved", 700);
 }
 
 // ------------------------------------------------------------------ GL for recording

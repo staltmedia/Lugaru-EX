@@ -8,8 +8,8 @@ IDI_APP ICON "../lugaru/Dist/Windows/Lugaru.ico"
 1 RT_MANIFEST "launcher.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,5,5,0
-PRODUCTVERSION 0,5,5,0
+FILEVERSION 0,5,6,0
+PRODUCTVERSION 0,5,6,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -19,7 +19,7 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "LugaruEX Launcher"
             VALUE "ProductName", "LugaruEX"
-            VALUE "FileVersion", "0.5.5"
+            VALUE "FileVersion", "0.5.6"
             VALUE "LegalCopyright", "GPLv2+ (based on OSS Lugaru)"
         END
     END
@@ -67,7 +67,7 @@ BEGIN
     COMBOBOX        IDC_AF, 206, 66, 70, 80, CBS_DROPDOWNLIST | WS_TABSTOP
 
     LTEXT           "FPS cap:", -1, 6, 84, 58, 9
-    COMBOBOX        IDC_FPSCAP, 66, 82, 90, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    COMBOBOX        IDC_FPSCAP, 66, 82, 90, 150, CBS_DROPDOWNLIST | WS_TABSTOP
     LTEXT           "V-Sync:", -1, 164, 84, 40, 9
     COMBOBOX        IDC_VSYNC, 206, 82, 70, 80, CBS_DROPDOWNLIST | WS_TABSTOP
 
@@ -107,6 +107,10 @@ BEGIN
     CONTROL         "LAN / VPN (no Steam)", IDC_LAN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 18, 102, 90, 10
     LTEXT           "UDP port:", IDC_MP_PORTLBL, 162, 103, 34, 9
     EDITTEXT        IDC_PORT, 204, 101, 34, 12, ES_NUMBER | WS_TABSTOP
+    CONTROL         "Friendly fire", IDC_MP_FRIENDLY, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 18, 117, 60, 10
+    CONTROL         "Expanded AI", IDC_MP_EXPANDEDAI, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 84, 117, 60, 10
+    LTEXT           "AFK Timer (Seconds):", IDC_MP_AFKLBL, 162, 118, 70, 9
+    EDITTEXT        IDC_MP_AFK, 232, 116, 30, 12, ES_NUMBER | WS_TABSTOP
     LTEXT           "Host IP:", IDC_MP_ADDRLBL, 8, 42, 30, 9
     EDITTEXT        IDC_ADDR, 40, 40, 90, 12, ES_AUTOHSCROLL | WS_TABSTOP
     LTEXT           "LAN / VPN only. Steam servers: pick below.", IDC_MP_ADDRHINT, 136, 42, 142, 9

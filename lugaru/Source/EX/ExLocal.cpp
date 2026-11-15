@@ -14,6 +14,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include "EX/ExConfig.hpp"
 #include "EX/ExPad.hpp"
 #include "EX/ExNet.hpp"
+#include "EX/ExBot.hpp"
+#include "EX/ExGraphics.hpp"
 #include "Audio/openal_wrapper.hpp"
 #include "Game.hpp"
 #include "Level/Dialog.hpp"
@@ -75,6 +77,15 @@ struct Slot
 
     int spec = -1;          // while dead: the player this view watches (-1 = yourself)
     bool specBtn = false;   // attack button last step (to cycle on a fresh press)
+    bool specBackBtn = false; // right click / left trigger last step (cycles backwards)
+    bool afkSpec = false;   // the AI plays for this player: the view moved to someone else
+
+    // AFK (host option): time without input; past the limit the AI plays until they move
+    float afkIdle = 0, afkYaw = 0, afkPitch = 0;
+    bool afkBot = false;
+    PadInput bot;           // the AI's buttons this step
+    float botYaw = 0;       // the way the AI looks (stands in for the camera)
+    bool restartBtn = false; // jump last step (restart once everyone is down)
 
     // online guest playing on this host: no screen here, input comes from the network
     bool remote = false;
@@ -874,6 +885,32 @@ static void relinkPlayerOne()
     }
 }
 
+static bool attackRaw(int person);
+static void spectateStep(int slot, int dir);
+
+// a watching player's buttons: attack / left click / right trigger = next player,
+// right click / left trigger = the one before (not bindable)
+static void specButtons(size_t i, const Slot& s, bool& next, bool& prev)
+{
+    next = attackRaw(s.person);
+    prev = false;
+    PadInput in;
+    if (i == 0) {
+        if (!mainmenu && !TestBackground()) {
+            const Uint32 mb = SDL_GetMouseState(nullptr, nullptr);
+            next = next || (mb & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+            prev = (mb & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+        }
+        if (!mainmenu && PadRead(LocalPadOfP1(), in)) {
+            next = next || in.rt;
+            prev = prev || in.lt;
+        }
+    } else if (PadRead(s.padId, in)) {
+        next = next || in.rt;
+        prev = prev || in.lt;
+    }
+}
+
 static void updateSpectate()
 {
     relinkPlayerOne();
@@ -883,23 +920,44 @@ static void updateSpectate()
             continue;
         }
         const Person& me = *Person::players[s.person];
-        const bool btn = AttackKeyDown(s.person);
-        const bool press = btn && !s.specBtn;
+        bool btn, back;
+        specButtons(i, s, btn, back);
+        const bool press = btn && !s.specBtn, pressBack = back && !s.specBackBtn;
         s.specBtn = btn;
-        if (!me.dead) {
+        s.specBackBtn = back;
+        // the AI playing for this AFK player (the host's flag; a guest gets it with the snapshot):
+        // they watch the others, like a dead player
+        const bool afk = me.exAfk == 255 && !me.dead;
+        if (!afk && s.afkSpec) {
+            s.afkSpec = false;
+            s.spec = -1; // back in control: their own view again
+        }
+        if (!me.dead && !afk) {
             s.spec = -1;
             continue;
         }
         if (s.spec >= 0 && (s.spec >= (int)Person::players.size() || !isHuman(s.spec))) {
             s.spec = -1;
         }
+        if (afk && !s.afkSpec) {
+            s.afkSpec = true;
+            spectateStep((int)i, 1);
+            continue;
+        }
         if (press) {
-            SpectateNext((int)i);
+            spectateStep((int)i, 1);
+        } else if (pressBack) {
+            spectateStep((int)i, -1);
         }
     }
 }
 
 void SpectateNext(int slot)
+{
+    spectateStep(slot, 1);
+}
+
+static void spectateStep(int slot, int dir)
 {
     if (slot < 0 || slot >= (int)g_slots.size() || !personValid(g_slots[slot])) {
         return;
@@ -927,7 +985,7 @@ void SpectateNext(int slot)
     const int cur = s.spec >= 0 ? s.spec : s.person;
     const auto it = std::find(order.begin(), order.end(), cur);
     const size_t at = it == order.end() ? 0 : (size_t)(it - order.begin());
-    const int next = order.empty() ? s.person : order[(at + 1) % order.size()];
+    const int next = order.empty() ? s.person : order[(at + order.size() + (dir < 0 ? -1 : 1)) % order.size()];
     s.spec = (next == s.person) ? -1 : next;
     printf("LugaruEX: player %d now watching person %d (%d players to watch)\n", slot + 1, s.spec >= 0 ? s.spec : s.person, (int)order.size());
 }
@@ -1278,19 +1336,25 @@ void DrawViews(float alpha, void (*draw)())
 // ------------------------------------------------------------------ rules
 float YawOf(int person)
 {
+    Slot* s = slotOfPerson(person);
+    if (s && s->afkBot) {
+        return s->botYaw; // the AI playing for an AFK player steers by its own "camera"
+    }
     if (person == 0) {
         return Game::yaw;
     }
-    Slot* s = slotOfPerson(person);
     return s ? s->cam.yaw : 0.f;
 }
 
 float PitchOf(int person)
 {
+    Slot* s = slotOfPerson(person);
+    if (s && s->afkBot) {
+        return 0.f;
+    }
     if (person == 0) {
         return Game::pitch;
     }
-    Slot* s = slotOfPerson(person);
     return s ? s->cam.pitch : 0.f;
 }
 
@@ -1302,7 +1366,8 @@ bool PlayerOneHere(int person)
     return person == 0;
 }
 
-bool AttackKeyDown(int person)
+// the attack button of whoever really plays this person (not the AFK bot)
+static bool attackRaw(int person)
 {
     if (person == 0 || (!g_slots.empty() && person == g_slots[0].person)) {
         // test hook LUGARUEX_TEST_SPECBTN: a dead player 1 taps attack every 1.5 s
@@ -1324,6 +1389,15 @@ bool AttackKeyDown(int person)
     PadInput in;
     PadRead(s->padId, in);
     return in.attack;
+}
+
+bool AttackKeyDown(int person)
+{
+    Slot* s = slotOfPerson(person);
+    if (s && s->afkBot) {
+        return s->bot.attack;
+    }
+    return attackRaw(person);
 }
 
 // ------------------------------------------------------------------ dialogues
@@ -1451,6 +1525,124 @@ bool AllHumansDead()
         }
     }
     return true;
+}
+
+// ------------------------------------------------------------------ AFK, restarting
+// AFK (host option [Multiplayer] AfkTimer, seconds; several players in the level): a player
+// who touches nothing for that long gets a countdown over their head for the last minute,
+// then a friendly AI plays their character (EX/ExBot.cpp presses the buttons) and their
+// view moves to the others. Any movement input gives them their character back.
+static bool afkOn()
+{
+    return !NetIsGuest() && cfg.mpMode == "host" && cfg.mpAfkTimer > 0 && Game::gameon && !Game::loading &&
+           !Tutorial::active && humanCount() >= 2;
+}
+
+void LocalAfkStep()
+{
+    const bool on = afkOn();
+    const float dt = 1.f / (float)std::max(30, SimRate());
+    for (size_t i = 0; i < g_slots.size(); i++) {
+        Slot& s = g_slots[i];
+        if (!personValid(s)) {
+            continue;
+        }
+        Person& p = *Person::players[s.person];
+        const float yaw = i == 0 ? Game::yaw : s.cam.yaw, pitch = i == 0 ? Game::pitch : s.cam.pitch;
+        const bool move = p.forwardkeydown || p.backkeydown || p.leftkeydown || p.rightkeydown;
+        const bool any = move || p.jumpkeydown || p.crouchkeydown || p.drawkeydown || p.throwkeydown || attackRaw(s.person) ||
+                         fabsf(yaw - s.afkYaw) > 1.f || fabsf(pitch - s.afkPitch) > 1.f;
+        s.afkYaw = yaw;
+        s.afkPitch = pitch;
+        if (!on || p.dead) {
+            if (s.afkBot) {
+                printf("LugaruEX: player %d (person %d) - the AI stops playing for them\n", (int)i + 1, s.person);
+            }
+            s.afkBot = false;
+            s.afkIdle = 0;
+            p.exAfk = 0;
+            continue;
+        }
+        if (Dialog::inDialog()) {
+            continue; // nobody plays during a scene: the clock waits
+        }
+        if (s.afkBot) {
+            if (move) {
+                s.afkBot = false;
+                s.afkIdle = 0;
+                printf("LugaruEX: player %d (person %d) is back\n", (int)i + 1, s.person);
+            }
+        } else if (any) {
+            s.afkIdle = 0;
+        } else {
+            s.afkIdle += dt;
+            if (s.afkIdle >= cfg.mpAfkTimer) {
+                s.afkBot = true;
+                s.botYaw = yaw;
+                printf("LugaruEX: player %d (person %d) is AFK - the AI plays for them until they move\n", (int)i + 1, s.person);
+            }
+        }
+        const float left = cfg.mpAfkTimer - s.afkIdle;
+        const unsigned char was = p.exAfk;
+        p.exAfk = s.afkBot ? 255 : (s.afkIdle >= 3 && left <= 60) ? (unsigned char)std::max(1, (int)ceilf(left)) : 0;
+        if (was == 0 && p.exAfk > 0 && p.exAfk <= 60) {
+            printf("LugaruEX: player %d (person %d) idle - AFK countdown from %d s (level time %.1f)\n", (int)i + 1, s.person, (int)p.exAfk, Game::leveltime);
+        }
+        if (!s.afkBot) {
+            continue;
+        }
+        PadInput in;
+        BotInput(s.person, in, s.botYaw);
+        s.bot = in;
+        p.forwardkeydown = in.fwd;
+        p.backkeydown = in.back;
+        p.leftkeydown = in.left;
+        p.rightkeydown = in.right;
+        p.jumpkeydown = in.jump;
+        p.crouchkeydown = in.crouch;
+        p.drawkeydown = in.draw;
+        p.throwkeydown = in.thrw;
+        p.exWalk = in.walk;
+        if (!p.jumpkeydown) {
+            p.jumpclimb = 0;
+            p.jumptogglekeydown = 0;
+        }
+        if (p.jumpkeydown && p.animTarget != jumpupanim && p.animTarget != jumpdownanim && !p.isFlip()) {
+            p.jumptogglekeydown = 1;
+        }
+    }
+}
+
+bool CoopWaitsForRestart()
+{
+    return !NetIsGuest() && humanCount() >= 2;
+}
+
+bool LocalRestartPressed()
+{
+    bool pressed = false;
+    for (size_t i = 1; i < g_slots.size(); i++) {
+        Slot& s = g_slots[i];
+        PadInput in;
+        const bool down = !s.remote && personValid(s) && PadRead(s.padId, in) && in.jump;
+        pressed = pressed || (down && !s.restartBtn);
+        s.restartBtn = down;
+    }
+    return pressed;
+}
+
+std::string LocalDeadHint()
+{
+    if (!Game::gameon || Game::loading || mainmenu || Person::players.empty() || !AllHumansDead()) {
+        return "";
+    }
+    if (NetIsGuest()) {
+        return "Waiting for the host to restart";
+    }
+    if (!CoopWaitsForRestart()) {
+        return "";
+    }
+    return "Press " + KeyText(Game::jumpkey) + " to restart";
 }
 
 // ------------------------------------------------------------------ online play

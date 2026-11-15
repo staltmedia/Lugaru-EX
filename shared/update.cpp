@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 const char* const kUpdateRepo = "staltmedia/Lugaru-EX"; // public releases (and source)
@@ -151,6 +152,46 @@ static bool have(const char* tool)
     return system((std::string("command -v ") + tool + " >/dev/null 2>&1").c_str()) == 0;
 }
 
+// Steam starts games (and this launcher, as a game's launch option) with its runtime's
+// libraries first (LD_LIBRARY_PATH) and its overlay preloaded: the system's curl then loads
+// Steam's old libcurl / OpenSSL and fails at once (a Steam Deck never updated). Run the tools
+// with the system's own libraries.
+std::string Http_CleanEnv()
+{
+    std::string pre = "env -u LD_PRELOAD";
+    const char* sys = getenv("SYSTEM_LD_LIBRARY_PATH"); // (Steam keeps the original here)
+    if (sys && *sys) {
+        pre += " LD_LIBRARY_PATH=" + quote(sys);
+    } else {
+        pre += " -u LD_LIBRARY_PATH";
+    }
+    return pre + " ";
+}
+
+// the first line the tool wrote to stderr (for the error message)
+static std::string errLine(const std::string& file)
+{
+    std::string s;
+    if (FILE* f = fopen(file.c_str(), "rb")) {
+        char b[512] = {};
+        if (fgets(b, sizeof(b), f)) {
+            s = b;
+        }
+        fclose(f);
+    }
+    remove(file.c_str());
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) {
+        s.pop_back();
+    }
+    return s;
+}
+
+static std::string errFile()
+{
+    const char* t = getenv("TMPDIR");
+    return std::string(t && *t ? t : "/tmp") + "/lugaruex-http-" + std::to_string((long)getpid()) + ".err";
+}
+
 bool Http_GetString(const std::string& url, std::string& out, std::string& error)
 {
     out.clear();
@@ -163,6 +204,8 @@ bool Http_GetString(const std::string& url, std::string& out, std::string& error
         error = "needs curl or wget";
         return false;
     }
+    const std::string ef = errFile();
+    cmd = Http_CleanEnv() + cmd + " 2>" + quote(ef);
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) {
         error = "can't run curl";
@@ -174,8 +217,9 @@ bool Http_GetString(const std::string& url, std::string& out, std::string& error
         out.append(buf, n);
     }
     const int rc = pclose(p);
+    const std::string why = errLine(ef);
     if (rc != 0 || out.empty()) {
-        error = "no connection (or the server said no)";
+        error = why.empty() ? "no connection (or the server said no)" : why;
         return false;
     }
     return true;
@@ -193,8 +237,12 @@ bool Http_GetFile(const std::string& url, const std::string& path, std::atomic<u
         return false;
     }
     (void)progress; // the caller watches the file grow
-    if (system(cmd.c_str()) != 0) {
-        error = "the download failed";
+    const std::string ef = errFile();
+    cmd = Http_CleanEnv() + cmd + " 2>" + quote(ef);
+    const int rc = system(cmd.c_str());
+    const std::string why = errLine(ef);
+    if (rc != 0) {
+        error = why.empty() ? "the download failed" : "the download failed: " + why;
         return false;
     }
     return true;

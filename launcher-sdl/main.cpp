@@ -65,7 +65,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.5.5"
+#define LUGARUEX_VERSION "0.5.6"
 
 namespace
 {
@@ -131,6 +131,7 @@ struct Settings
     std::string name = "User", serverName, hostPassword, recent, code;
     int usePassword = -1; // host: the Password box (-1: on when a password was saved before)
     int maxPlayers = 0, guestChars = 1, mpAdvanced = 0; // maxPlayers 0 = no limit
+    int friendlyFire = 0, expandedAI = 0, afkTimer = 120; // host rules (afkTimer seconds, 0 = off)
     int steam = 1; // through Steam (Valve's relay, Steam server list) - 0 = direct (IP / LAN / VPN)
     int chDefault = 0;
     std::string chModel = "rabbit";
@@ -176,6 +177,9 @@ void LoadSettings()
     s.usePassword = i.GetInt("Multiplayer", "UsePassword", s.hostPassword.empty() ? 0 : 1);
     s.maxPlayers = i.GetInt("Multiplayer", "MaxPlayers", s.maxPlayers);
     s.guestChars = i.GetInt("Multiplayer", "GuestCharacters", s.guestChars);
+    s.friendlyFire = i.GetInt("Multiplayer", "FriendlyFire", s.friendlyFire);
+    s.expandedAI = i.GetInt("Multiplayer", "ExpandedAI", s.expandedAI);
+    s.afkTimer = i.GetInt("Multiplayer", "AfkTimer", s.afkTimer);
     s.mpAdvanced = i.GetInt("Multiplayer", "Advanced", s.mpAdvanced);
     s.recent = i.Get("Multiplayer", "Recent", s.recent);
     s.steam = i.GetInt("Multiplayer", "Steam", s.steam);
@@ -269,6 +273,9 @@ std::string AspectName(int w, int h)
 
 // ============================================================================ UI state
 // Graphics
+// FPS cap choices after "Match display" and "Unlimited" (frames only: the simulation keeps its own rate)
+static const int kFpsCaps[] = { 30, 60, 75, 90, 120, 144, 165, 240, 360 };
+static const int kFpsCapCount = (int)(sizeof(kFpsCaps) / sizeof(kFpsCaps[0]));
 int g_monSel = 0, g_resSel = 0, g_modeSel = 1, g_msaaSel = 2, g_afSel = 4, g_fpsSel = 0, g_vsyncSel = 1, g_texqSel = 1, g_cbSel = 0;
 int g_custW = 1920, g_custH = 1080, g_fov = 90;
 bool g_overrides = true, g_shaders = true;
@@ -278,6 +285,8 @@ char g_addr[128] = "";
 bool g_lan = false, g_shareMods = true;
 char g_name[64] = "User", g_serverName[96] = "", g_hostPw[64] = "";
 bool g_showHostPw = false, g_mpAdvanced = false, g_guestChars = true, g_usePw = false;
+bool g_friendlyFire = false, g_expandedAI = false;
+int g_afkTimer = 120;
 bool g_pickSteam = false; // the picked server (g_pickedServer) is a Steam lobby: its code
 std::vector<ServerEntry> g_steamServers;
 std::string g_steamListError;
@@ -358,7 +367,12 @@ void InitFromSettings()
     g_modeSel = s.mode == "fullscreen" ? 2 : (s.mode == "windowed" ? 0 : 1);
     g_msaaSel = IndexOf(kMsaa, 4, s.msaa, 0);
     g_afSel = IndexOf(kAf, 5, s.af, 0);
-    g_fpsSel = s.fpscap == 0 ? 1 : 0;
+    g_fpsSel = s.fpscap < 0 ? 0 : s.fpscap == 0 ? 1 : 0;
+    for (int k = 0; k < kFpsCapCount; k++) {
+        if (s.fpscap == kFpsCaps[k]) {
+            g_fpsSel = 2 + k;
+        }
+    }
     g_vsyncSel = std::max(0, std::min(2, s.vsync));
     g_fov = std::max(60, std::min(120, s.fov));
     g_texqSel = s.texq ? 1 : 0;
@@ -376,6 +390,9 @@ void InitFromSettings()
     g_usePw = s.usePassword != 0;
     g_maxPlayers = std::max(0, s.maxPlayers);
     g_guestChars = s.guestChars != 0;
+    g_friendlyFire = s.friendlyFire != 0;
+    g_expandedAI = s.expandedAI != 0;
+    g_afkTimer = std::max(0, s.afkTimer);
     g_mpAdvanced = s.mpAdvanced != 0;
     if (s.mpmode == "join" && s.addr.empty() && !s.code.empty()) { // the Steam server picked last time
         g_pickedServer = s.code;
@@ -536,7 +553,7 @@ std::string PickImageFile(const std::string& title)
         }
         char cmd[512];
         snprintf(cmd, sizeof(cmd), c, title.c_str());
-        FILE* p = popen(cmd, "r");
+        FILE* p = popen((Http_CleanEnv() + cmd).c_str(), "r"); // (system libraries, not Steam's)
         if (!p) {
             continue;
         }
@@ -946,7 +963,7 @@ void OpenFolder(const std::string& dir)
     std::wstring w(dir.begin(), dir.end());
     ShellExecuteW(NULL, L"open", w.c_str(), NULL, NULL, SW_SHOWNORMAL);
 #else
-    const std::string cmd = "xdg-open '" + dir + "' >/dev/null 2>&1 &";
+    const std::string cmd = Http_CleanEnv() + "xdg-open '" + dir + "' >/dev/null 2>&1 &";
     if (system(cmd.c_str()) != 0) {
         g_message = "The mods are in " + dir;
     }
@@ -995,7 +1012,7 @@ std::vector<std::string> PickZips()
         if (system(("command -v " + tool + " >/dev/null 2>&1").c_str()) != 0) {
             continue;
         }
-        FILE* p = popen(c, "r");
+        FILE* p = popen((Http_CleanEnv() + c).c_str(), "r");
         if (!p) {
             continue;
         }
@@ -1042,7 +1059,7 @@ bool CollectSettings()
     s.msaa = kMsaa[g_msaaSel];
     s.af = kAf[g_afSel];
     s.vsync = g_vsyncSel;
-    s.fpscap = g_fpsSel == 1 ? 0 : -1;
+    s.fpscap = g_fpsSel == 1 ? 0 : (g_fpsSel >= 2 && g_fpsSel < 2 + kFpsCapCount) ? kFpsCaps[g_fpsSel - 2] : -1;
     s.fov = g_fov;
     s.texq = g_texqSel;
     s.overrides = g_overrides;
@@ -1058,6 +1075,9 @@ bool CollectSettings()
     s.usePassword = g_usePw ? 1 : 0;
     s.maxPlayers = g_maxPlayers <= 0 ? 0 : std::max(2, std::min(250, g_maxPlayers)); // 0 = no limit
     s.guestChars = g_guestChars;
+    s.friendlyFire = g_friendlyFire;
+    s.expandedAI = g_expandedAI;
+    s.afkTimer = g_afkTimer <= 0 ? 0 : std::max(10, std::min(3600, g_afkTimer));
     s.mpAdvanced = g_mpAdvanced;
     // host: through Steam unless LAN / VPN is ticked; connect: a typed IP is direct, a server
     // picked in the list goes the way it was found
@@ -1142,6 +1162,10 @@ bool SaveIni()
     line("; host: players at most (yours included, 0 = no limit), and whether guests choose their character");
     ki("MaxPlayers", s.maxPlayers);
     ki("GuestCharacters", s.guestChars);
+    line("; host: players can hit each other, the AI uses the players' moves too, seconds before the AI plays for an idle player (0 = off)");
+    ki("FriendlyFire", s.friendlyFire);
+    ki("ExpandedAI", s.expandedAI);
+    ki("AfkTimer", s.afkTimer);
     ki("Advanced", s.mpAdvanced);
     line("; servers joined before (the launcher's server list asks them)");
     kv("Recent", s.recent);
@@ -1540,7 +1564,13 @@ void TabGraphics(float s)
         }
     }
     Label("FPS cap:", lw);
-    Combo("##fps", &g_fpsSel, { hz > 0 ? "Match display (" + std::to_string(hz) + " Hz)" : std::string("Match display"), "Unlimited" }, cw);
+    {
+        std::vector<std::string> caps = { hz > 0 ? "Match display (" + std::to_string(hz) + " Hz)" : std::string("Match display"), "Unlimited" };
+        for (int c : kFpsCaps) {
+            caps.push_back(std::to_string(c) + " fps");
+        }
+        Combo("##fps", &g_fpsSel, caps, cw);
+    }
     Label("V-Sync:", lw);
     Combo("##vsync", &g_vsyncSel, { "Off", "On (no tearing)", "Adaptive" }, cw);
     Label("Field of view:", lw);
@@ -2384,6 +2414,16 @@ void TabMultiplayer(float s)
             ImGui::SetNextItemWidth(90 * s);
             ImGui::InputInt("##port", &g_port, 0, 0);
             ImGui::EndDisabled();
+            ImGui::Checkbox("Friendly fire", &g_friendlyFire);
+            ImGui::SameLine();
+            ImGui::Checkbox("Expanded AI", &g_expandedAI);
+            ImGui::SameLine(col + 16 * s);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("AFK Timer (Seconds):");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(70 * s);
+            ImGui::InputInt("##afk", &g_afkTimer, 0, 0);
+            g_afkTimer = std::max(0, std::min(3600, g_afkTimer));
             ImGui::Unindent(16 * s);
             ImGui::EndDisabled();
         }
@@ -2668,6 +2708,8 @@ std::string g_installedNote;
 std::atomic<int> g_updState(0);
 UpdateInfo g_updInfo;   // written before g_updState becomes 3
 std::string g_updError; // written before g_updState becomes 4
+std::string g_updCheckError;            // why looking for an update failed (shown in the footer)
+std::atomic<bool> g_updCheckFailed(false); // set after g_updCheckError
 std::atomic<uint64_t> g_updBytes(0);
 
 // this launcher's version (test hook LUGARUEX_TEST_UPDATE_FROM=<version>: pretend to be older)
@@ -2717,7 +2759,7 @@ std::string PickFolderDialog(const std::string& title = "Choose your Lugaru fold
         if (system(("command -v " + tool + " >/dev/null 2>&1").c_str()) != 0) {
             continue;
         }
-        if (FILE* p = popen(c, "r")) {
+        if (FILE* p = popen((Http_CleanEnv() + c).c_str(), "r")) {
             char buf[4096] = {};
             const size_t n = fread(buf, 1, sizeof(buf) - 1, p);
             pclose(p);
@@ -3092,6 +3134,8 @@ void UpdateThread(std::string repo)
     if (!Update_Latest(repo, Update_Platform(), info, err)) {
         printf("LugaruEX launcher: no update information: %s\n", err.c_str());
         fflush(stdout);
+        g_updCheckError = err;
+        g_updCheckFailed = true;
     } else if (Update_IsNewer(info.version, CurrentVersion())) {
         g_updInfo = info;
         g_updState = 3;
@@ -3543,6 +3587,9 @@ int main(int argc, char** argv)
                 upd = "Downloading " + g_updInfo.version + "..." + (total ? " " + std::to_string((int)std::min<uint64_t>(100, g_updBytes * 100 / total)) + "%" : std::string());
             } else if (us == 2) {
                 upd = "Installing " + g_updInfo.version + "...";
+            }
+            if (upd.empty() && g_updCheckFailed) {
+                upd = std::string(base) + "  -  could not look for updates: " + g_updCheckError; // (Steam Deck players can see why)
             }
             ImGui::TextDisabled("%s", !upd.empty() ? upd.c_str() : (anyPad && ImGui::CalcTextSize(full).x <= textW) ? full : base);
         } else {

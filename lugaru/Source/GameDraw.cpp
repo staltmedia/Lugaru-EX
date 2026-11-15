@@ -1177,7 +1177,7 @@ int Game::DrawGLScene(StereoSide side)
         }
 
         static const bool exTestMap = getenv("LUGARUEX_TEST_MAP") != nullptr; // test hook: minimap on any difficulty
-        if ((difficulty < 2 || exTestMap) && !Dialog::inDialog()) { // minimap
+        if ((EX::NetDifficulty() < 2 || exTestMap) && !Dialog::inDialog()) { // minimap (online: the host's difficulty)
             float mapviewdist = 20000;
 
             glDisable(GL_DEPTH_TEST);
@@ -1746,6 +1746,9 @@ int Game::DrawGLScene(StereoSide side)
 
     EX::LightingDrawName(); // LugaruEX: fading "Lighting: <look>" label, bottom-left
     EX::NetDrawOverlay();   // LugaruEX: online guest "Waiting for host..." over the menu
+    if (!mainmenu) {
+        EX::ChatDrawHint(); // LugaruEX co-op: everyone is down - how to restart
+    }
 
     EX_PROF("hud");
     if ((side == stereoRight || side == stereoCenter) && !EX::DrawingViews()) { // LugaruEX: split screen presents once, after all views

@@ -46,6 +46,7 @@ struct Bubble
     int person;
     std::string text;
     Uint32 at;
+    bool afk = false; // an AFK countdown (seconds), not a chat line
 };
 std::vector<Bubble> g_bubbles;
 const Uint32 kShow = 6000, kFade = 2000; // ms
@@ -191,9 +192,19 @@ void ChatReceived(int person, const std::string& name, const std::string& text)
     g_bubbles.push_back({ person, text, SDL_GetTicks() });
 }
 
+static bool anyAfkCountdown()
+{
+    for (auto& p : Person::players) {
+        if (p->exAfk > 0 && p->exAfk <= 60 && !p->dead) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ChatCapture3D()
 {
-    if (g_bubbles.empty()) {
+    if (g_bubbles.empty() && !anyAfkCountdown()) {
         g_have3D = false; // (nothing over anyone's head: no need to read the matrices back)
         return;
     }
@@ -208,7 +219,21 @@ void ChatDraw()
     const Uint32 now = SDL_GetTicks();
     g_bubbles.erase(std::remove_if(g_bubbles.begin(), g_bubbles.end(), [&](const Bubble& b) { return now - b.at > kShow + kFade; }), g_bubbles.end());
     const bool line = g_typing && DrawSharedHud();
-    if ((g_bubbles.empty() || !g_have3D) && !line) {
+    // AFK countdowns over heads (host option AFK Timer): the last minute before the AI takes over
+    std::vector<Bubble> shown = g_bubbles;
+    for (size_t i = 0; i < Person::players.size(); i++) {
+        const Person& p = *Person::players[i];
+        if (p.exAfk > 0 && p.exAfk <= 60 && !p.dead) {
+            Bubble b;
+            b.person = (int)i;
+            b.text = std::to_string((int)p.exAfk);
+            b.at = now;
+            b.afk = true;
+            shown.push_back(b);
+        }
+    }
+
+    if ((shown.empty() || !g_have3D) && !line) {
         g_have3D = false;
         return;
     }
@@ -221,9 +246,10 @@ void ChatDraw()
         double dist;
         std::vector<std::string> lines;
         float sx;
+        bool afk;
     };
     std::vector<Placed> placed;
-    for (const Bubble& b : g_have3D ? g_bubbles : std::vector<Bubble>()) {
+    for (const Bubble& b : g_have3D ? shown : std::vector<Bubble>()) {
         if (b.person < 0 || b.person >= (int)Person::players.size() || HiddenInScene(b.person)) {
             continue;
         }
@@ -258,13 +284,17 @@ void ChatDraw()
         pl.alpha = alpha;
         pl.dist = dist;
         pl.sx = (float)sx;
+        pl.afk = b.afk;
+        if (b.afk) {
+            pl.size *= 1.6f; // the countdown reads from further away
+        }
         size_t widest = 0;
         for (auto& l : pl.lines) {
             widest = std::max(widest, l.size());
         }
-        const float lh = 22 * size;
-        pl.x0 = (float)sx - widest * 10.f * size / 2;
-        pl.x1 = (float)sx + widest * 10.f * size / 2;
+        const float lh = 22 * pl.size;
+        pl.x0 = (float)sx - widest * 10.f * pl.size / 2;
+        pl.x1 = (float)sx + widest * 10.f * pl.size / 2;
         pl.y0 = (float)sy;
         pl.y1 = (float)sy + lh * pl.lines.size();
         placed.push_back(pl);
@@ -294,7 +324,12 @@ void ChatDraw()
         float y = pl.y0 + lh * (pl.lines.size() - 1);
         for (const std::string& l : pl.lines) {
             const float x = pl.sx - l.size() * 10.f * pl.size / 2;
-            Game::text->glPrintOutlined(1, 1, 1, pl.alpha, x, y, l, 1, pl.size, screenwidth, screenheight);
+            if (pl.afk) { // orange, red for the last ten seconds
+                const bool last = atoi(l.c_str()) <= 10;
+                Game::text->glPrintOutlined(1, last ? .25f : .6f, last ? .2f : .15f, 1, x, y, l, 1, pl.size, screenwidth, screenheight);
+            } else {
+                Game::text->glPrintOutlined(1, 1, 1, pl.alpha, x, y, l, 1, pl.size, screenwidth, screenheight);
+            }
             y -= lh;
         }
     }
@@ -302,10 +337,28 @@ void ChatDraw()
         const float fullH = SharedHudHeight();
         const float size = 1.2f * fullH / 768.f;
         const bool blink = (now / 400) % 2 == 0;
-        const std::string shown = "Say: " + g_line + (blink ? "_" : " ");
-        Game::text->glPrintOutlined(1, 1, .85f, 1, 20 * fullH / 768.f, 120 * fullH / 768.f, shown, 1, size, screenwidth, screenheight);
+        const std::string typed = "Say: " + g_line + (blink ? "_" : " ");
+        Game::text->glPrintOutlined(1, 1, .85f, 1, 20 * fullH / 768.f, 120 * fullH / 768.f, typed, 1, size, screenwidth, screenheight);
     }
     glPopAttrib();
     g_have3D = false;
+}
+} // namespace EX
+
+namespace EX
+{
+// everyone is down (co-op): how to restart, in each view over the death fade
+void ChatDrawHint()
+{
+    const std::string hint = LocalDeadHint();
+    if (hint.empty() || !Game::text) {
+        return;
+    }
+    glPushAttrib(GL_ALL_ATTRIB_BITS);
+    textState();
+    const float size = 1.3f * SharedHudHeight() / 768.f;
+    const float x = screenwidth / 2 - hint.size() * 10.f * size / 2;
+    Game::text->glPrintOutlined(1, 1, 1, 1, x, screenheight * .12f, hint, 1, size, screenwidth, screenheight);
+    glPopAttrib();
 }
 } // namespace EX

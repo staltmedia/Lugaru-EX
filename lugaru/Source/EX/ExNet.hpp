@@ -34,6 +34,8 @@ void NetInit();      // after LocalInit, from [Multiplayer] in LugaruEX.ini
 void NetShutdown();
 bool NetIsHost();
 bool NetIsGuest();
+/** difficulty the level is played at: the host's on a guest (minimap on Insane), else this PC's */
+int NetDifficulty();
 /** guest: the host's awards for the end-of-level screen (count; -1 = not a guest, use award_awards) */
 int NetGuestAwards(int* awards);
 /** once per rendered frame, before the simulation: network in, discovery, timeouts */
@@ -98,6 +100,7 @@ bool ChatBlocksKeys();                      // typing (or Enter / Escape still h
 void ChatReceived(int person, const std::string& name, const std::string& text);
 void ChatCapture3D(); // in each view, with the 3D camera still set: remember it for the bubbles
 void ChatDraw();      // in each view, after the world: bubbles; typing line on the shared HUD
+void ChatDrawHint();  // in each view, last: "Press jump to restart" once every player is down (co-op)
 }
 
 #endif

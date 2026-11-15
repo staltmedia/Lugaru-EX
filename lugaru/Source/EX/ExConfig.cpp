@@ -248,6 +248,10 @@ void LoadConfig()
     geti("multiplayer.steam", cfg.mpSteam);
     gets("multiplayer.code", cfg.mpCode);
     geti("multiplayer.listed", cfg.mpListed);
+    geti("multiplayer.friendlyfire", cfg.mpFriendlyFire);
+    geti("multiplayer.afktimer", cfg.mpAfkTimer);
+    cfg.mpAfkTimer = cfg.mpAfkTimer <= 0 ? 0 : std::max(10, std::min(3600, cfg.mpAfkTimer));
+    geti("multiplayer.expandedai", cfg.mpExpandedAI);
     geti("player.default", cfg.playerDefault);
     gets("player.model", cfg.playerModel);
     cfg.playerModel = lower(cfg.playerModel);

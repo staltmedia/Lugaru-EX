@@ -611,12 +611,14 @@ void DoUpdate()
             perfFrames++;
             if (perfT >= 3.0) {
                 const double f = perfFrames / perfT;
-                if (f < 50) { // a slow PC: its log shows what the time goes on (nothing on screen)
+                // a frame cap the player chose is not a slow PC (the simulation keeps its rate)
+                const bool capped = EX::cfg.fpsCap > 0 && f >= EX::cfg.fpsCap * 0.85;
+                if (f < 50 && !capped) { // a slow PC: its log shows what the time goes on (nothing on screen)
                     char why[64];
                     snprintf(why, sizeof(why), "only %.0f fps", f);
                     EX::ProfAuto(why);
                 }
-                if (EX::cfg.simRate <= 0 && EX::SimRate() > 60 && f < EX::SimRate() * 0.5) {
+                if (EX::cfg.simRate <= 0 && EX::SimRate() > 60 && f < EX::SimRate() * 0.5 && !capped) {
                     const int nr = std::max(60, EX::SimRate() / 2);
                     printf("LugaruEX: only %.0f fps here - simulation lowered from %d to %d Hz\n", f, EX::SimRate(), nr);
                     EX::LimitSimRate(nr);
@@ -1144,7 +1146,7 @@ int main(int argc, char** argv)
                         Person::players[0]->DoDamage(1000);
                         printf("EXTEST killed p1 at %.1fs\n", (SDL_GetTicks() - exStart) / 1000.f);
                     }
-                    // test hook (host) LUGARUEX_TEST_KILLEACH=p1|guest: knock that player out 3 s into
+                    // test hook (host) LUGARUEX_TEST_KILLEACH=p1|guest|humans: knock that player out 3 s into
                     // every level (spectating after level changes)
                     {
                         static float exLastLt = 0;
@@ -1158,7 +1160,7 @@ int main(int argc, char** argv)
                             if (!exKillDone && Game::leveltime > 3 && !Game::loading && Game::gameon) {
                                 exKillDone = true;
                                 for (size_t i = 0; i < Person::players.size(); i++) {
-                                    const bool pick = strcmp(who, "guest") == 0 ? EX::RemotePerson((int)i) : i == 0;
+                                    const bool pick = strcmp(who, "guest") == 0 ? EX::RemotePerson((int)i) : strcmp(who, "humans") == 0 ? Person::players[i]->isPlayerControlled() : i == 0;
                                     if (pick) {
                                         Person::players[i]->DoDamage(1000);
                                         printf("EXTEST killed person %d at level time %.1f\n", (int)i, Game::leveltime);

@@ -87,6 +87,8 @@ extern Terrain terrain;
 extern float multiplier;
 extern float damagedealt; // (damagetaken comes from Level/Awards.hpp)
 
+extern int difficulty; // (the game's, global)
+
 namespace EX
 {
 // ------------------------------------------------------------------ protocol
@@ -412,7 +414,7 @@ struct NetPerson
     XYZ coords, curoff, tgtoff;
     float yaw = 0, tilt = 0, tilt2 = 0, headyaw = 0, headpitch = 0, target = 0;
     int animCur = 0, animTgt = 0, frameCur = 0, frameTgt = 0;
-    int dead = 0, free = 0, aitype = 0, flags = 0;
+    int dead = 0, free = 0, aitype = 0, flags = 0, afk = 0;
     float damage = 0, bloodloss = 0, perm = 0, superperm = 0, tol = 200, dim = 0;
     int numw = 0, wactive = -1, wstuck = -1, wstuckwhere = 0, w[4] = { -1, -1, -1, -1 };
     std::vector<XYZ> joints; // ragdoll only
@@ -636,6 +638,7 @@ static double guestRenderTime()
 static std::deque<uint32_t> g_seenEvents;
 static std::unordered_set<uint32_t> g_seenSet;
 static int g_score = 0, g_slomo = 0, g_winfreeze = 0;
+static int g_hostDifficulty = -1; // guest: the host's difficulty (snapshot flags), -1 = none yet
 static std::string g_status;
 
 // ------------------------------------------------------------------ names, passwords, chat
@@ -1080,6 +1083,11 @@ bool NetIsGuest()
     return g_role == R_GUEST;
 }
 
+int NetDifficulty()
+{
+    return (g_role == R_GUEST && g_hostDifficulty >= 0) ? g_hostDifficulty : difficulty;
+}
+
 static std::vector<int> g_awards; // guest: the host's awards when the level was won, in its order
 static int g_dlgWhich = -1, g_dlgScene = 0, g_dlgOwner = 0; // guest: the host's dialogue scene (-1 = none)
 
@@ -1161,6 +1169,7 @@ static void writePerson(Writer& w, int idx, const Person& p, bool joints)
     // onterrain: the guest plants feet on the ground (IK) like the host; stunned and howactive
     // (awake, asleep, knocked out...): the face (stunned, eyes shut, open mouth)
     w.u8((p.onfire ? 1 : 0) | (p.headless ? 2 : 0) | (p.onterrain ? 4 : 0) | (p.stunned > 0 ? 8 : 0) | ((p.howactive & 7) << 4));
+    w.u8(p.exAfk); // AFK countdown over their head (seconds), 255 = the AI plays for them
     w.u16((int)p.damage);
     w.u16((int)p.bloodloss);
     w.u16((int)p.permanentdamage);
@@ -1192,7 +1201,7 @@ static void writePerson(Writer& w, int idx, const Person& p, bool joints)
 
 static int personSize(const Person& p, bool joints)
 {
-    return 66 + (joints ? 6 * (int)std::min<size_t>(p.skeleton.joints.size(), 60) : 0); // = what writePerson writes
+    return 67 + (joints ? 6 * (int)std::min<size_t>(p.skeleton.joints.size(), 60) : 0); // = what writePerson writes
 }
 
 static void hostSnapshots()
@@ -1223,7 +1232,7 @@ static void hostSnapshots()
         w.u32(g_snapSeq);
         w.f32((float)g_simClock); // simulation time: even if this PC runs several steps in one
                                   // frame, guests see them spread out as they were simulated
-        w.u8((slomo ? 1 : 0) | (winfreeze ? 2 : 0));
+        w.u8((slomo ? 1 : 0) | (winfreeze ? 2 : 0) | ((difficulty & 3) << 2)); // (difficulty: the minimap goes on Insane)
         w.u32((uint32_t)bonustotal);
         w.f32(Game::leveltime);
         // the end-of-level screen: level score (score - score at the start), time and awards
@@ -3304,6 +3313,7 @@ static void guestSnap(Reader& r)
     if (snapNo >= newestApplied || newestApplied - snapNo > 100000) {
         newestApplied = snapNo;
         g_slomo = flags & 1;
+        g_hostDifficulty = (flags >> 2) & 3;
         g_winfreeze = (flags & 2) ? 1 : 0;
         g_score = score;
         Game::leveltime = hostLevelTime;
@@ -3442,6 +3452,7 @@ static void guestSnap(Reader& r)
             s.free = r.u8();
             s.aitype = r.u8();
             s.flags = r.u8();
+            s.afk = r.u8();
             s.damage = (float)r.u16();
             s.bloodloss = (float)r.u16();
             s.perm = (float)r.u16();
@@ -4271,6 +4282,7 @@ void NetGuestStep()
         p.onterrain = (s.flags & 4) != 0;
         p.stunned = (s.flags & 8) ? 1.f : 0.f;
         p.howactive = (s.flags >> 4) & 7;
+        p.exAfk = (unsigned char)s.afk;
         if (p.onfire && !wasOnFire) {
             p.exFireStart(); // catching fire: the burst of flames and the fire loop
         }

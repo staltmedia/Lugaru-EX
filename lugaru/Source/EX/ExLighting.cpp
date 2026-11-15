@@ -53,11 +53,15 @@ struct Look
     float vignette;
     float fog;                       // extra distance fog density
     float tonemap;                   // 1 = filmic curve
+    float sharp;                     // 1 = hard-edged shadows, dark ambient, crisp (the "Sharp Shadows" look)
 };
 
 static const Look kLooks[] = {
-    { "Original", 0, 0, 0, 1, 0, 0, 1, 1, 1, { 1, 1, 1 }, 0, 0, 0 },
-    { "Enhanced", 0.65f, 1.0f, 0.22f, 0.78f, 1.0f, 0.0f, 1.0f, 1.05f, 1.06f, { 1.0f, 1.0f, 1.0f }, 0.18f, 0.0f, 0 },
+    { "Original", 0, 0, 0, 1, 0, 0, 1, 1, 1, { 1, 1, 1 }, 0, 0, 0, 0 },
+    { "Enhanced", 0.65f, 1.0f, 0.22f, 0.78f, 1.0f, 0.0f, 1.0f, 1.05f, 1.06f, { 1.0f, 1.0f, 1.0f }, 0.18f, 0.0f, 0, 0 },
+    // old-school per-pixel lighting (think 2004 stencil shadows): razor shadow edges, dark
+    // flat ambient (no occlusion, no bounce), strong sun and highlights, crisp textures, no glow
+    { "Sharp Shadows", 0, 1.0f, 0, 1.0f, 1.0f, 0.0f, 1.04f, 1.14f, 0.94f, { 1.0f, 0.99f, 0.97f }, 0.26f, 0.0f, 0, 1 },
 };
 static const int kNumLooks = sizeof(kLooks) / sizeof(kLooks[0]);
 
@@ -260,6 +264,7 @@ static const char* kComposite =
     "uniform float uHemi, uRim, uSpec, uContact, uVolume, uShadowStr;\n"
     "uniform sampler2D uBounce;\n"
     "uniform float uLightScale, uBounceStr;\n"
+    "uniform float uSharp;  // the Sharp Shadows look: hard shadow edges, dark ambient, crisp\n"
     "uniform int uDebug;  // LUGARUEX_LIGHT_DEBUG: 1 sky visibility, 2 bounce light, 3 bent normal, 4 normal,\n"
     "                     // 5 game light (red: has a surface), 6 relight gain, 7 the game's colour, 8 surfaces (red) over it\n"
     "float hash(vec2 s) { return fract(sin(dot(gl_FragCoord.xy + s, vec2(12.9898, 78.233))) * 43758.5453); }\n"
@@ -277,14 +282,27 @@ static const char* kComposite =
     "  }\n"
     "  return sum / 12.0;\n"
     "}\n"
+    "// Sharp Shadows: a hard depth test, filtered only across the one shadow-map texel it\n"
+    "// falls in (bilinear PCF): a razor edge without stair steps\n"
+    "float hardShadow(sampler2D sm, vec3 sc, float bias) {\n"
+    "  vec2 t = sc.xy / uShadowInfo.x - 0.5;\n"
+    "  vec2 f = fract(t);\n"
+    "  vec2 b = (floor(t) + 0.5) * uShadowInfo.x;\n"
+    "  float z = sc.z - bias, k = uShadowInfo.x;\n"
+    "  float s00 = step(z, texture2D(sm, b).r), s10 = step(z, texture2D(sm, b + vec2(k, 0.0)).r);\n"
+    "  float s01 = step(z, texture2D(sm, b + vec2(0.0, k)).r), s11 = step(z, texture2D(sm, b + vec2(k, k)).r);\n"
+    "  return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);\n"
+    "}\n"
     "float sunShadow(vec3 p, vec3 n, float ndl) {\n"
     "  float slope = 1.0 - clamp(ndl, 0.0, 1.0);\n"
     "  vec4 s0 = uShadowMat0 * vec4(p + n * uShadowInfo.y * 1.5, 1.0);\n"
     "  if (s0.x > 0.04 && s0.y > 0.04 && s0.x < 0.96 && s0.y < 0.96 && s0.z < 1.0)\n"
-    "    return pcf(uShadow0, s0.xyz, uShadowInfo.w * (0.03 + 0.06 * slope), 2.4);\n"
+    "    return uSharp > 0.5 ? hardShadow(uShadow0, s0.xyz, uShadowInfo.w * (0.03 + 0.06 * slope))\n"
+    "                        : pcf(uShadow0, s0.xyz, uShadowInfo.w * (0.03 + 0.06 * slope), 2.4);\n"
     "  vec4 s1 = uShadowMat1 * vec4(p + n * uShadowInfo.z * 1.5, 1.0);\n"
     "  if (s1.x < 0.0 || s1.y < 0.0 || s1.x > 1.0 || s1.y > 1.0 || s1.z >= 1.0) return 1.0;\n"
-    "  float sh = pcf(uShadow1, s1.xyz, uShadowInfo.w * (0.08 + 0.2 * slope), 1.6);\n"
+    "  float sh = uSharp > 0.5 ? hardShadow(uShadow1, s1.xyz, uShadowInfo.w * (0.08 + 0.2 * slope))\n"
+    "                          : pcf(uShadow1, s1.xyz, uShadowInfo.w * (0.08 + 0.2 * slope), 1.6);\n"
     "  vec2 e = min(s1.xy, 1.0 - s1.xy);\n"
     "  return mix(1.0, sh, clamp(min(e.x, e.y) * 10.0, 0.0, 1.0));\n"
     "}\n"
@@ -300,7 +318,7 @@ static const char* kComposite =
     "    vec2 t = vec2(r.x / (-r.z * uProj.z), r.y / (-r.z * uProj.w)) * 0.5 + 0.5;\n"
     "    if (t.x < 0.0 || t.y < 0.0 || t.x > 1.0 || t.y > 1.0) break;\n"
     "    float dz = linZ(texture2D(uDepth, t).r) - r.z;\n"
-    "    float hit = smoothstep(0.01, 0.04, dz) * (1.0 - smoothstep(0.2, 0.3, dz));\n"
+    "    float hit = smoothstep(0.01, uSharp > 0.5 ? 0.015 : 0.04, dz) * (1.0 - smoothstep(0.2, 0.3, dz));\n"
     "    occ = max(occ, hit * (1.0 - float(i) / 10.0));\n"
     "  }\n"
     "  return 1.0 - occ;\n"
@@ -326,6 +344,12 @@ static const char* kComposite =
     "  float d = texture2D(uDepth, uv).r;\n"
     "  bool sky = d >= 0.99999;\n"
     "  vec3 p = viewPos(uv, d);\n"
+    "  if (uSharp > 0.5 && !sky) {\n"
+    "    // crisp textures: a light unsharp mask on the game's picture\n"
+    "    vec3 bl = (texture2D(uColor, uv + vec2(uTexel.x, 0.0)).rgb + texture2D(uColor, uv - vec2(uTexel.x, 0.0)).rgb +\n"
+    "               texture2D(uColor, uv + vec2(0.0, uTexel.y)).rgb + texture2D(uColor, uv - vec2(0.0, uTexel.y)).rgb) * 0.25;\n"
+    "    c = max(c + (c - bl) * 0.45, vec3(0.0));\n"
+    "  }\n"
     "  if (!sky) {\n"
     "    // ambient occlusion, bent normal and bounce colour, filtered over the 4x4 noise pattern\n"
     "    vec3 aoS = vec3(1.0, 0.5, 0.5), bnc = vec3(0.0);\n"
@@ -382,13 +406,14 @@ static const char* kComposite =
     "      vec3 hemi = mix(uGroundCol, uSkyCol, up);\n"
     "      hemi = mix(vec3(1.0), hemi / max(dot(hemi, vec3(0.299, 0.587, 0.114)), 0.05), 0.4) * mix(0.82, 1.12, up);  // a hint of colour; lighter from above, darker from below\n"
     "      vec3 skyL = a * vis * mix(vec3(1.0), hemi, uHemi);\n"
+    "      skyL *= mix(1.0, 0.55, uSharp);  // Sharp Shadows: dark flat ambient, the sun does the work\n"
     "      // one bounce: the blocked part of the sky is replaced by the light the blockers reflect\n"
     "      vec3 bounceL = (1.0 - vis) * bnc / uLightScale * uBounceStr;\n"
     "      // ...but never more than the sky light it replaces: under a hoof on bright sand or\n"
     "      // snow it outshone the open ground and left a glowing rim round the feet\n"
     "      float bLum = dot(bounceL, vec3(0.299, 0.587, 0.114)), bMax = (1.0 - vis) * a;\n"
     "      if (bLum > bMax) bounceL *= bMax / bLum;\n"
-    "      c = alb * (skyL + bounceL + vec3((1.0 - a) * lam * s));\n"
+    "      c = alb * (skyL + bounceL + vec3((1.0 - a) * lam * s * mix(1.0, 1.22, uSharp)));\n"
     "      if (relit) {\n"
     "        vec3 V = normalize(-p);\n"
     "        float nv = max(dot(n, V), 0.001);\n"
@@ -714,7 +739,7 @@ bool LightingRealShadows()
 {
     // (a sun too low for shadow maps keeps the old blob shadows)
     const float l = sqrtf(light.location.x * light.location.x + light.location.y * light.location.y + light.location.z * light.location.z);
-    return g_ready && g_engine && g_look == 1 && l > 0 && light.location.y / l > .14f;
+    return g_ready && g_engine && g_look >= 1 && l > 0 && light.location.y / l > .14f; // (Enhanced, Sharp Shadows)
 }
 
 static GLint U(GLuint prog, const char* name)
@@ -850,7 +875,7 @@ void LightingInit()
     // the launcher's Shaders box decides: ticked = every game starts in the Enhanced look.
     // The hotkey (R / a controller's Back) switches for this session only; a saved choice
     // made friends' games come up in the Original look after a stray press.
-    g_look = cfg.shaders ? kNumLooks - 1 : 0;
+    g_look = cfg.shaders ? 1 : 0;
     if (!cfg.shaders && !cfg.colorblind) {
         g_shadersOff = true; // launcher "Shaders" box unticked: Original look only
         g_look = 0;
@@ -906,6 +931,9 @@ void LightingInit()
         glBindTexture(GL_TEXTURE_2D, 0);
         g_engine = ok2;
         printf("LugaruEX lighting: sun shadows and per-pixel light %s\n", g_engine ? "ready" : "FAILED (Enhanced without them)");
+    }
+    if (const char* tl = getenv("LUGARUEX_TEST_LOOK")) { // test hook: start in look n (0 Original, 1 Enhanced, 2 Sharp Shadows)
+        g_look = g_ready ? std::max(0, std::min(kNumLooks - 1, atoi(tl))) : 0;
     }
     printf("LugaruEX lighting: %s, look '%s'\n", g_ready ? "ready" : "FAILED (Original only)", kLooks[g_look].name);
 }
@@ -1293,7 +1321,7 @@ void LightingApply()
     EngineFrame ef;
     g_recording = false;
     g_shadowsThisFrame = false;
-    if (g_engine && g_look == 1 && g_fboG && !g_warnedBlit) {
+    if (g_engine && g_look >= 1 && g_fboG && !g_warnedBlit) { // (Enhanced, Sharp Shadows)
         enginePasses(w, h, proj, mv, ef);
     }
 
@@ -1426,14 +1454,15 @@ void LightingApply()
         // (the frame the bounce is gathered from has no sun shadows yet, and the game's flat
         // ambient already holds an average bounce: a little over half of it)
         ex_glUniform1f(U(c, "uBounceStr"), .6f);
-        ex_glUniform1f(U(c, "uHemi"), .6f);
+        ex_glUniform1f(U(c, "uHemi"), L.sharp > 0 ? .3f : .6f);
         ex_glUniform1f(U(c, "uRim"), .5f);
-        ex_glUniform1f(U(c, "uSpec"), 1.f);
-        ex_glUniform1f(U(c, "uContact"), .8f);
-        ex_glUniform1f(U(c, "uVolume"), ef.volume);
+        ex_glUniform1f(U(c, "uSpec"), L.sharp > 0 ? 1.8f : 1.f); // (Sharp Shadows: hard, bright highlights)
+        ex_glUniform1f(U(c, "uContact"), L.sharp > 0 ? 1.f : .8f);
+        ex_glUniform1f(U(c, "uVolume"), L.sharp > 0 ? 0.f : ef.volume); // (Sharp Shadows: clear air)
         ex_glUniform1f(U(c, "uShadowStr"), ef.shadowStr);
     }
     ex_glUniform1f(U(c, "uAOStr"), L.ao);
+    ex_glUniform1f(U(c, "uSharp"), ef.on ? L.sharp : 0.f);
     static const int dbg = getenv("LUGARUEX_LIGHT_DEBUG") ? atoi(getenv("LUGARUEX_LIGHT_DEBUG")) : 0;
     ex_glUniform1i(U(c, "uDebug"), dbg);
     ex_glUniform1f(U(c, "uBloomStr"), L.bloom);

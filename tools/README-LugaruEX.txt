@@ -1,4 +1,4 @@
-LugaruEX 0.5.5 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.5.6 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -110,7 +110,8 @@ Launcher
   quality, Shaders (off = only the original 2005 look), High Resolution
   Textures (uses the Overrides folder), colour blind mode (Deuteranopia,
   Protanopia, Tritanopia - also recolours the minimap markers).
-  FPS cap matches the display.
+  FPS cap: match the display, unlimited, or 30 to 360 fps. It only limits
+  frames: the game itself runs the same, also with other players online.
   The HUD and menus always keep their proportions on wide screens.
   Character: Random (the default: a skin nobody else in the level wears), a
     skin of your choice for Rabbit or Wolf (a wolf plays as a real wolf), or
@@ -166,7 +167,12 @@ Launcher
     ^3 yellow, ^4 blue, ^5 cyan, ^6 magenta, ^7 white, ^8 orange, ^9 purple,
     ^0 grey colour the text after them), Password (tick it and type one;
     Show reveals it), Allow custom players (else guests get a random look),
-    Max players (yours included, 0 = no limit) and LAN / VPN (no Steam: your
+    Max players (yours included, 0 = no limit), Friendly fire (players can
+    hit each other; your attacks still pick an enemy first, a partner only
+    when they stand close in front of you and no enemy is near), Expanded AI
+    (enemies also use leg cannons, wall kicks and knife throws, more often
+    on harder difficulties), AFK Timer (Seconds) (default 120, 0 = off) and
+    LAN / VPN (no Steam: your
     network or a virtual one like Radmin, Hamachi, ZeroTier) with its UDP
     port.
     Connect: pick a server in the list, or type the host's IP for LAN / VPN.
@@ -208,17 +214,28 @@ Local split-screen co-op (up to 4 players)
     controller comes back.
   - Player 1 can play on keyboard and mouse alone (Local tab): then every
     controller is a player of its own, for couch co-op with one keyboard.
-  - While you are down, press attack to watch the next player (alive or a
+  - While you are down, press attack (left click / right trigger) to watch
+    the next player, right click / left trigger for the one before (alive or a
     body), and again to come back to yourself. Your own look controls turn
     the camera. The view cuts straight to the next player. The dark "dead"
     filter only shows while you watch a body. The camera follows a body
     like a living player, wherever it gets knocked around to.
   - Sound: every sound is heard once, from the screen of the player closest
     to it (as if that player were listening), so nothing doubles up.
-  - The level restarts only when every player is down. Reaching the exit
-    with any player counts.
-  - Enemies go after whichever player is closest. Your attacks never lock
-    on to a partner, but throws, ragdolls and collisions still hit them.
+  - When every player is down the level waits, so you can look round the
+    bodies: jump restarts it (on the host's PC; guests see "Waiting for the
+    host to restart"). Alone, it restarts by itself as in the original.
+  - AFK: a player who touches nothing for the host's AFK Timer gets a
+    countdown over their head for the last minute, then an AI plays their
+    character (fights enemies, stays with the others) and their view moves
+    to the others (attack / right click to switch). Moving again gives them
+    their character back.
+  - Reaching the exit with any player counts.
+  - Enemies go after whichever player is closest. Your attacks, tackles and
+    wall kicks never lock on to a partner (unless the host turns on Friendly
+    fire), but throws, ragdolls and collisions still hit them. You can hit
+    an enemy that is countering a partner (a leg cannon too), like the
+    enemies can hit you.
   - Start on any controller opens the menu (pauses for everyone); any
     controller can move through the menus. Back cycles the lighting look.
   - "Random" picks a rabbit skin nobody else in the level is wearing and
@@ -365,7 +382,7 @@ Bodies, score and time
   Linux: ~/.local/share/LugaruEX/).
 
 In game
-  R          switch lighting look: Original / Enhanced, for this game
+  R          switch lighting look: Original / Enhanced / Sharp Shadows, for this game
              (the name shows bottom-left - in split screen only in the bottom-left
              view). With Shaders ticked in the launcher every game starts in
              Enhanced.
@@ -392,7 +409,9 @@ Engine changes
     frame rate and the old 60 fps lock is gone.
   - V-Sync On by default (no tearing); DPI-aware, so scaled displays render
     at their full resolution.
-  - Lighting looks (R): Original (the 2005 look) and Enhanced. Enhanced lights
+  - Lighting looks (R): Original (the 2005 look), Enhanced and Sharp Shadows
+    (old-school hard-edged sun shadows, dark ambient, strong highlights,
+    crisp textures, no glow or haze). Enhanced lights
     the world with the sun: real soft shadows from characters, weapons, trees,
     bushes, rocks and boxes (also from trees just off screen), small contact
     shadows where things touch, per-pixel sunlight on characters and objects,

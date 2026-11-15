@@ -463,6 +463,8 @@ bool PadRead(const std::string& id, PadInput& o)
     };
     o.lookX = shape(axis(gc, SDL_CONTROLLER_AXIS_RIGHTX));
     o.lookY = shape(axis(gc, SDL_CONTROLLER_AXIS_RIGHTY));
+    o.lt = axis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > .5f;
+    o.rt = axis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > .5f;
     return true;
 }
 

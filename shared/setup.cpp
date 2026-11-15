@@ -2,6 +2,7 @@
 #include "setup.h"
 
 #include "fsutil.h"
+#include "update.h" // (Http_CleanEnv)
 #include "miniz/miniz.h"
 
 #include <algorithm>
@@ -1026,7 +1027,7 @@ bool Setup_Unpack(const std::string& package, const std::string& dir, std::strin
         error = "unusual characters in the path"; // (never into a shell command)
         return false;
     }
-    const std::string cmd = "tar -xzf '" + package + "' -C '" + dir + "' 2>/dev/null";
+    const std::string cmd = Http_CleanEnv() + "tar -xzf '" + package + "' -C '" + dir + "' 2>/dev/null"; // (system libraries, not Steam's)
     if (system(cmd.c_str()) == 0) {
         return true;
     }

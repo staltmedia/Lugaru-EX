@@ -21,6 +21,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Objects/Person.hpp"
 #include "EX/ExMath.hpp"
 #include "EX/ExLocal.hpp"
+#include "EX/ExBot.hpp"
 #include "EX/ExNet.hpp"
 #include "EX/ExLighting.hpp"
 
@@ -582,6 +583,28 @@ XYZ Person::getProportionXYZ(int part) const
  * USES:
  * GameTick/doPlayerCollisions
  */
+// LugaruEX co-op: how a move that grabs the closest character (wall kick, tackle) weighs
+// `o` for `me`: 0 = never, else a factor on the squared distance. A player never picks a
+// partner (Friendly fire: only at four times the squared distance, so any enemy near is
+// picked first); an enemy keeps the original choice, or players only for the Expanded AI
+// moves the original never had (aiPlayersOnly).
+static float exFoeWeight(const Person& me, const Person& o, bool aiPlayersOnly)
+{
+    if (&me == &o) {
+        return 0;
+    }
+    if (me.isPlayerControlled()) {
+        if (!o.isPlayerControlled()) {
+            return 1;
+        }
+        return EX::FriendlyFire() ? 4.f : 0.f;
+    }
+    if (aiPlayersOnly) {
+        return o.isPlayerControlled() ? 1.f : 0.f;
+    }
+    return 1;
+}
+
 void Person::CheckKick()
 {
     if (!(hasvictim && (animTarget == rabbitkickanim && victim && victim != this->shared_from_this() && frameCurrent >= 2 && animCurrent == rabbitkickanim) && distsq(&coords, &victim->coords) < 1.2 && !victim->skeleton.free)) {
@@ -2528,9 +2551,13 @@ void Person::DoAnimations()
                 Normalise(&targetloc);
                 targetloc += coords;
                 for (unsigned i = 0; i < Person::players.size(); i++) {
-                    if (i != id) {
-                        if (distsq(&targetloc, &Person::players[i]->coords) < closestdist || closestdist == 0) {
-                            closestdist = distsq(&targetloc, &Person::players[i]->coords);
+                    // LugaruEX: a player's tackle never grabs a partner (Friendly fire: only
+                    // when no enemy is closer, at half the reach)
+                    const float exW = exFoeWeight(*this, *Person::players[i], false);
+                    if (i != id && exW > 0) {
+                        const float d = distsq(&targetloc, &Person::players[i]->coords) * exW;
+                        if (d < closestdist || closestdist == 0) {
+                            closestdist = d;
                             closestid = i;
                         }
                     }
@@ -3599,7 +3626,26 @@ void Person::DoAnimations()
                 }
 
                 if ((animTarget == swordslashreversalanim || animTarget == knifeslashreversalanim || animTarget == staffhitreversalanim || animTarget == staffspinhitreversalanim) && Animation::animations[animTarget].frames[frameCurrent].label == 5) {
-                    if (victim->hasWeapon() && victim->num_weapons > 0) {
+                    if (victim->hasWeapon() && victim->num_weapons > 0 && creature == wolftype && !isPlayerControlled()) {
+                        // LugaruEX: an enemy wolf disarms but never wields the weapon (wolves don't
+                        // use weapons; only player wolves keep one): it falls loose
+                        const int w = victim->weaponids[victim->weaponactive];
+                        if (weapons[w].owner == int(victim->id)) {
+                            XYZ tempVelocity = victim->velocity * .2;
+                            if (tempVelocity.x == 0) {
+                                tempVelocity.x = .1;
+                            }
+                            weapons[w].drop(tempVelocity, tempVelocity, false);
+                            victim->num_weapons--;
+                            if (victim->num_weapons > 0) {
+                                victim->weaponids[victim->weaponactive] = victim->weaponids[victim->num_weapons];
+                                if (victim->weaponstuck == victim->num_weapons) {
+                                    victim->weaponstuck = 0;
+                                }
+                            }
+                            victim->weaponactive = -1;
+                        }
+                    } else if (victim->hasWeapon() && victim->num_weapons > 0) {
                         if (weapons[victim->weaponids[victim->weaponactive]].owner == int(victim->id)) {
                             takeWeapon(victim->weaponids[victim->weaponactive]);
                             victim->num_weapons--;
@@ -4106,14 +4152,21 @@ void Person::DoAnimations()
                     lastfeint = 0;
                 }
                 if (animTarget == walljumprightanim || animTarget == walljumpbackanim || animTarget == walljumpfrontanim) {
-                    if (attackkeydown && animTarget != walljumpfrontanim) {
+                    if ((attackkeydown || EX::ExpandedAIWallKick(*this)) && animTarget != walljumpfrontanim) {
                         int closest = -1;
                         float closestdist = -1;
                         float distance;
                         if (Person::players.size() > 1) {
                             for (unsigned i = 0; i < Person::players.size(); i++) {
+                                // LugaruEX: a player's wall kick goes for enemies, never a partner
+                                // (Friendly fire: a partner only when no enemy is nearer, at a
+                                // half the reach); an enemy's (Expanded AI) for players only
+                                const float exW = exFoeWeight(*this, *Person::players[i], true);
+                                if (exW <= 0) {
+                                    continue;
+                                }
                                 if (id != i && Person::players[i]->coords.y < coords.y && !Person::players[i]->skeleton.free) {
-                                    distance = distsq(&Person::players[i]->coords, &coords);
+                                    distance = distsq(&Person::players[i]->coords, &coords) * exW;
                                     if (closestdist == -1 || distance < closestdist) {
                                         closestdist = distance;
                                         closest = i;

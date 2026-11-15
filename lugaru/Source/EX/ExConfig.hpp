@@ -14,7 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <string>
 
-#define EX_VERSION_STRING "0.5.5" // also tools/package.ps1, launcher.rc, the launcher label and launcher-sdl/main.cpp
+#define EX_VERSION_STRING "0.5.6" // also tools/package.ps1, launcher.rc, the launcher label and launcher-sdl/main.cpp
 
 namespace EX
 {
@@ -66,6 +66,9 @@ struct Config
     int mpSteam = 1;                 // 1 = through Steam (lobby codes, Valve's relay: no IP addresses shown); 0 = direct (IP / LAN)
     std::string mpCode;              // join through Steam: the host's lobby code
     int mpListed = 1;                // host through Steam: shown in the server list (else code only)
+    int mpFriendlyFire = 0;          // host: players can hit each other (aiming still prefers enemies)
+    int mpAfkTimer = 120;            // host: seconds without input before an AI plays for that player (0 = off)
+    int mpExpandedAI = 0;            // host: the AI uses the players' moves too (leg cannons, wall kicks, knife throws)
 
     // [Player] character chosen in the launcher
     int playerDefault = 1;              // 1 = use whatever the level defines

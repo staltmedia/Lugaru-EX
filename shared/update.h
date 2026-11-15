@@ -20,6 +20,10 @@ struct UpdateInfo
 // HTTPS GET into a string (small replies) or a file; progress counts bytes as they arrive
 bool Http_GetString(const std::string& url, std::string& out, std::string& error);
 bool Http_GetFile(const std::string& url, const std::string& path, std::atomic<uint64_t>* progress, std::string& error);
+#ifndef _WIN32
+/** "env ... " prefix that runs a system tool with the system's own libraries (not Steam's runtime) */
+std::string Http_CleanEnv();
+#endif
 
 // the newest release of repo ("owner/name") and its package for this computer
 // (platform "win64": the .zip, "linux-x64": the .tar.gz)

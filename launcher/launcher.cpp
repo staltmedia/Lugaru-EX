@@ -60,7 +60,7 @@ embedded in this program.
 
 #pragma comment(lib, "uxtheme.lib")
 
-#define EX_LAUNCHER_VERSION "0.5.5" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
+#define EX_LAUNCHER_VERSION "0.5.6" // also lugaru/Source/EX/ExConfig.hpp, launcher.rc, launcher-sdl and tools/package.ps1
 enum
 {
     WM_FREEDATA_DONE = WM_APP + 10, // the free game data arrived (installer)
@@ -100,6 +100,9 @@ struct Settings
     int usePassword = -1;             // host: the Password box (-1: on when a password was saved before)
     int maxPlayers = 0;               // host: everyone, the host's own players too (0 = no limit)
     int guestChars = 1;               // host: guests choose their own character
+    int friendlyFire = 0;             // host: players can hit each other
+    int expandedAI = 0;               // host: the AI also uses the players' moves
+    int afkTimer = 120;               // host: seconds before the AI plays for an idle player (0 = off)
     int mpAdvanced = 0;               // the Advanced options are open
     int steam = 1;                    // through Steam (codes, Valve's relay) - 0 = direct (IP / LAN)
     std::string code;                 // join through Steam: the host's code
@@ -268,6 +271,9 @@ static void LoadIni(Settings& s)
     }
     gi("multiplayer.maxplayers", s.maxPlayers);
     gi("multiplayer.guestcharacters", s.guestChars);
+    gi("multiplayer.friendlyfire", s.friendlyFire);
+    gi("multiplayer.expandedai", s.expandedAI);
+    gi("multiplayer.afktimer", s.afkTimer);
     gi("multiplayer.advanced", s.mpAdvanced);
     gi("multiplayer.steam", s.steam);
     gs("multiplayer.code", s.code);
@@ -335,6 +341,10 @@ static bool SaveIni(const Settings& s)
       << "UsePassword=" << s.usePassword << "\r\n"
       << "; host: players at most (yours included, 0 = no limit), and whether guests choose their character\r\n"
       << "MaxPlayers=" << s.maxPlayers << "\r\n"
+      << "; host: players can hit each other, the AI uses the players' moves too, seconds before the AI plays for an idle player (0 = off)\r\n"
+      << "FriendlyFire=" << s.friendlyFire << "\r\n"
+      << "ExpandedAI=" << s.expandedAI << "\r\n"
+      << "AfkTimer=" << s.afkTimer << "\r\n"
       << "GuestCharacters=" << s.guestChars << "\r\n"
       << "Advanced=" << s.mpAdvanced << "\r\n"
       << "; 1 = play through Steam (Steam server list, Valve's relay: nobody sees anyone's IP address); 0 = direct (IP / LAN)\r\n"
@@ -1270,12 +1280,15 @@ static void UpdateAspectLabel()
 }
 
 // FPS cap choices: the detected refresh rate of the chosen display (or the
-// chosen exclusive-fullscreen rate), or unlimited. want: -1 match, 0 unlimited,
-// -2 keep the current choice.
+// chosen exclusive-fullscreen rate), unlimited, or a fixed number of frames.
+// want: -1 match, 0 unlimited, n = n fps, -2 keep the current choice.
+// (Frames only: the game's simulation runs at its own rate, so a cap never
+// changes how the game plays, nor what other players see online.)
+static const int kFpsCaps[] = { 30, 60, 75, 90, 120, 144, 165, 240, 360 };
 static void FillFpsCap(int want)
 {
     if (want == -2) {
-        want = (ComboData(g_gfx, IDC_FPSCAP) == 0) ? 0 : -1;
+        want = (int)ComboData(g_gfx, IDC_FPSCAP);
     }
     int mon = std::max(0, ComboSel(g_gfx, IDC_MONITOR));
     int hz = (mon < (int)g_mons.size()) ? g_mons[mon].curHz : 0;
@@ -1294,6 +1307,14 @@ static void FillFpsCap(int want)
     SendDlgItemMessageW(g_gfx, IDC_FPSCAP, CB_RESETCONTENT, 0, 0);
     ComboAdd(g_gfx, IDC_FPSCAP, hz > 0 ? L"Match display (" + std::to_wstring(hz) + L" Hz)" : std::wstring(L"Match display"), -1);
     ComboAdd(g_gfx, IDC_FPSCAP, L"Unlimited", 0);
+    bool listed = want <= 0;
+    for (int c : kFpsCaps) {
+        ComboAdd(g_gfx, IDC_FPSCAP, std::to_wstring(c) + L" fps", c);
+        listed = listed || c == want;
+    }
+    if (!listed) { // a number typed into the ini by hand stays
+        ComboAdd(g_gfx, IDC_FPSCAP, std::to_wstring(want) + L" fps", want);
+    }
     ComboSelectData(g_gfx, IDC_FPSCAP, want, 0);
 }
 
@@ -1457,7 +1478,8 @@ static void UpdateMpEnable()
     Show(IDC_MP_ADVANCED, host);
     SetDlgItemTextW(g_mp, IDC_MP_ADVANCED, opts ? L"Host options  v" : L"Host options  >");
     for (int id : { IDC_MP_SNAMELBL, IDC_MP_SERVERNAME, IDC_MP_GUESTCHARS, IDC_MP_PWON, IDC_MP_HOSTPW, IDC_MP_HOSTPW_SHOW, IDC_MP_MAXLBL,
-                    IDC_MP_MAXPLAYERS, IDC_MP_MAXHINT, IDC_LAN, IDC_MP_PORTLBL, IDC_PORT }) {
+                    IDC_MP_MAXPLAYERS, IDC_MP_MAXHINT, IDC_LAN, IDC_MP_PORTLBL, IDC_PORT, IDC_MP_FRIENDLY, IDC_MP_EXPANDEDAI,
+                    IDC_MP_AFKLBL, IDC_MP_AFK }) {
         Show(id, opts);
     }
     const bool pw = MpCheck(IDC_MP_PWON);
@@ -2026,9 +2048,8 @@ static void InitGfxPage(HWND p)
     }
     ComboSelectData(p, IDC_AF, g_set.af, 0);
 
-    // FPS cap: the display's own refresh rate (detected) or unlimited.
-    // Older ini files with a number are treated as "match display".
-    FillFpsCap(g_set.fpscap == 0 ? 0 : -1);
+    // FPS cap: the display's own refresh rate (detected), unlimited or a number of frames
+    FillFpsCap(g_set.fpscap < 0 ? -1 : g_set.fpscap);
     ComboAdd(p, IDC_VSYNC, L"Off", 0);
     ComboAdd(p, IDC_VSYNC, L"On (no tearing)", 1);
     ComboAdd(p, IDC_VSYNC, L"Adaptive", 2);
@@ -2066,6 +2087,9 @@ static void InitMpPage(HWND p)
     SetDlgItemInt(p, IDC_PORT, g_set.port, FALSE);
     SetDlgItemInt(p, IDC_MP_MAXPLAYERS, std::max(0, g_set.maxPlayers), FALSE);
     CheckDlgButton(p, IDC_MP_GUESTCHARS, g_set.guestChars ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(p, IDC_MP_FRIENDLY, g_set.friendlyFire ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(p, IDC_MP_EXPANDEDAI, g_set.expandedAI ? BST_CHECKED : BST_UNCHECKED);
+    SetDlgItemInt(p, IDC_MP_AFK, std::max(0, g_set.afkTimer), FALSE);
     CheckDlgButton(p, IDC_MP_ADVANCED, g_set.mpAdvanced ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(p, IDC_LAN, g_set.lan ? BST_CHECKED : BST_UNCHECKED);
     SetAddrText(g_set.addr);
@@ -2078,7 +2102,7 @@ static void InitMpPage(HWND p)
     }
     CheckDlgButton(p, IDC_SHAREMODS, g_set.shareMods ? BST_CHECKED : BST_UNCHECKED);
     // the part below moves down while the host options are open
-    RECT adv = { 0, 0, 0, 44 };
+    RECT adv = { 0, 0, 0, 58 };
     MapDialogRect(p, &adv);
     g_advShift = adv.bottom;
     for (int c : { IDC_SHAREMODS, IDC_MP_MODWARN, IDC_MP_SERVERSLBL, IDC_MP_REFRESH, IDC_MP_SERVERS }) {
@@ -2558,7 +2582,7 @@ static bool CollectSettings()
     s.af = (int)std::max<LPARAM>(0, ComboData(g_gfx, IDC_AF));
     s.vsync = (int)std::max<LPARAM>(0, ComboData(g_gfx, IDC_VSYNC));
     // simulation rate is always automatic now (SimRate in the ini is kept for experts)
-    s.fpscap = ComboData(g_gfx, IDC_FPSCAP) == 0 ? 0 : -1; // -1 = match display refresh
+    s.fpscap = (int)ComboData(g_gfx, IDC_FPSCAP); // -1 = match display refresh, 0 = unlimited, n = n fps
     s.fov = (int)SendDlgItemMessageW(g_gfx, IDC_FOV, TBM_GETPOS, 0, 0);
     s.texq = (int)std::max<LPARAM>(0, ComboData(g_gfx, IDC_TEXQ));
     s.overrides = IsDlgButtonChecked(g_gfx, IDC_OVERRIDES) == BST_CHECKED;
@@ -2600,6 +2624,12 @@ static bool CollectSettings()
     const int maxp = (int)GetDlgItemInt(g_mp, IDC_MP_MAXPLAYERS, NULL, FALSE);
     s.maxPlayers = maxp <= 0 ? 0 : std::max(2, std::min(250, maxp)); // 0 = no limit
     s.guestChars = IsDlgButtonChecked(g_mp, IDC_MP_GUESTCHARS) == BST_CHECKED;
+    s.friendlyFire = IsDlgButtonChecked(g_mp, IDC_MP_FRIENDLY) == BST_CHECKED;
+    s.expandedAI = IsDlgButtonChecked(g_mp, IDC_MP_EXPANDEDAI) == BST_CHECKED;
+    {
+        const int afk = (int)GetDlgItemInt(g_mp, IDC_MP_AFK, NULL, FALSE);
+        s.afkTimer = afk <= 0 ? 0 : std::max(10, std::min(3600, afk)); // 0 = off
+    }
     s.mpAdvanced = IsDlgButtonChecked(g_mp, IDC_MP_ADVANCED) == BST_CHECKED;
     s.chDefault = IsDlgButtonChecked(g_ch, IDC_CH_DEFAULT) == BST_CHECKED;
     s.chModel = ModelKey();

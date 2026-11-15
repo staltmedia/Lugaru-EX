@@ -341,42 +341,42 @@ public:
     void DoBloodBig(float howmuch, int which);
     bool DoBloodBigWhere(float howmuch, int which, XYZ where);
 
-    bool wasIdle() { return animation_bits[animCurrent] & ab_idle; }
-    bool isIdle() { return animation_bits[animTarget] & ab_idle; }
+    bool wasIdle() const { return animation_bits[animCurrent] & ab_idle; }
+    bool isIdle() const { return animation_bits[animTarget] & ab_idle; }
     int getIdle();
 
-    bool isSitting() { return animation_bits[animTarget] & ab_sit; }
+    bool isSitting() const { return animation_bits[animTarget] & ab_sit; }
 
-    bool isSleeping() { return animation_bits[animTarget] & ab_sleep; }
+    bool isSleeping() const { return animation_bits[animTarget] & ab_sleep; }
 
-    bool wasCrouch() { return animation_bits[animCurrent] & ab_crouch; }
-    bool isCrouch() { return animation_bits[animTarget] & ab_crouch; }
+    bool wasCrouch() const { return animation_bits[animCurrent] & ab_crouch; }
+    bool isCrouch() const { return animation_bits[animTarget] & ab_crouch; }
     int getCrouch();
 
-    bool wasStop() { return animation_bits[animCurrent] & ab_stop; }
-    bool isStop() { return animation_bits[animTarget] & ab_stop; }
+    bool wasStop() const { return animation_bits[animCurrent] & ab_stop; }
+    bool isStop() const { return animation_bits[animTarget] & ab_stop; }
     int getStop();
 
     bool wasSneak();
     bool isSneak();
     int getSneak();
 
-    bool wasRun() { return animation_bits[animCurrent] & ab_run; }
-    bool isRun() { return animation_bits[animTarget] & ab_run; }
+    bool wasRun() const { return animation_bits[animCurrent] & ab_run; }
+    bool isRun() const { return animation_bits[animTarget] & ab_run; }
     int getRun();
 
-    bool wasLanding() { return animation_bits[animCurrent] & ab_land; }
-    bool isLanding() { return animation_bits[animTarget] & ab_land; }
+    bool wasLanding() const { return animation_bits[animCurrent] & ab_land; }
+    bool isLanding() const { return animation_bits[animTarget] & ab_land; }
     int getLanding();
 
-    bool wasLandhard() { return animation_bits[animCurrent] & ab_landhard; }
-    bool isLandhard() { return animation_bits[animTarget] & ab_landhard; }
+    bool wasLandhard() const { return animation_bits[animCurrent] & ab_landhard; }
+    bool isLandhard() const { return animation_bits[animTarget] & ab_landhard; }
     int getLandhard();
 
-    bool wasFlip() { return animation_bits[animCurrent] & ab_flip; }
-    bool isFlip() { return animation_bits[animTarget] & ab_flip; }
+    bool wasFlip() const { return animation_bits[animCurrent] & ab_flip; }
+    bool isFlip() const { return animation_bits[animTarget] & ab_flip; }
 
-    bool isWallJump() { return animation_bits[animTarget] & ab_walljump; }
+    bool isWallJump() const { return animation_bits[animTarget] & ab_walljump; }
     void Reverse();
     void DoDamage(float howmuch);
     void exMorphs();     // LugaruEX: face / hand / tail morphs of DoStuff (online guests run them too)
@@ -411,8 +411,8 @@ public:
 
     bool catchKnife();
 
-    bool hasWeapon() { return (weaponactive != -1); }
-    bool isPlayerControlled() { return (aitype == playercontrolled); }
+    bool hasWeapon() const { return (weaponactive != -1); }
+    bool isPlayerControlled() const { return (aitype == playercontrolled); }
 
     // LugaruEX local co-op: per-human attack-key state (player 1 keeps using
     // the game's globals) and, for AI, which human it is currently after
@@ -424,6 +424,10 @@ public:
     const Person* exSparedBy = nullptr;
     float exSparedUntil = 0;
     int exTarget = 0;
+    // LugaruEX AFK (host option): seconds left shown over the head (1..60), 255 = the AI plays this player
+    unsigned char exAfk = 0;
+    // LugaruEX Expanded AI: how long this enemy has been in a spot for its extra moves
+    float exAiCooldown = 0;
     // score pop-up in the middle of this player's own screen
     int exPopBonus = 0, exPopValue = 0;
     float exPopTime = 10;

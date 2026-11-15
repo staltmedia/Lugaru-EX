@@ -84,6 +84,16 @@ bool HiddenInScene(int person);
 /** the human player AI `self` goes after (closest living one, with hysteresis) */
 int AITarget(Person& self);
 bool AllHumansDead();
+/** AFK players (host option AfkTimer): idle clock, countdown over the head, the friendly AI
+    playing for them until they move. Once per simulation step, right after everyone's input */
+void LocalAfkStep();
+/** several players in the level (host / split screen): when everyone is down the level waits
+    for a jump instead of restarting by itself, so the bodies can be watched */
+bool CoopWaitsForRestart();
+/** a split-screen player on this PC pressed jump (player 1's keys are read by the game) */
+bool LocalRestartPressed();
+/** text for the dead screen ("" = none): how to restart, or that the host restarts */
+std::string LocalDeadHint();
 
 /** controller id of player 1 ("" = none yet) */
 std::string LocalPadOfP1();

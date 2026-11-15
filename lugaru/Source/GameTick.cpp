@@ -31,6 +31,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include <cctype>
 #include "EX/ExConfig.hpp"
 #include "EX/ExLocal.hpp"
+#include "EX/ExBot.hpp"
 #include "EX/ExNet.hpp"
 #include "EX/ExPad.hpp"
 #include "EX/ExProfile.hpp"
@@ -2680,12 +2681,13 @@ void doAerialAcrobatics()
                         tempcollide = 1;
                         //wall jumps
                         //TODO: refactor four similar blocks
-                        if (Person::players[k]->isPlayerControlled() &&
+                        if ((Person::players[k]->isPlayerControlled() || EX::ExpandedAIWallJump(*Person::players[k])) && // (LugaruEX Expanded AI: enemies too)
                             (Person::players[k]->animTarget == jumpupanim ||
                              Person::players[k]->animTarget == jumpdownanim ||
                              Person::players[k]->isFlip()) &&
-                            !Person::players[k]->jumptogglekeydown &&
-                            Person::players[k]->jumpkeydown) {
+                            ((!Person::players[k]->jumptogglekeydown &&
+                              Person::players[k]->jumpkeydown) ||
+                             (!Person::players[k]->isPlayerControlled() && EX::AIChance(4.f)))) {
                             lowpointtarget = lowpoint + DoRotation(Person::players[k]->facing, 0, -90, 0) * 1.5;
                             XYZ tempcoords1 = lowpoint;
                             whichhit = Object::objects[i]->model.LineCheck(&lowpoint, &lowpointtarget, &colpoint, &Object::objects[i]->position, &Object::objects[i]->yaw);
@@ -3060,9 +3062,56 @@ void doAttacks()
         }
     };
     // humans fight the AI; the AI fights humans; co-op partners never auto-target each other
+    // (the host's Friendly fire option: humans can hit humans too, see exTargets)
     auto opponents = [](unsigned a, unsigned b) {
-        return Person::players[a]->isPlayerControlled() != Person::players[b]->isPlayerControlled();
+        const bool ha = Person::players[a]->isPlayerControlled(), hb = Person::players[b]->isPlayerControlled();
+        return ha != hb || (ha && hb && EX::FriendlyFire());
     };
+    // who k may pick as a victim, in the order the original loops try them: every opponent
+    // in index order; with friendly fire, partners come last and only when no enemy is in
+    // reach and the partner stands close in front of you (aiming at a friend takes intent)
+    auto exTargets = [&opponents](unsigned k, std::vector<unsigned>& out) {
+        out.clear();
+        Person& K = *Person::players[k];
+        bool enemyNear = false;
+        for (unsigned i = 0; i < Person::players.size(); i++) {
+            if (i == k || !opponents(k, i)) {
+                continue;
+            }
+            Person& I = *Person::players[i];
+            if (K.isPlayerControlled() && I.isPlayerControlled()) {
+                continue;
+            }
+            out.push_back(i);
+            if (!I.dead && !I.skeleton.free && distsq(&K.coords, &I.coords) < 4.5 * sq(K.scale * 5) * 1.5) {
+                enemyNear = true;
+            }
+        }
+        static const bool dbg = getenv("LUGARUEX_TEST_FFDEBUG") != nullptr; // test hook: why a partner is (not) a target
+        if (dbg && K.isPlayerControlled()) {
+            printf("EXTEST ff: person %u ff=%d enemyNear=%d", k, (int)EX::FriendlyFire(), (int)enemyNear);
+            for (unsigned i = 0; i < Person::players.size(); i++) {
+                Person& I = *Person::players[i];
+                if (i != k && I.isPlayerControlled()) {
+                    printf(" partner %u d2=%.2f lim=%.2f dot=%.2f", i, distsq(&K.coords, &I.coords), 2.5f * sq(K.scale * 5), normaldotproduct(K.facing, I.coords - K.coords));
+                }
+            }
+            printf("\n");
+        }
+        if (!K.isPlayerControlled() || !EX::FriendlyFire() || enemyNear) {
+            return;
+        }
+        for (unsigned i = 0; i < Person::players.size(); i++) {
+            Person& I = *Person::players[i];
+            if (i == k || !I.isPlayerControlled()) {
+                continue;
+            }
+            if (distsq(&K.coords, &I.coords) < 2.5 * sq(K.scale * 5) && normaldotproduct(K.facing, I.coords - K.coords) > .5f) {
+                out.push_back(i);
+            }
+        }
+    };
+    std::vector<unsigned> exOrder;
 
     for (unsigned k = 0; k < Person::players.size(); k++) {
         if (Dialog::inDialog()) {
@@ -3128,7 +3177,9 @@ void doAttacks()
                     //normal attacks (?)
                     Person::players[k]->hasvictim = 0;
                     if (Person::players.size() > 1) {
-                        for (unsigned i = 0; i < Person::players.size(); i++) {
+                        exTargets(k, exOrder);
+                        for (unsigned oi = 0; oi < exOrder.size(); oi++) {
+                            const unsigned i = exOrder[oi];
                             if (i == k || !opponents(k, i)) {
                                 continue;
                             }
@@ -3405,7 +3456,7 @@ void doAttacks()
                     const bool hasstaff = attackweapon == staff;
                     if (Person::players[k]->isPlayerControlled() && Person::players.size() > 1) {
                         for (unsigned i = 0; i < Person::players.size(); i++) {
-                            if (i == k || (Person::players[i]->isPlayerControlled() && !Person::players[i]->dead)) { // LugaruEX: a dead partner's body is a body like any other
+                            if (i == k || (Person::players[i]->isPlayerControlled() && !Person::players[i]->dead && !EX::FriendlyFire())) { // LugaruEX: a dead partner's body is a body like any other (Friendly fire: a downed living one too)
                                 continue;
                             }
                             if ((Person::players[k]->exRealAttack || Person::players[i]->dead || !hasstaff) &&
@@ -3520,8 +3571,11 @@ void doAttacks()
                     }
                     if (!Person::players[k]->hasvictim) {
                         //find victim
+                        for (int pass = 0; pass < 2 && !Person::players[k]->hasvictim; pass++) { // (pass 1: friendly fire, a partner in front)
                         for (unsigned i = 0; i < Person::players.size(); i++) {
-                            if (i == k || !opponents(k, i)) {
+                            if (i == k || !opponents(k, i) ||
+                                (Person::players[k]->isPlayerControlled() && Person::players[i]->isPlayerControlled()) != (pass == 1) ||
+                                (pass == 1 && normaldotproduct(Person::players[k]->facing, Person::players[i]->coords - Person::players[k]->coords) <= .5f)) {
                                 continue;
                             }
                             if (!Person::players[i]->skeleton.free) {
@@ -3535,6 +3589,7 @@ void doAttacks()
                                     Person::players[k]->hasvictim = 1;
                                 }
                             }
+                        }
                         }
                     }
                     if (Person::players[k]->isPlayerControlled()) {
@@ -3602,16 +3657,31 @@ void doPlayerCollisions()
                     }
                 }
                 //neither player is part of a reversal
-                if ((Animation::animations[Person::players[i]->animTarget].attack != reversed &&
-                     Animation::animations[Person::players[i]->animTarget].attack != reversal &&
-                     Animation::animations[Person::players[k]->animTarget].attack != reversed &&
-                     Animation::animations[Person::players[k]->animTarget].attack != reversal) ||
-                    (i != 0 && k != 0)) {
-                    if ((Animation::animations[Person::players[i]->animCurrent].attack != reversed &&
-                         Animation::animations[Person::players[i]->animCurrent].attack != reversal &&
-                         Animation::animations[Person::players[k]->animCurrent].attack != reversed &&
-                         Animation::animations[Person::players[k]->animCurrent].attack != reversal) ||
-                        (i != 0 && k != 0)) {
+                // LugaruEX co-op (group fights): the original skipped every pair of player 1 and
+                // someone in a reversal - in single player that reversal is always player 1's own.
+                // With several players that kept player 1 from leg-cannoning an enemy that was
+                // countering a partner, while everyone else could. Now each human is "player 1",
+                // and an enemy's reversal only shields it from the player it is fighting.
+                // (Single player: exactly the original pairs.)
+                bool exRevApart = false;
+                {
+                    const Person& A = *Person::players[k];
+                    const Person& B = *Person::players[i];
+                    auto inRev = [](const Person& p) {
+                        const int t = Animation::animations[p.animTarget].attack, c = Animation::animations[p.animCurrent].attack;
+                        return t == reversed || t == reversal || c == reversed || c == reversal;
+                    };
+                    auto shields = [&inRev](const Person& s, const Person& other) {
+                        if (!inRev(s)) {
+                            return false;
+                        }
+                        const Person* v = s.victim.get();
+                        return s.isPlayerControlled() || v == &other || !v || !v->isPlayerControlled();
+                    };
+                    exRevApart = (A.isPlayerControlled() || B.isPlayerControlled()) && (shields(A, B) || shields(B, A));
+                }
+                if (!exRevApart) {
+                    {
                         //neither is sleeping
                         if (Person::players[i]->howactive <= typesleeping && Person::players[k]->howactive <= typesleeping) {
                             if (Person::players[i]->howactive != typesittingwall && Person::players[k]->howactive != typesittingwall) {
@@ -3652,9 +3722,14 @@ void doPlayerCollisions()
                                                                 tempcoords2.y += Person::players[k]->jointPos(abdomen).y * Person::players[k]->scale;
                                                             }
                                                             collisionradius = 1.2 * sq((Person::players[i]->scale + Person::players[k]->scale) * 2.5);
-                                                            if (Person::players[0]->hasvictim) {
-                                                                if (Person::players[0]->animTarget == rabbitkickanim && (k == 0 || i == 0) && !Person::players[0]->victim->skeleton.free) {
-                                                                    collisionradius = 3;
+                                                            // a leg cannon reaches further (the original: player 1's; LugaruEX:
+                                                            // every player's, and Expanded AI's)
+                                                            for (int side = 0; side < 2; side++) {
+                                                                const Person& J = *Person::players[side ? i : k];
+                                                                if ((side ? i : k) == 0 || J.isPlayerControlled() || EX::ExpandedAI()) {
+                                                                    if (J.hasvictim && J.victim && J.animTarget == rabbitkickanim && !J.victim->skeleton.free) {
+                                                                        collisionradius = 3;
+                                                                    }
                                                                 }
                                                             }
                                                             if ((!Person::players[i]->skeleton.oldfree || !Person::players[k]->skeleton.oldfree) &&
@@ -4185,6 +4260,7 @@ void Game::Tick()
                 Person::players[0]->jumpclimb = 0;
             }
             EX::LocalTickInput(); // LugaruEX: players 2-4 from their controllers
+            EX::LocalAfkStep();   // LugaruEX: AFK players (the AI presses their buttons)
 
             if (Dialog::inDialog()) {
                 cameramode = 1;
@@ -4439,15 +4515,15 @@ void Game::Tick()
 
             //respawn
             static bool respawnkeydown;
+            const bool exSplitRestart = EX::LocalRestartPressed(); // (split-screen players' jump: called every step for its edges)
             if (!editorenabled &&
                 (whichlevel != -2 &&
                      (Input::isKeyDown(SDL_SCANCODE_K) &&
                       Input::isKeyDown(SDL_SCANCODE_LALT) &&
                       devtools) ||
-                 (Input::isKeyDown(jumpkey) &&
-                  !respawnkeydown &&
+                 (((Input::isKeyDown(jumpkey) && !respawnkeydown && !mainmenu) || exSplitRestart) &&
                   !oldattackkey &&
-                  EX::AllHumansDead()))) { // LugaruEX co-op: only once everyone is down
+                  EX::AllHumansDead()))) { // LugaruEX co-op: only once everyone is down; any player on the host's PC
                 targetlevel = whichlevel;
                 loading = 1;
                 leveltime = 5;
@@ -4551,6 +4627,7 @@ void Game::Tick()
                     }
 
                     Person::players[i]->doAI();
+                    EX::ExpandedAIStep(i); // LugaruEX host option: leg cannons, knife throws
 
                     if (Animation::animations[Person::players[i]->animTarget].attack == reversed) {
                         //Person::players[i]->targetyaw=Person::players[i]->yaw;
@@ -5764,7 +5841,7 @@ void Game::TickOnceAfter()
                 if (changedelay <= -999 &&
                     whichlevel != -2 &&
                     !loading &&
-                    (EX::AllHumansDead() ||
+                    ((EX::AllHumansDead() && !EX::CoopWaitsForRestart()) || // (co-op: everyone down waits for a jump)
                      (alldead && maptype == mapkilleveryone) ||
                      (winhotspot) ||
                      (Hotspot::killhotspot))) {
@@ -5780,7 +5857,7 @@ void Game::TickOnceAfter()
                         winfreeze = true;
                         changedelay = -999;
                     }
-                    if (EX::AllHumansDead()) {
+                    if (EX::AllHumansDead() && !EX::CoopWaitsForRestart()) {
                         loading = 1;
                     }
                 }

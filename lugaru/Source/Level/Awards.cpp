@@ -22,6 +22,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Game.hpp"
 #include "Objects/Person.hpp"
 #include "EX/ExNet.hpp"
+#include "EX/ExGen.hpp"
 #include "Tutorial.hpp"
 
 int bonus;
@@ -65,6 +66,7 @@ void award_bonus(int playerid, int bonusid, int alt_value)
     p.exPopBonus = bonusid;
     p.exPopValue = bonusvalue;
     p.exPopTime = 0;
+    EX::GenScore(playerid, bonusvalue); // PvP (Extras): every player keeps their own score
     EX::NetBonusEvent(playerid, bonusid, bonusvalue); // online: the pop-up on that player's own screen
     Tutorial::OnBonus(playerid, bonusid); // co-op tutorial: the cannon / spine crusher steps are per player
 }

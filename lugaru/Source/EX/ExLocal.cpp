@@ -15,6 +15,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "EX/ExPad.hpp"
 #include "EX/ExNet.hpp"
 #include "EX/ExBot.hpp"
+#include "EX/ExGen.hpp"
 #include "EX/ExGraphics.hpp"
 #include "Audio/openal_wrapper.hpp"
 #include "Game.hpp"
@@ -61,6 +62,9 @@ struct Slot
 {
     std::string padId;
     std::string ch = "default"; // default | random | <model>:<skin path>
+    bool ragHeld = false, revHeld = false; // Ragdoll / Revive held last step (presses act once)
+    std::string genLevel; // Extras: the level its random creature was picked for (kept on restarts)
+    bool genWolf = false;
     float rx = 0, ry = 0, rw = 1, rh = 1; // screen part, 0..1 from the top-left
     bool hasRect = false;
 
@@ -477,6 +481,27 @@ static void applySlotCharacter(Slot& s, Person& p, bool tutorial)
     std::string look, outfit; // "model:skin|outfit"
     splitOutfit(s.ch, look, outfit);
     std::string model, skin;
+    if (GenActive() && !tutorial) {
+        // Extras: Default / Random are completely random here - creature, skin and clothes;
+        // a chosen skin (and with it its model), a wolf or a custom model, chosen clothes stay
+        if (!(look.empty() || look == "default" || look == "random")) {
+            parseChar(look, model, skin);
+        }
+        const bool skinChosen = !(skin.empty() || skin == "default" || skin == "random");
+        if (!(skinChosen || Looks_Base(model) == "wolf" || model.find('/') != std::string::npos)) {
+            if (s.genLevel != g_level) {
+                s.genLevel = g_level;
+                s.genWolf = rand() % 10 < 3;
+            }
+            model = s.genWolf ? "wolf" : "rabbit";
+        }
+        if (!skinChosen) {
+            skin = randomSkin(s, Looks_Base(model) == "wolf" ? wolftype : rabbittype);
+        }
+        ApplyCharacter(p, model, skin, tutorial);
+        ApplyOutfit(p, (outfit.empty() || outfit == "default") ? std::string("random") : outfit);
+        return;
+    }
     if (look == "random") {
         model = "rabbit";
         skin = randomSkin(s);
@@ -501,6 +526,32 @@ void ApplyRandomLook(Person& p, const std::string& model, bool tutorial)
     }
     const std::string skin = randomSkin(g_slots[0], (Looks_Base(model) == "wolf" && !tutorial) ? wolftype : rabbittype);
     ApplyCharacter(p, model, skin, tutorial);
+}
+
+// Extras: the level made player 1 a random creature, skin and clothes; the launcher's choices
+// replace only what was really chosen (a skin - with its model -, a wolf or custom model, clothes)
+void GenApplyPlayerLook(Person& p, bool tutorial)
+{
+    if (cfg.playerDefault) {
+        return; // all Default: the level's random look
+    }
+    const std::string& model = cfg.playerModel;
+    const std::string& skin = cfg.playerSkin;
+    const std::string& clothes = cfg.playerClothes;
+    const bool skinChosen = !(skin.empty() || skin == "default" || skin == "random");
+    const bool keepModel = skinChosen || Looks_Base(model) == "wolf" || model.find('/') != std::string::npos;
+    if (keepModel) {
+        if (skinChosen) {
+            ApplyCharacter(p, model, skin, tutorial);
+        } else {
+            ApplyRandomLook(p, model, tutorial);
+        }
+    }
+    if (!(clothes.empty() || clothes == "default" || clothes == "random")) {
+        ApplyOutfit(p, clothes);
+    } else if (keepModel) {
+        ApplyOutfit(p, "random"); // (the level's clothes may have gone with its creature)
+    }
 }
 
 // ------------------------------------------------------------------ spawning
@@ -868,6 +919,39 @@ static bool isHuman(int i)
            std::find(g_guestHumans.begin(), g_guestHumans.end(), i) != g_guestHumans.end();
 }
 
+bool IsHuman(int person)
+{
+    return isHuman(person);
+}
+
+void LocalFaceView(int person, float yaw)
+{
+    for (size_t k = 0; k < g_slots.size(); k++) {
+        Slot& s = g_slots[k];
+        if (s.person != person || s.remote) {
+            continue;
+        }
+        if (k == 0) {
+            Game::yaw = yaw;
+            cameraloc = Person::players[person]->coords; // (the camera comes along to the new spot)
+            cameraloc.y += 5;
+        } else {
+            resetCamera(s, *Person::players[person]);
+            s.cam.yaw = yaw;
+        }
+    }
+}
+
+void LocalShiftViews(const XYZ& d)
+{
+    for (Slot& s : g_slots) {
+        s.cam.viewer -= d;
+        s.cam.cameraloc -= d;
+        s.spawnAt -= d;
+        s.viewValid = false;
+    }
+}
+
 // player 1's seat must always know its character (person 0; an online guest's own one):
 // if it ever lost it, spectating and the camera quietly stuck to that body
 static void relinkPlayerOne()
@@ -1005,9 +1089,33 @@ void LocalSimLook()
     }
 }
 
+// LugaruEX actions with no key of the original, for every player on this host: Ragdoll
+// (fall over on purpose; getting up is the normal getting up after a knock-over) and
+// Revive (Endless: crouch over a fallen partner, ExGen.cpp)
+static void playerActions(Slot& s, Person& p, bool rag, bool rev)
+{
+    const bool ragEdge = rag && !s.ragHeld, revEdge = rev && !s.revHeld;
+    s.ragHeld = rag;
+    s.revHeld = rev;
+    // test hook LUGARUEX_TEST_RAGDOLL=s: player 1 falls over at s seconds into the level
+    static const float testRag = getenv("LUGARUEX_TEST_RAGDOLL") ? (float)atof(getenv("LUGARUEX_TEST_RAGDOLL")) : -1.f;
+    static bool testDone = false;
+    const bool test = s.person == 0 && testRag >= 0 && !testDone && Game::leveltime > testRag;
+    if ((ragEdge || test) && !p.dead && !p.skeleton.free && !Dialog::inDialog() &&
+        Animation::animations[p.animTarget].attack == neutral) {
+        testDone = testDone || test;
+        p.RagDoll(0);
+        printf("LugaruEX: person %d falls over on purpose\n", s.person);
+    }
+    GenReviveInput(s.person, rev, revEdge);
+}
+
 void LocalTickInput()
 {
     const bool talking = Dialog::inDialog();
+    if (!g_slots.empty() && personValid(g_slots[0]) && !g_slots[0].afkBot) {
+        playerActions(g_slots[0], *Person::players[g_slots[0].person], P1Ragdoll() && !talking, P1Revive() && !talking);
+    }
     for (size_t i = 1; i < g_slots.size(); i++) {
         Slot& s = g_slots[i];
         if (!personValid(s)) {
@@ -1040,6 +1148,9 @@ void LocalTickInput()
         }
         if (p.jumpkeydown && p.animTarget != jumpupanim && p.animTarget != jumpdownanim && !p.isFlip()) {
             p.jumptogglekeydown = 1;
+        }
+        if (!s.afkBot) {
+            playerActions(s, p, in.ragdoll, in.revive);
         }
     }
 }
@@ -1617,7 +1728,7 @@ void LocalAfkStep()
 
 bool CoopWaitsForRestart()
 {
-    return !NetIsGuest() && humanCount() >= 2;
+    return !NetIsGuest() && humanCount() >= 2 && GenMode() != GEN_ENDLESS; // (Endless: the run is over - its score)
 }
 
 bool LocalRestartPressed()
@@ -1635,7 +1746,7 @@ bool LocalRestartPressed()
 
 std::string LocalDeadHint()
 {
-    if (!Game::gameon || Game::loading || mainmenu || Person::players.empty() || !AllHumansDead()) {
+    if (!Game::gameon || Game::loading || mainmenu || Person::players.empty() || !AllHumansDead() || GenMode() == GEN_ENDLESS) {
         return "";
     }
     if (NetIsGuest()) {
@@ -1845,6 +1956,8 @@ void LocalInputOf(int k, PadInput& in, float& yaw, float& pitch)
             in.draw = Input::isKeyDown(Game::drawkey);
             in.thrw = Input::isKeyDown(Game::throwkey);
             in.walk = P1Walk();
+            in.ragdoll = P1Ragdoll();
+            in.revive = P1Revive();
         }
         return;
     }

@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #define _EX_NET_HPP_
 
 #include <string>
+#include "Math/XYZ.hpp"
 
 class XYZ;
 
@@ -34,6 +35,10 @@ void NetInit();      // after LocalInit, from [Multiplayer] in LugaruEX.ini
 void NetShutdown();
 bool NetIsHost();
 bool NetIsGuest();
+/** host: online guests connected right now (0 when not hosting) */
+int NetConnectedGuests();
+/** Extras Endless (guest): the window moved by -d - the kept snapshots move along */
+void NetGuestShift(const XYZ& d);
 /** difficulty the level is played at: the host's on a guest (minimap on Insane), else this PC's */
 int NetDifficulty();
 /** guest: the host's awards for the end-of-level screen (count; -1 = not a guest, use award_awards) */

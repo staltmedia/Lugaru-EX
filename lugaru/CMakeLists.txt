@@ -182,6 +182,7 @@ set(LUGARU_SRCS
     ${SRCDIR}/EX/ExProfile.cpp
     ${SRCDIR}/EX/ExLocal.cpp
     ${SRCDIR}/EX/ExBot.cpp
+    ${SRCDIR}/EX/ExGen.cpp
     ${SRCDIR}/EX/ExNet.cpp
     ${SRCDIR}/EX/ExChat.cpp
     ${SRCDIR}/EX/ExMods.cpp

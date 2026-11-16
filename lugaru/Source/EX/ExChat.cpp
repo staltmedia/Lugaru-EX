@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 // seconds, a little see-through, fading out; nearer speakers' text is bigger.
 
 #include "EX/ExNet.hpp"
+#include "EX/ExGen.hpp"
 
 #include "EX/ExLocal.hpp"
 #include "Game.hpp"
@@ -48,6 +49,7 @@ struct Bubble
     Uint32 at;
     bool afk = false; // an AFK countdown (seconds), not a chat line
     bool typing = false; // "..." while that player writes a line
+    bool winner = false; // PvP: WINNER! over the last one standing
 };
 std::vector<Bubble> g_bubbles;
 const Uint32 kShow = 6000, kFade = 2000; // ms
@@ -231,6 +233,9 @@ static bool anyOverHead()
             return true;
         }
     }
+    if (GenWinner() >= 0) {
+        return true;
+    }
     return false;
 }
 
@@ -273,6 +278,14 @@ void ChatDraw()
         }
     }
 
+    if (GenWinner() >= 0) {
+        Bubble b;
+        b.person = GenWinner();
+        b.text = "WINNER!";
+        b.at = now;
+        b.winner = true;
+        shown.push_back(b);
+    }
     if ((shown.empty() || !g_have3D) && !line) {
         g_have3D = false;
         return;
@@ -286,7 +299,7 @@ void ChatDraw()
         double dist;
         std::vector<std::string> lines;
         float sx;
-        bool afk, typing;
+        bool afk, typing, winner;
         int person;
         Uint32 at;
     };
@@ -307,7 +320,7 @@ void ChatDraw()
             clip[r] = g_pj[r] * eye[0] + g_pj[4 + r] * eye[1] + g_pj[8 + r] * eye[2] + g_pj[12 + r] * eye[3];
         }
         const double dist = clip[3];
-        if (dist < 0.3 || dist > 60) {
+        if (dist < 0.3 || dist > (b.winner ? 150 : 60)) {
             continue; // behind the camera, or too far to read
         }
         const double sx = (clip[0] / dist * 0.5 + 0.5) * g_vp[2], sy = (clip[1] / dist * 0.5 + 0.5) * g_vp[3];
@@ -316,7 +329,7 @@ void ChatDraw()
         const float size = std::max(0.55f, std::min(1.5f, (float)(5.0 / dist))) * scale;
         const Uint32 age = now - b.at;
         float alpha = 0.85f * (age < kShow ? 1.f : 1.f - (float)(age - kShow) / kFade);
-        alpha *= dist > 35 ? std::max(0.f, (float)(1 - (dist - 35) / 25)) : 1.f;
+        alpha *= dist > 35 && !b.winner ? std::max(0.f, (float)(1 - (dist - 35) / 25)) : 1.f;
         if (alpha <= 0.01f) {
             continue;
         }
@@ -328,10 +341,15 @@ void ChatDraw()
         pl.sx = (float)sx;
         pl.afk = b.afk;
         pl.typing = b.typing;
+        pl.winner = b.winner;
         pl.person = b.person;
         pl.at = b.at;
         if (b.afk || b.typing) {
             pl.size *= 1.6f; // the countdown and the writing dots read from further away
+        }
+        if (b.winner) {
+            pl.size = std::max(pl.size * 2.6f, 2.f * screenheight / 768.f); // big, gold
+            pl.alpha = 1;
         }
         size_t widest = 0;
         for (auto& l : pl.lines) {
@@ -347,7 +365,7 @@ void ChatDraw()
     // nearest speaker keeps their place; the others move up until nothing overlaps
     // (one player's own stack: countdown, then "...", then their lines newest first - the
     // later ones move up, so the newest line sits nearest the head and older ones rise above)
-    auto rank = [](const Placed& p) { return p.afk ? 0 : p.typing ? 1 : 2; };
+    auto rank = [](const Placed& p) { return p.winner ? -1 : p.afk ? 0 : p.typing ? 1 : 2; };
     std::stable_sort(placed.begin(), placed.end(), [&rank](const Placed& a, const Placed& b) {
         if (a.dist != b.dist) {
             return a.dist < b.dist;
@@ -380,7 +398,9 @@ void ChatDraw()
         float y = pl.y0 + lh * (pl.lines.size() - 1);
         for (const std::string& l : pl.lines) {
             const float x = pl.sx - l.size() * 10.f * pl.size / 2;
-            if (pl.afk) { // orange, red for the last ten seconds
+            if (pl.winner) {
+                Game::text->glPrintOutlined(1, .82f, .2f, 1, x, y, l, 1, pl.size, screenwidth, screenheight);
+            } else             if (pl.afk) { // orange, red for the last ten seconds
                 const bool last = atoi(l.c_str()) <= 10;
                 Game::text->glPrintOutlined(1, last ? .25f : .6f, last ? .2f : .15f, 1, x, y, l, 1, pl.size, screenwidth, screenheight);
             } else {

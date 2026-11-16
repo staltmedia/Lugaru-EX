@@ -69,6 +69,10 @@ static void exTestPress(bool* now)
                 unsigned short* key;
             } keys[] = { { "forward", &forwardkey }, { "back", &backkey }, { "left", &leftkey }, { "right", &rightkey }, { "jump", &jumpkey },
                          { "crouch", &crouchkey }, { "attack", &attackkey }, { "draw", &drawkey }, { "throw", &throwkey } };
+            static unsigned short ragKey = (unsigned short)EX::RagdollKey(), revKey = (unsigned short)EX::ReviveKey(); // (LugaruEX actions)
+            if (name == "ragdoll" || name == "revive") {
+                list.push_back({ name == "ragdoll" ? &ragKey : &revKey, (float)atof(item.substr(a + 1, d - a - 1).c_str()), (float)atof(item.substr(d + 1).c_str()) });
+            }
             for (const auto& k : keys) {
                 if (name == k.name) {
                     list.push_back({ k.key, (float)atof(item.substr(a + 1, d - a - 1).c_str()), (float)atof(item.substr(d + 1).c_str()) });
@@ -120,6 +124,7 @@ void Input::Tick()
         memset(now, 0, sizeof(now));
     }
     exTestPress(now);
+    EX::KeysSettled(now, SDL_NUM_SCANCODES + 6); // (LugaruEX: Ragdoll on an Alt tap)
     for (int i = 0; i < SDL_NUM_SCANCODES + 6; i++) {
         keyPressed[i] = !keyDown[i] && now[i];
         keyDown[i] = now[i];

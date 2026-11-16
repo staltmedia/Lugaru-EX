@@ -45,9 +45,19 @@ struct PadInput
     float lookX = 0, lookY = 0; // right stick, shaped, -1..1
     bool lt = false, rt = false; // triggers pulled (a dead player cycles who they watch; not bindable)
     bool typing = false;        // online guest: writing a chat line ("..." over their head)
+    bool ragdoll = false;       // fall over on purpose (Ragdoll: Left Alt / B)
+    bool revive = false;        // Endless: bring a fallen partner back (Revive: right mouse / RB)
 };
 /** player 1 walks: Ctrl held, or player 1's controller stick pushed only lightly */
 bool P1Walk();
+/** player 1 holds Ragdoll / Revive (keyboard, mouse or player 1's controller) */
+/** (Input::Tick, once the keys are final) a tap of a modifier key bound to Ragdoll */
+void KeysSettled(const bool* down, int numKeys);
+bool P1Ragdoll();
+bool P1Revive();
+/** their keys (0 = none: the key is another action's) */
+int RagdollKey();
+int ReviveKey();
 int PadCount();
 std::string PadIdAt(int i);
 bool PadConnected(const std::string& id);

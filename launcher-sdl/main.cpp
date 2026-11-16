@@ -65,7 +65,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.5.7"
+#define LUGARUEX_VERSION "0.5.8"
 
 namespace
 {
@@ -587,6 +587,8 @@ const Act kActs[] = {
     { "Attack", "Attack", "Mouse Left", "righttrigger", nullptr, nullptr },
     { "Draw", "Draw / put away", "E", "y", nullptr, nullptr },
     { "Throw", "Throw / pick up", "Q", "x", nullptr, nullptr },
+    { "Ragdoll", "Fall over (ragdoll)", "Left Alt", "b", nullptr, nullptr },
+    { "Revive", "Revive a partner (Endless)", "Mouse Right", "rightshoulder", nullptr, nullptr },
     { "Lighting", "Shaders (next look)", "R", "back", nullptr, nullptr },
     { "Pause", "Pause menu", nullptr, "start", "Esc", nullptr },
     { "Console", "Console", "`", nullptr, nullptr, "-" },

@@ -33,6 +33,8 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExGraphics.hpp"
 #include "EX/ExInterp.hpp"
 #include "EX/ExLocal.hpp"
+#include "EX/ExGen.hpp"
+#include "Environment/Terrain.hpp"
 #include "EX/ExNet.hpp"
 #include "ex_build_id.h" // EX_BUILD_ID (made by the build)
 #include "EX/ExCapture.hpp"
@@ -1012,6 +1014,11 @@ int main(int argc, char** argv)
                         }
                     }
                     Menu::startChallengeLevel(atoi(lvl + 10)); // exactly what the Challenge menu does
+                } else if (strncmp(lvl, "extras:", 7) == 0) {
+                    // extras:endless|pvp[:grass|desert|tundra] - what the Extras menu does
+                    const int mode = strstr(lvl, "pvp") ? EX::GEN_PVP : EX::GEN_ENDLESS;
+                    const int env = strstr(lvl, "desert") ? desertenvironment : strstr(lvl, "tundra") ? snowyenvironment : grassyenvironment;
+                    ok = EX::GenStart(mode, env);
                 } else {
                     ok = Menu::startLevelByName(lvl, strcmp(lvl, "tutorial") == 0);
                 }
@@ -1132,7 +1139,8 @@ int main(int argc, char** argv)
                     }
                     // test hook LUGARUEX_TEST_GOD: player 1 heals every frame (long fights for timing)
                     static const bool exGod = exEnv("LUGARUEX_TEST_GOD");
-                    if (exGod && !Person::players.empty() && !Person::players[0]->dead) {
+                    static const float exGodUntil = getenv("LUGARUEX_TEST_GOD") ? (float)atof(getenv("LUGARUEX_TEST_GOD")) : 0.f; // (=s: only until s seconds)
+                    if (exGod && (exGodUntil <= 1 || (SDL_GetTicks() - exStart) / 1000.f < exGodUntil) && !Person::players.empty() && !Person::players[0]->dead) {
                         Person& g = *Person::players[0];
                         g.damage = g.permanentdamage = g.superpermanentdamage = 0;
                         g.bloodloss = 0;
@@ -1140,7 +1148,8 @@ int main(int argc, char** argv)
                     }
                     // test hook: knock player 1 out after 3 s (co-op: the level must go on)
                     static bool exKilled = false;
-                    if (!exKilled && SDL_GetTicks() - exStart > 3000 && exEnv("LUGARUEX_TEST_KILLP1") &&
+                    static const float exKillAt = getenv("LUGARUEX_TEST_KILLP1") && atof(getenv("LUGARUEX_TEST_KILLP1")) > 1 ? (float)atof(getenv("LUGARUEX_TEST_KILLP1")) : 3.f; // (=s: at s seconds)
+                    if (!exKilled && SDL_GetTicks() - exStart > exKillAt * 1000 && exEnv("LUGARUEX_TEST_KILLP1") &&
                         !Person::players.empty() && !Game::loading) {
                         exKilled = true;
                         Person::players[0]->DoDamage(1000);
@@ -1160,10 +1169,13 @@ int main(int argc, char** argv)
                             if (!exKillDone && Game::leveltime > 3 && !Game::loading && Game::gameon) {
                                 exKillDone = true;
                                 for (size_t i = 0; i < Person::players.size(); i++) {
-                                    const bool pick = strcmp(who, "guest") == 0 ? EX::RemotePerson((int)i) : strcmp(who, "humans") == 0 ? Person::players[i]->isPlayerControlled() : i == 0;
+                                    const bool pick = strcmp(who, "p2") == 0 ? (i > 0 && Person::players[i]->isPlayerControlled() && !Person::players[i]->dead) : strcmp(who, "guest") == 0 ? EX::RemotePerson((int)i) : strcmp(who, "humans") == 0 ? Person::players[i]->isPlayerControlled() : i == 0;
                                     if (pick) {
                                         Person::players[i]->DoDamage(1000);
                                         printf("EXTEST killed person %d at level time %.1f\n", (int)i, Game::leveltime);
+                                        if (strcmp(who, "p2") == 0) {
+                                            break; // (just the first other player)
+                                        }
                                     }
                                 }
                             }

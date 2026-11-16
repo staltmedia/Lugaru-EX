@@ -21,6 +21,9 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "Menu/Menu.hpp"
 #include "EX/ExConfig.hpp"
 #include "EX/ExGraphics.hpp"
+#include "EX/ExGen.hpp"
+#include "EX/ExNet.hpp"
+#include "Environment/Terrain.hpp"
 
 #include "Audio/openal_wrapper.hpp"
 #include "Graphic/gamegl.hpp"
@@ -57,6 +60,8 @@ extern void toggleFullscreen();
 // LugaruEX: a level that didn't load (a mod campaign naming a map it doesn't have, a
 // missing challenge) leaves the player on the main menu; the menu's level starts used to
 // go on into the half-loaded level and crashed there
+static int g_extrasMode = EX::GEN_ENDLESS; // LugaruEX Extras: the mode picked before the land
+
 static void exLevelMissing()
 {
     gameon = 0;
@@ -401,9 +406,27 @@ void Menu::Load()
             addButtonImage(2, Mainmenuitems[2], 18, 480 - 228 - 32, 112, 32);
             addButtonImage(3, Mainmenuitems[mainmenu == 1 ? 3 : 6], 18, 480 - 306 - 32, mainmenu == 1 ? 68 : 132, 32);
             break;
+        case 21: // LugaruEX Extras
+            addLabel(-1, "Extras", 10, 440);
+            addButton(1, "Endless", 10, 330);
+            addLabel(-2, "A land without end: travel on, fight what you meet, revive fallen partners.", 40, 305);
+            addButton(2, "PvP", 10, 250);
+            addLabel(-3, "Players only, every one for themselves. The last one standing wins.", 40, 225);
+            addButton(3, "Back", 10, 10);
+            break;
+        case 22: // Extras: which land
+            addLabel(-1, std::string(g_extrasMode == EX::GEN_PVP ? "PvP" : "Endless") + " - pick the land", 10, 440);
+            addButton(1, "Grasslands", 10, 330);
+            addButton(2, "Desert", 10, 270);
+            addButton(3, "Tundra", 10, 210);
+            addButton(4, "Back", 10, 10);
+            break;
         case 3:
             addButton(0, "", 10 + 20, 440);
             addButton(14, "", 10 + 400, 440);
+            if (!EX::NetIsGuest()) {
+                addButton(15, "Extras", 10 + 400, 405); // LugaruEX: Endless and PvP on lands made from scratch
+            }
             addButton(1, "", 10 + 60, 405);
             addButton(2, "", 10 + 70, 370);
             addButton(4, "", 10, 335);
@@ -583,6 +606,13 @@ void Menu::startChallengeLevel(int selected)
 
 void Menu::Tick()
 {
+    // test hook LUGARUEX_TEST_MENU=n: open menu screen n once (3 = Options, 21 = Extras, 22 = its lands)
+    static bool exMenuDone = false;
+    if (!exMenuDone && getenv("LUGARUEX_TEST_MENU") && !gameon && mainmenu == 1) {
+        exMenuDone = true;
+        mainmenu = atoi(getenv("LUGARUEX_TEST_MENU"));
+        Load();
+    }
     //escape key pressed
     if (Input::isKeyPressed(SDL_SCANCODE_ESCAPE) &&
         (mainmenu >= 3) && (mainmenu != 8) && !((mainmenu == 7) && entername)) {
@@ -612,6 +642,12 @@ void Menu::Tick()
             case 10:
             case 20:
                 mainmenu = 5;
+                break;
+            case 21:
+                mainmenu = 3;
+                break;
+            case 22:
+                mainmenu = 21;
                 break;
         }
     }
@@ -699,6 +735,32 @@ void Menu::Tick()
                         break;
                 }
                 break;
+            case 21: // LugaruEX Extras: the mode
+                fireSound();
+                flash();
+                if (selected == 1 || selected == 2) {
+                    g_extrasMode = selected == 1 ? EX::GEN_ENDLESS : EX::GEN_PVP;
+                    mainmenu = 22;
+                } else if (selected == 3) {
+                    mainmenu = 3; // (back to Options)
+                }
+                selected = -1;
+                break;
+            case 22: // ...and the land
+                if (selected >= 1 && selected <= 3) {
+                    fireSound(firestartsound);
+                    flash();
+                    const int env = selected == 1 ? grassyenvironment : selected == 2 ? desertenvironment : snowyenvironment;
+                    if (!EX::GenStart(g_extrasMode, env)) {
+                        mainmenu = 21;
+                    }
+                } else if (selected == 4) {
+                    fireSound();
+                    flash();
+                    mainmenu = 21;
+                }
+                selected = -1;
+                break;
             case 3:
                 fireSound();
                 switch (selected) {
@@ -784,6 +846,11 @@ void Menu::Tick()
                         break;
                     case 14:
                         toggleFullscreen();
+                        break;
+                    case 15: // LugaruEX: Extras
+                        flash();
+                        SaveSettings();
+                        mainmenu = 21;
                         break;
                 }
                 updateSettingsMenu();

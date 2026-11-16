@@ -24,6 +24,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExProfile.hpp"
 #include "EX/ExLighting.hpp"
 #include "EX/ExLocal.hpp"
+#include "EX/ExGen.hpp"
 #include "EX/ExNet.hpp"
 
 #include "Audio/openal_wrapper.hpp"
@@ -875,10 +876,12 @@ int Game::DrawGLScene(StereoSide side)
                     } else {
                         string = "Score: " + to_string(int(Account::active().getCampaignScore() + bonustotal));
                     }
+                } else if (EX::Versus()) {
+                    string = "Score: " + to_string(Person::players[EX::ViewPerson()]->exScore); // PvP: each player's own
                 } else {
                     string = "Score: " + to_string(int(bonustotal));
                 }
-                if (EX::DrawSharedHud()) {
+                if (EX::DrawSharedHud() || EX::Versus()) {
                     // LugaruEX: one shared score (top-left of the biggest view in split screen),
                     // anchored to the real left edge of wide screens
                     // sized like the single-player score, from the top-left corner of this view
@@ -1436,9 +1439,14 @@ int Game::DrawGLScene(StereoSide side)
             glEnable(GL_TEXTURE_2D);
             glColor4f(1, 1, 1, 1);
             string = "Level Cleared!";
+            if (EX::Versus()) { // LugaruEX PvP: who won, and this player's own score
+                string = EX::GenWinner() == EX::ViewPerson() ? "WINNER!" : "Round Over";
+            } else if (EX::GenActive()) {
+                string = "Game Over"; // (Endless: everyone is down - the run's score, time and awards)
+            }
             text->glPrintOutlined(1024 / 2 - string.size() * 10, 768 * 7 / 8, string, 1, 2, 1024, 768);
 
-            string = "Score:     " + to_string(int(bonustotal - startbonustotal));
+            string = "Score:     " + to_string(EX::Versus() ? Person::players[EX::ViewPerson()]->exScore : int(bonustotal - startbonustotal));
             text->glPrintOutlined(1024 / 30, 768 * 6 / 8, string, 1, 2, 1024, 768);
 
             string = "Press Escape to return to menu or Space to continue";

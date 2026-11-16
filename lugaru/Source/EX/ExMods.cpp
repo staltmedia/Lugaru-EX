@@ -24,6 +24,7 @@ namespace EX
 static std::vector<std::string> g_local, g_session, g_roots;
 static bool g_sessionActive = false;
 static std::string g_sync; // online guest: the host's copies of levels that differ here
+static std::string g_gen; // Extras: the generated levels this PC made (Mods/.gen)
 static std::vector<std::string> g_looks; // online: players' skins / models / clothes (look packs), after the mods
 
 std::string ModsFolder()
@@ -36,6 +37,9 @@ static void rebuild()
     g_roots.clear();
     if (!g_sync.empty()) {
         g_roots.push_back(g_sync);
+    }
+    if (!g_gen.empty()) {
+        g_roots.push_back(g_gen);
     }
     for (const std::string& r : g_sessionActive ? g_session : g_local) {
         g_roots.push_back(r);
@@ -50,6 +54,14 @@ void ModsSetSyncRoot(const std::string& dir)
 {
     if (dir != g_sync) {
         g_sync = dir;
+        rebuild();
+    }
+}
+
+void ModsSetGenRoot(const std::string& dir)
+{
+    if (dir != g_gen) {
+        g_gen = dir;
         rebuild();
     }
 }

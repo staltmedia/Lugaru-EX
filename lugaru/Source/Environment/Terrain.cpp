@@ -442,6 +442,20 @@ static short TerrainRandom()
 
 bool Terrain::load(const std::string& fileName)
 {
+    // LugaruEX Extras Endless: the ground's random touches (texture offsets, snow / sand
+    // drifts) belong to the land, not to the place in the grid: the same spot gets the same
+    // ones however the window onto the land lies
+    int exK = 0;
+    auto exRand = [&](long gi, long gj) -> int {
+        if (!exAbsRandom) {
+            return TerrainRandom();
+        }
+        uint32_t h = (uint32_t)(gi + exAbsX) * 73856093u ^ (uint32_t)(gj + exAbsZ) * 19349663u ^ (uint32_t)(exK++) * 83492791u ^ 0x9e3779b9u;
+        h ^= h >> 13;
+        h *= 0x5bd1e995u;
+        h ^= h >> 15;
+        return (int)(h & 0x7fff);
+    };
     static long i, j;
     static long x, y;
     static float patch_size;
@@ -452,7 +466,16 @@ bool Terrain::load(const std::string& fileName)
     ImageRec texture;
 
     //Load Image
-    if (!load_image(Folders::getResourcePath(fileName).c_str(), texture)) {
+    if (!exHeights.empty()) {
+        // LugaruEX Extras: the ground a generated level carries in its map
+        const unsigned n = (unsigned)lroundf(sqrtf((float)exHeights.size()));
+        texture.sizeX = texture.sizeY = n;
+        texture.bpp = 24;
+        texture.data = (GLubyte*)malloc((size_t)n * n * 3);
+        for (size_t k = 0; k < (size_t)n * n; k++) {
+            texture.data[k * 3] = texture.data[k * 3 + 1] = texture.data[k * 3 + 2] = exHeights[k];
+        }
+    } else if (!load_image(Folders::getResourcePath(fileName).c_str(), texture)) {
         return false;
     }
     // LugaruEX: a square image no bigger than the ground grid (a heightmap can come from an
@@ -501,10 +524,11 @@ bool Terrain::load(const std::string& fileName)
 
     for (i = 0; i < size; i++) {
         for (j = 0; j < size; j++) {
+            exK = 0; // (LugaruEX: this spot's own random numbers on the endless land)
             heightmap[i][j] *= .5;
 
-            texoffsetx[i][j] = (float)abs(TerrainRandom() % 100) / 1200 / scale * 3;
-            texoffsety[i][j] = (float)abs(TerrainRandom() % 100) / 1200 / scale * 3;
+            texoffsetx[i][j] = (float)abs(exRand(i, j) % 100) / 1200 / scale * 3;
+            texoffsety[i][j] = (float)abs(exRand(i, j) % 100) / 1200 / scale * 3;
 
             slopeness = 0;
             if (environment == snowyenvironment) {
@@ -515,7 +539,7 @@ bool Terrain::load(const std::string& fileName)
                 if (opacityother[i][j] > 1) {
                     opacityother[i][j] = 1;
                 }
-                opacityother[i][j] -= (float)abs(TerrainRandom() % 100) / 300;
+                opacityother[i][j] -= (float)abs(exRand(i, j) % 100) / 300;
             }
             if (environment == desertenvironment) {
                 if (j != 0 && heightmap[i][j] - heightmap[i][j - 1] > slopeness) {
@@ -525,7 +549,7 @@ bool Terrain::load(const std::string& fileName)
                 if (opacityother[i][j] > 1) {
                     opacityother[i][j] = 1;
                 }
-                opacityother[i][j] -= (float)abs(TerrainRandom() % 100) / 300;
+                opacityother[i][j] -= (float)abs(exRand(i, j) % 100) / 300;
             }
             if (environment == grassyenvironment) {
                 if (i != 0 && heightmap[i][j] - heightmap[i - 1][j] > slopeness) {
@@ -544,7 +568,7 @@ bool Terrain::load(const std::string& fileName)
                 if (opacityother[i][j] > 1) {
                     opacityother[i][j] = 1;
                 }
-                opacityother[i][j] -= (float)abs(TerrainRandom() % 100) / 100;
+                opacityother[i][j] -= (float)abs(exRand(i, j) % 100) / 100;
             }
         }
     }

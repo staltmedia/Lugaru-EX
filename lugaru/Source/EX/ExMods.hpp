@@ -30,6 +30,7 @@ std::string ModsFolder();                   // LugaruEX/Mods/
 // online guest: a folder of the host's own copies of levels (and terrain) that differ from
 // this PC's, searched before everything else; "" when not playing as a guest
 void ModsSetSyncRoot(const std::string& dir);
+void ModsSetGenRoot(const std::string& dir); // Extras: where generated levels are written
 void ModsRescan(); // files were added to a root: look again
 // online: folders with players' looks (skins, models, clothes under Textures/Custom and
 // Models/Custom), searched after the mods

@@ -36,6 +36,8 @@ const Act kActs[] = {
     { "Attack", L"Attack", "Mouse Left", "righttrigger", nullptr, nullptr },
     { "Draw", L"Draw / put away", "E", "y", nullptr, nullptr },
     { "Throw", L"Throw / pick up", "Q", "x", nullptr, nullptr },
+    { "Ragdoll", L"Fall over (ragdoll)", "Left Alt", "b", nullptr, nullptr },
+    { "Revive", L"Revive a partner (Endless)", "Mouse Right", "rightshoulder", nullptr, nullptr },
     { "Lighting", L"Shaders (next look)", "R", "back", nullptr, nullptr },
     { "Pause", L"Pause menu", nullptr, "start", L"Esc", nullptr },
     { "Console", L"Console", "`", nullptr, nullptr, L"-" },

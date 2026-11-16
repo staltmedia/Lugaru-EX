@@ -228,6 +228,7 @@ static void startMove(Person& P, int vi, int anim)
     }
     if (anim == killanim || anim == dropkickanim) {
         clearDeadDecals();
+        Person::players[vi]->exAiFlungUntil = Game::leveltime + 3; // (what it hits earns nobody a bonus)
     }
     P.exAiBody = vi;
 }
@@ -345,6 +346,15 @@ void ExpandedAIStep(int person)
         return;
     }
     const float dt = stepTime();
+    if (P.exAiCruelty < 0) {
+        // rolled once per enemy: mostly mild, now and then a vicious one (u^3: half below .13,
+        // one in ten above .73)
+        const float u = (float)(rand() % 1001) / 1000.f;
+        P.exAiCruelty = u * u * u;
+        if (const char* forced = getenv("LUGARUEX_TEST_CRUELTY")) {
+            P.exAiCruelty = (float)atof(forced); // test hook: everyone this cruel
+        }
+    }
     P.exAiCooldown -= dt;
     P.exAiBodyWait -= dt;
     if (P.exAiPlan && (P.exAiPlanTime -= dt) <= 0) {
@@ -362,6 +372,12 @@ void ExpandedAIStep(int person)
     }
     // fighting: every move; calm again (back on its rounds after a kill): only bodies
     const bool attacking = P.aitype == attacktypecutoff;
+    if (attacking) {
+        P.exFightTime += dt; // (how hard a fight it was, for what it does after)
+        if (valid(P.exTarget) && Person::players[P.exTarget]->isPlayerControlled()) {
+            P.exLastFoe = P.exTarget;
+        }
+    }
     const bool calm = P.aitype == passivetype || P.aitype == pathfindtype;
     if ((!attacking && !calm) || P.stunned > 0 || P.surprised > 0 || (!attacking && (P.exAiPlan == kSneak || P.exAiPlan == kDowned))) {
         P.exAiPlan = 0;
@@ -406,7 +422,7 @@ void ExpandedAIStep(int person)
                 if (tryGround(P, P.exAiPlanOn, weapon, true)) {
                     P.exAiPlan = 0;
                     P.exAiBodyLeft--;
-                    P.exAiBodyWait = 1.2f + (float)(rand() % 300) / 100.f;
+                    P.exAiBodyWait = (1.f - P.exAiCruelty) * 4.f + .8f + (float)(rand() % 150) / 100.f; // (the cruel ones barely stop)
                 } else if (ready(P)) {
                     goTo(P, V.coords);
                 }
@@ -474,6 +490,7 @@ void ExpandedAIStep(int person)
                 P.victim = Person::players[vi];
                 P.hasvictim = 1;
                 P.setTargetAnimation(rabbitkickanim);
+                P.exAiFlungUntil = Game::leveltime + 3; // (a miss that knocks it out is no Heavy Impact for anyone)
                 P.exAiCooldown = 3;
                 printf("LugaruEX: Expanded AI - person %d leg cannon at %d\n", person, vi);
                 return;
@@ -549,25 +566,39 @@ void ExpandedAIStep(int person)
     }
     // a knife stuck in a body: an unarmed rabbit sometimes goes to get it (kicking the body
     // over first when it lies on it)
-    if (knifeBody >= 0 && !P.hasWeapon() && P.num_weapons == 0 && P.creature == rabbittype && AIChance(.3f * rate())) {
+    if (knifeBody >= 0 && !P.hasWeapon() && P.num_weapons == 0 && P.creature == rabbittype && AIChance(.15f * rate())) {
         P.exAiPlan = kKnife;
         P.exAiPlanOn = knifeBody;
         P.exAiPlanTime = 7;
         printf("LugaruEX: Expanded AI - person %d goes to get the knife in body %d\n", person, knifeBody);
         return;
     }
-    // a player it killed: sometimes check the body, a few times, now and then for no reason
+    // a player's body: now and then the enemy who fought that player and came out on top checks
+    // it, a few times - rarely after an easy win, likelier the harder the fight was (it got
+    // hurt, friends of its lie dead round the body, it went on a long time). Each enemy has its
+    // own cruelty (most never touch a body); difficulty adds to it.
     if (body >= 0) {
         if (P.exAiBodyOf != body) {
             P.exAiBodyOf = body;
-            const float chance = difficulty <= 0 ? .3f : difficulty == 1 ? .5f : .75f;
-            P.exAiBodyLeft = (float)(rand() % 1000) < chance * 1000 ? 1 + rand() % (2 + std::max(0, difficulty)) : 0;
-            P.exAiBodyWait = .6f + (float)(rand() % 250) / 100.f;
-            if (P.exAiBodyLeft) {
-                printf("LugaruEX: Expanded AI - person %d will check body %d %d times\n", person, body, P.exAiBodyLeft);
+            const bool fought = P.exLastFoe == body; // (bystanders leave it be)
+            const float hurt = std::min(1.f, std::max(P.damage, P.permanentdamage) / std::max(1.f, P.damagetolerance));
+            int fallen = 0;
+            for (unsigned j = 0; j < Person::players.size(); j++) {
+                const Person& f = *Person::players[j];
+                if ((int)j != person && !f.isPlayerControlled() && f.dead && dist2(f.coords, Person::players[body]->coords) < 20 * 20) {
+                    fallen++;
+                }
             }
+            const float hard = std::min(1.f, .5f * hurt + .25f * std::min(1.f, fallen / 3.f) + .25f * std::min(1.f, P.exFightTime / 30.f));
+            const float diff = difficulty <= 0 ? .6f : difficulty == 1 ? .8f : 1.f;
+            const float chance = fought ? std::min(1.f, P.exAiCruelty * (.15f + 1.1f * hard)) * diff : 0.f;
+            const int most = 1 + (int)(P.exAiCruelty * P.exAiCruelty * (5 + std::max(0, difficulty)) * (.5f + hard)); // (a vicious one keeps at it)
+            P.exAiBodyLeft = (float)(rand() % 1000) < chance * 1000 ? 1 + rand() % most : 0;
+            P.exAiBodyWait = 1.f + (float)(rand() % 400) / 100.f;
+            printf("LugaruEX: Expanded AI - person %d by body %d: fought %d, cruelty %.2f, fight %.2f (hurt %.2f, %d fallen, %.0f s) -> %d checks\n",
+                   person, body, (int)fought, P.exAiCruelty, hard, hurt, fallen, P.exFightTime, P.exAiBodyLeft);
         }
-        if (P.exAiBodyLeft > 0 && P.exAiBodyWait <= 0) {
+        if (P.exAiBodyLeft > 0 && P.exAiBodyWait <= 0) { // (several may check the same body)
             P.exAiPlan = kBody;
             P.exAiPlanOn = body;
             P.exAiPlanTime = 6;

@@ -105,6 +105,9 @@ struct KeyAction
 };
 
 static int g_lightingKey = SDL_SCANCODE_R;
+// LugaruEX actions with no key of the original: fall over (ragdoll) and revive a partner (Endless).
+// 0 = off (its key is already another action's)
+static int g_ragdollKey = SDL_SCANCODE_LALT, g_reviveKey = MOUSEBUTTON_RIGHT;
 
 static std::vector<KeyAction>& keyActions()
 {
@@ -128,6 +131,37 @@ void ApplyKeyBindings()
     if (lk > 0) {
         g_lightingKey = lk;
     }
+    // Ragdoll (default Left Alt) and Revive (default right mouse button): only when no other
+    // action has that key
+    auto extra = [](const char* name, const char* def) {
+        const std::string v = IniString("Keys", name, def);
+        int k = (v == "-" || v == "none") ? 0 : keyFromName(v);
+        for (auto& a : keyActions()) {
+            if (k > 0 && *a.var == k) {
+                printf("LugaruEX: %s has no key (%s is %s)\n", name, v.c_str(), a.name);
+                k = 0;
+            }
+        }
+        if (k == g_lightingKey) {
+            k = 0;
+        }
+        return k > 0 ? k : 0;
+    };
+    g_ragdollKey = extra("Ragdoll", "Left Alt");
+    g_reviveKey = extra("Revive", "Mouse Right");
+    if (g_reviveKey == g_ragdollKey) {
+        g_reviveKey = 0;
+    }
+}
+
+int RagdollKey()
+{
+    return g_ragdollKey;
+}
+
+int ReviveKey()
+{
+    return g_reviveKey;
 }
 
 void SaveKeyBindings()
@@ -154,6 +188,7 @@ struct PadBinds
     int jump = SDL_CONTROLLER_BUTTON_A, crouch = PAD_LT, attack = PAD_RT;
     int draw = SDL_CONTROLLER_BUTTON_Y, thrw = SDL_CONTROLLER_BUTTON_X;
     int lighting = SDL_CONTROLLER_BUTTON_BACK, pause = SDL_CONTROLLER_BUTTON_START;
+    int ragdoll = SDL_CONTROLLER_BUTTON_B, revive = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER; // -1 = off
     float lookSpeed = 1.f;
     bool vibration = true; // [Pad] Vibration (launcher Controls tab)
 };
@@ -174,6 +209,19 @@ static void loadPadBinds()
     get("Throw", g_binds.thrw);
     get("Lighting", g_binds.lighting);
     get("Pause", g_binds.pause);
+    get("Ragdoll", g_binds.ragdoll);
+    get("Revive", g_binds.revive);
+    // (a button another action already uses: that action keeps it)
+    for (int* extra : { &g_binds.ragdoll, &g_binds.revive }) {
+        for (int used : { g_binds.jump, g_binds.crouch, g_binds.attack, g_binds.draw, g_binds.thrw, g_binds.lighting, g_binds.pause }) {
+            if (*extra == used) {
+                *extra = -1;
+            }
+        }
+    }
+    if (g_binds.revive == g_binds.ragdoll) {
+        g_binds.revive = -1;
+    }
     const std::string ls = IniString("Pad", "LookSpeed", "1");
     g_binds.lookSpeed = std::max(0.2f, std::min(3.f, (float)atof(ls.c_str())));
     g_binds.vibration = atoi(IniString("Pad", "Vibration", "1").c_str()) != 0;
@@ -419,6 +467,49 @@ static void stickMove(SDL_GameController* gc, bool& fwd, bool& back, bool& left,
 }
 
 static bool g_p1PadWalk = false; // player 1's controller asks for a walk this frame
+static bool g_p1PadRagdoll = false, g_p1PadRevive = false; // ...or holds Ragdoll / Revive
+
+static bool g_ragdollTap = false;
+
+// a modifier key (Alt, the default) is also the developer keys' one (Alt+M, Alt+B...): it
+// ragdolls on a tap - let go with no other key pressed meanwhile
+static bool isModifier(int k)
+{
+    return k == SDL_SCANCODE_LALT || k == SDL_SCANCODE_RALT || k == SDL_SCANCODE_LCTRL || k == SDL_SCANCODE_RCTRL || k == SDL_SCANCODE_LSHIFT ||
+           k == SDL_SCANCODE_RSHIFT || k == SDL_SCANCODE_LGUI || k == SDL_SCANCODE_RGUI;
+}
+
+void KeysSettled(const bool* down, int numKeys)
+{
+    static bool held = false, other = false;
+    g_ragdollTap = false;
+    if (g_ragdollKey <= 0 || g_ragdollKey >= numKeys || !isModifier(g_ragdollKey)) {
+        return;
+    }
+    if (down[g_ragdollKey]) {
+        if (!held) {
+            held = true;
+            other = false;
+        }
+        for (int k = 1; k < numKeys && !other; k++) {
+            other = down[k] && k != g_ragdollKey;
+        }
+    } else if (held) {
+        held = false;
+        g_ragdollTap = !other;
+    }
+}
+
+bool P1Ragdoll()
+{
+    const bool key = g_ragdollKey > 0 && (isModifier(g_ragdollKey) ? g_ragdollTap : Input::isKeyDown(g_ragdollKey));
+    return !mainmenu && (key || g_p1PadRagdoll);
+}
+
+bool P1Revive()
+{
+    return !mainmenu && ((g_reviveKey > 0 && Input::isKeyDown(g_reviveKey)) || g_p1PadRevive);
+}
 
 bool P1Walk()
 {
@@ -452,6 +543,8 @@ bool PadRead(const std::string& id, PadInput& o)
     o.thrw = held(gc, g_binds.thrw);
     o.pause = held(gc, g_binds.pause);
     o.lighting = held(gc, g_binds.lighting);
+    o.ragdoll = held(gc, g_binds.ragdoll);
+    o.revive = held(gc, g_binds.revive);
     auto shape = [](float v) {
         const float dz = 0.15f;
         const float a = fabsf(v);
@@ -608,6 +701,7 @@ std::string SkipText()
 void PadContribute(bool* down, int numKeys)
 {
     g_p1PadWalk = false;
+    g_p1PadRagdoll = g_p1PadRevive = false;
     {
         // which input player 1 used last (keyboard keys and mouse buttons are in `down` already)
         bool keys = false;
@@ -662,6 +756,8 @@ void PadContribute(bool* down, int numKeys)
     if (held(gc, g_binds.thrw)) {
         set(Game::throwkey);
     }
+    g_p1PadRagdoll = held(gc, g_binds.ragdoll);
+    g_p1PadRevive = held(gc, g_binds.revive);
     // left stick moves (the game's movement is digital; 8 directions; a light push walks)
     bool fwd, back, left, right;
     stickMove(gc, fwd, back, left, right, g_p1PadWalk);

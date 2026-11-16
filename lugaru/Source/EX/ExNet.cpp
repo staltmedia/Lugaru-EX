@@ -35,6 +35,7 @@ typedef int SOCKET;
 #endif
 
 #include "EX/ExNet.hpp"
+#include "EX/ExGen.hpp"
 
 #include <cctype>
 
@@ -1083,6 +1084,30 @@ bool NetIsGuest()
     return g_role == R_GUEST;
 }
 
+// Extras Endless: the window moved along the endless land - what this guest keeps of the
+// host's snapshots moves with it (they are in the window's places)
+void NetGuestShift(const XYZ& d)
+{
+    for (auto& hist : g_hist) {
+        for (NetPerson& s : hist) {
+            s.coords -= d;
+        }
+    }
+    for (auto& hist : g_whist) {
+        for (NetWeapon& s : hist) {
+            s.pos -= d;
+        }
+    }
+}
+int NetConnectedGuests()
+{
+    int n = 0;
+    for (const Client& c : g_clients) {
+        n += (g_role == R_HOST && c.connected) ? 1 : 0;
+    }
+    return n;
+}
+
 int NetDifficulty()
 {
     return (g_role == R_GUEST && g_hostDifficulty >= 0) ? g_hostDifficulty : difficulty;
@@ -1238,6 +1263,12 @@ static void hostSnapshots()
         // the end-of-level screen: level score (score - score at the start), time and awards
         w.u32((uint32_t)startbonustotal);
         w.f32(Game::wonleveltime);
+        {
+            int ox = 0, oz = 0;
+            GenOrigin(ox, oz); // (Extras Endless: where the window lies on the endless land)
+            w.u32((uint32_t)ox);
+            w.u32((uint32_t)oz);
+        }
         {
             int awards[award_count];
             const int n = winfreeze ? std::min(award_awards(awards), 15) : 0;
@@ -3084,6 +3115,7 @@ static void hostReceive(const uint8_t* d, int n, const sockaddr_in& from)
                 in.jump = btn & 16, in.crouch = btn & 32, in.attack = btn & 64, in.draw = btn & 128, in.thrw = btn & 256;
                 in.walk = btn & 512; // (older guests never set it: they run)
                 in.typing = k == 0 && (btn & 1024); // writing a chat line (the PC's first player)
+                in.ragdoll = btn & 2048, in.revive = btn & 4096;
                 LocalRemoteInput(c->slots[k], in, yaw, pitch, c->connected);
             }
         }
@@ -3278,6 +3310,7 @@ static void guestSnap(Reader& r)
     const float hostLevelTime = r.f32();
     const int startScore = (int)r.u32();
     const float wonTime = r.f32();
+    const int genOx = (int)r.u32(), genOz = (int)r.u32();
     std::vector<int> awardList(r.u8());
     for (auto& a : awardList) {
         a = r.u8();
@@ -3311,6 +3344,14 @@ static void guestSnap(Reader& r)
     g_snapSeen.insert(snapNo);
     // level-wide state only from the newest snapshot (a late one must not roll it back)
     static uint32_t newestApplied = 0;
+    {
+        // (Endless: a late snapshot from before the window last moved - its places are elsewhere)
+        int gox = 0, goz = 0;
+        GenOrigin(gox, goz);
+        if ((genOx != gox || genOz != goz) && snapNo < newestApplied) {
+            return;
+        }
+    }
     if (snapNo >= newestApplied || newestApplied - snapNo > 100000) {
         newestApplied = snapNo;
         g_slomo = flags & 1;
@@ -3320,6 +3361,7 @@ static void guestSnap(Reader& r)
         Game::leveltime = hostLevelTime;
         startbonustotal = startScore;
         Game::wonleveltime = wonTime;
+        GenGuestOrigin(genOx, genOz); // (Endless: the host's window moved on - before this snapshot's places)
         g_awards = awardList;
         g_dlgWhich = dWhich == 255 ? -1 : dWhich;
         g_dlgScene = dScene;
@@ -3379,6 +3421,7 @@ static void guestSnap(Reader& r)
                 p.exPopBonus = b;
                 p.exPopValue = c;
                 p.exPopTime = 0;
+                GenScore(a, c); // (PvP: each player's own score)
             } else if (kind == 'D' && a >= 0 && a < (int)Person::players.size()) {
                 // replay the host's blood here: particles, and the wounds painted on the skin
                 Person& p = *Person::players[a];
@@ -4117,7 +4160,7 @@ void NetFrame(double dt)
             }
             const int btn = (in.fwd ? 1 : 0) | (in.back ? 2 : 0) | (in.left ? 4 : 0) | (in.right ? 8 : 0) | (in.jump ? 16 : 0) |
                             (in.crouch ? 32 : 0) | (in.attack ? 64 : 0) | (in.draw ? 128 : 0) | (in.thrw ? 256 : 0) | (in.walk ? 512 : 0) |
-                            (k == 0 && ChatTyping() ? 1024 : 0);
+                            (k == 0 && ChatTyping() ? 1024 : 0) | (in.ragdoll ? 2048 : 0) | (in.revive ? 4096 : 0);
             w.u16(btn);
             w.f32(yaw);
             w.f32(pitch);

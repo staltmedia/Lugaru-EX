@@ -78,6 +78,12 @@ public:
     // LugaruEX lighting: per vertex of vArray, the smooth normal and the sun term the game
     // baked into its colour (4 floats), for the shaders' surface pass
     std::vector<GLfloat> exNArray;
+    // LugaruEX Extras: a generated level's ground (heightmap image bytes, size x size) used
+    // instead of Textures/HeightMap.png (empty = the game's own)
+    std::vector<unsigned char> exHeights;
+    // Endless: the window's first cell on the endless land; its random touches follow the land
+    bool exAbsRandom = false;
+    int exAbsX = 0, exAbsZ = 0;
 
     bool visible[subdivision][subdivision];
     float avgypatch[subdivision][subdivision];

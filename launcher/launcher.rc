@@ -8,8 +8,8 @@ IDI_APP ICON "../lugaru/Dist/Windows/Lugaru.ico"
 1 RT_MANIFEST "launcher.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,5,7,0
-PRODUCTVERSION 0,5,7,0
+FILEVERSION 0,5,8,0
+PRODUCTVERSION 0,5,8,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -19,7 +19,7 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "LugaruEX Launcher"
             VALUE "ProductName", "LugaruEX"
-            VALUE "FileVersion", "0.5.7"
+            VALUE "FileVersion", "0.5.8"
             VALUE "LegalCopyright", "GPLv2+ (based on OSS Lugaru)"
         END
     END

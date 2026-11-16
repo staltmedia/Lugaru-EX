@@ -111,6 +111,7 @@ public:
     void exWorldMatrix(float* out) const; // LugaruEX: draw()'s world transform (sway included), for sun shadows
     void exBindTexture() const;           // LugaruEX: the texture draw() uses
 
+    void exBakeShadows(XYZ lightloc) { doShadows(lightloc); } // LugaruEX: a thing made during play
 private:
     void handleFire();
     void handleRot(int divide);

@@ -32,6 +32,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExConfig.hpp"
 #include "EX/ExLocal.hpp"
 #include "EX/ExBot.hpp"
+#include "EX/ExGen.hpp"
 #include "EX/ExNet.hpp"
 #include "EX/ExPad.hpp"
 #include "EX/ExProfile.hpp"
@@ -556,6 +557,7 @@ bool Game::LoadLevelInt(int which)
 
 void Game::ResetBeforeLevelLoad(bool tutorial)
 {
+    EX::GenReset(); // LugaruEX Extras: a normal level until its map says otherwise
     image_cache_clear(); // LugaruEX: skins and clothes are decoded afresh for each level
     Tutorial::active = tutorial;
 
@@ -628,6 +630,10 @@ void Game::ResetBeforeLevelLoad(bool tutorial)
 // animations, claws, strength and no weapons or clothes.
 static void ExApplyPlayerCharacter(bool tutorial)
 {
+    if (EX::GenActive() && !Person::players.empty()) {
+        EX::GenApplyPlayerLook(*Person::players[0], tutorial); // (Extras: Default / Random are random)
+        return;
+    }
     if (EX::cfg.playerDefault || Person::players.empty()) {
         return;
     }
@@ -1148,6 +1154,7 @@ bool Game::LoadJsonLevel(const std::string& name, bool tutorial)
     map_file.close();
 
     ResetBeforeLevelLoad(tutorial);
+    EX::GenMapRead(map_data["map"], name); // LugaruEX Extras: a generated level's ground and mode
 
     if (console) {
         emit_sound_np(consolesuccesssound);
@@ -1190,13 +1197,14 @@ bool Game::LoadJsonLevel(const std::string& name, bool tutorial)
 
     environment = map_data["map"]["environment"].asInt();
 
-    if (environment != oldenvironment) {
+    if (environment != oldenvironment || EX::GenActive()) { // (Extras: its own ground)
         Setenvironment(environment);
     }
-    oldenvironment = environment;
+    oldenvironment = EX::GenActive() ? -4 : environment; // (after one, the next level builds its ground again)
 
     if (!stealthloading) {
         Object::LoadObjectsFromJson(map_data["map"]["objects"]);
+        EX::GenGroundObjects();
     }
 
     Hotspot::hotspots.resize(map_data["map"]["hotspots"].size());
@@ -1262,6 +1270,7 @@ bool Game::LoadJsonLevel(const std::string& name, bool tutorial)
 
     mapcenter = map_data["map"]["center"];
     mapradius = map_data["map"]["radius"].asFloat();
+    EX::GenGroundPeople();
 
     SetUpLighting();
 
@@ -1379,6 +1388,18 @@ void Game::ProcessInput()
     }
 
     /* Challenge mode */
+    // test hook LUGARUEX_TEST_CONTINUE=s: an end-of-level screen goes on by itself after s seconds
+    static const float exTestContinue = getenv("LUGARUEX_TEST_CONTINUE") ? (float)atof(getenv("LUGARUEX_TEST_CONTINUE")) : 0.f;
+    static Uint32 exFrozenSince = 0;
+    if (winfreeze && exTestContinue > 0) {
+        if (!exFrozenSince) {
+            exFrozenSince = SDL_GetTicks();
+        } else if (SDL_GetTicks() - exFrozenSince > exTestContinue * 1000) {
+            exFrozenSince = 0;
+            winfreeze = 0;
+            printf("EXTEST continue\n");
+        }
+    }
     if (!campaign && !mainmenu) {
         if ((Input::isKeyPressed(jumpkey) || Input::isKeyPressed(SDL_SCANCODE_SPACE))) {
             if (winfreeze) {
@@ -1391,7 +1412,7 @@ void Game::ProcessInput()
                 console = false;
                 freeze = 0;
             } else if (winfreeze) {
-                mainmenu = 9;
+                mainmenu = EX::GenActive() ? 1 : 9; // (Extras: back to the main menu)
                 gameon = 0;
             }
         }
@@ -2260,6 +2281,9 @@ void Game::ProcessDevInput()
         if (campaign) {
             exSkipCampaignLevel = true; // handled in TickOnceAfter (campaign levels are not numbered)
         } else {
+        if (EX::GenActive()) {
+            targetlevel = whichlevel; // (Extras: skip = the next wave / round)
+        }
         targetlevel++;
         if (targetlevel > numchallengelevels - 1) {
             targetlevel = 0;
@@ -3100,7 +3124,7 @@ void doAttacks()
     // (the host's Friendly fire option: humans can hit humans too, see exTargets)
     auto opponents = [](unsigned a, unsigned b) {
         const bool ha = Person::players[a]->isPlayerControlled(), hb = Person::players[b]->isPlayerControlled();
-        return ha != hb || (ha && hb && EX::FriendlyFire());
+        return ha != hb || (ha && hb && (EX::FriendlyFire() || EX::Versus())); // (PvP: everyone)
     };
     // who k may pick as a victim, in the order the original loops try them: every opponent
     // in index order; with friendly fire, partners come last and only when no enemy is in
@@ -3114,7 +3138,7 @@ void doAttacks()
                 continue;
             }
             Person& I = *Person::players[i];
-            if (K.isPlayerControlled() && I.isPlayerControlled()) {
+            if (K.isPlayerControlled() && I.isPlayerControlled() && !EX::Versus()) {
                 continue;
             }
             out.push_back(i);
@@ -3133,7 +3157,7 @@ void doAttacks()
             }
             printf("\n");
         }
-        if (!K.isPlayerControlled() || !EX::FriendlyFire() || enemyNear) {
+        if (!K.isPlayerControlled() || !EX::FriendlyFire() || enemyNear || EX::Versus()) {
             return;
         }
         for (unsigned i = 0; i < Person::players.size(); i++) {
@@ -3491,7 +3515,7 @@ void doAttacks()
                     const bool hasstaff = attackweapon == staff;
                     if (Person::players[k]->isPlayerControlled() && Person::players.size() > 1) {
                         for (unsigned i = 0; i < Person::players.size(); i++) {
-                            if (i == k || (Person::players[i]->isPlayerControlled() && !Person::players[i]->dead && !EX::FriendlyFire())) { // LugaruEX: a dead partner's body is a body like any other (Friendly fire: a downed living one too)
+                            if (i == k || (Person::players[i]->isPlayerControlled() && !Person::players[i]->dead && !EX::FriendlyFire() && !EX::Versus())) { // LugaruEX: a dead partner's body is a body like any other (Friendly fire: a downed living one too)
                                 continue;
                             }
                             if ((Person::players[k]->exRealAttack || Person::players[i]->dead || !hasstaff) &&
@@ -3609,7 +3633,7 @@ void doAttacks()
                         for (int pass = 0; pass < 2 && !Person::players[k]->hasvictim; pass++) { // (pass 1: friendly fire, a partner in front)
                         for (unsigned i = 0; i < Person::players.size(); i++) {
                             if (i == k || !opponents(k, i) ||
-                                (Person::players[k]->isPlayerControlled() && Person::players[i]->isPlayerControlled()) != (pass == 1) ||
+                                EX::Partners(*Person::players[k], *Person::players[i]) != (pass == 1) ||
                                 (pass == 1 && normaldotproduct(Person::players[k]->facing, Person::players[i]->coords - Person::players[k]->coords) <= .5f)) {
                                 continue;
                             }
@@ -3845,15 +3869,22 @@ void doPlayerCollisions()
                                                                                 if (!Tutorial::active) {
                                                                                     emit_sound_at(heavyimpactsound, Person::players[i]->coords);
                                                                                 }
+                                                                                // (a body an Expanded AI enemy sent flying, or its own missed
+                                                                                // leg cannon: nobody's Nice Aim)
+                                                                                const bool aiFlung = pi.exAiFlungUntil > leveltime || pk.exAiFlungUntil > leveltime;
 
                                                                                 Person::players[i]->RagDoll(0);
                                                                                 if (Person::players[i]->damage > Person::players[i]->damagetolerance - findLengthfast(&rotatetarget) / 4 && !Person::players[i]->dead) {
-                                                                                    award_bonus(hk ? (int)k : Person::exBonusPlayerFor(Person::players[i].get()), aimbonus); // LugaruEX: the player who knocked them out, else the one this is for (single player: player 1, as the original)
+                                                                                    if (hk || !aiFlung) {
+                                                                                        award_bonus(hk ? (int)k : Person::exBonusPlayerFor(Person::players[i].get()), aimbonus); // LugaruEX: the player who knocked them out, else the one this is for (single player: player 1, as the original)
+                                                                                    }
                                                                                 }
                                                                                 Person::players[i]->DoDamage(findLengthfast(&rotatetarget) / 4);
                                                                                 Person::players[k]->RagDoll(0);
                                                                                 if (Person::players[k]->damage > Person::players[k]->damagetolerance - findLengthfast(&rotatetarget) / 4 && !Person::players[k]->dead) {
-                                                                                    award_bonus(hi ? (int)i : Person::exBonusPlayerFor(Person::players[k].get()), aimbonus); // (the other way round)
+                                                                                    if (hi || !aiFlung) {
+                                                                                        award_bonus(hi ? (int)i : Person::exBonusPlayerFor(Person::players[k].get()), aimbonus); // (the other way round)
+                                                                                    }
                                                                                 }
                                                                                 Person::players[k]->DoDamage(findLengthfast(&rotatetarget) / 4);
 
@@ -4296,6 +4327,7 @@ void Game::Tick()
             }
             EX::LocalTickInput(); // LugaruEX: players 2-4 from their controllers
             EX::LocalAfkStep();   // LugaruEX: AFK players (the AI presses their buttons)
+            EX::GenTick();        // LugaruEX Extras: players' start spots and weapons
 
             if (Dialog::inDialog()) {
                 cameramode = 1;
@@ -5791,6 +5823,12 @@ void Game::TickOnceAfter()
                     break;
                 }
             }
+            if (EX::GenVersusRound()) {
+                alldead = EX::GenVersusWon(); // PvP (Extras): won once one player is left standing
+            }
+            if (EX::GenMode() == EX::GEN_ENDLESS) {
+                alldead = false; // Endless: the waves never run out - it ends when everyone is down
+            }
 
             if (alldead && !EX::AllHumansDead() && maptype == mapkilleveryone) {
                 changedelay = 1;
@@ -5823,10 +5861,13 @@ void Game::TickOnceAfter()
                     scoreadded = 1;
                 } else {
                     wonleveltime = leveltime;
-                    Account::active().winLevel(whichlevel, bonustotal - startbonustotal, leveltime);
+                    if (!EX::GenActive()) { // (Extras levels keep no challenge records)
+                        Account::active().winLevel(whichlevel, bonustotal - startbonustotal, leveltime);
+                    }
                 }
                 won = 1;
                 Account::saveFile(Folders::getUserSavePath());
+                printf("LugaruEX: level won at %.1f s\n", leveltime);
             }
         }
 
@@ -5856,7 +5897,11 @@ void Game::TickOnceAfter()
                         startbonustotal = bonustotal;
                     }
 
-                    LoadLevel(targetlevel);
+                    if (EX::GenActive()) {
+                        EX::GenContinue(targetlevel == whichlevel); // Extras: the next wave / round, or again
+                    } else {
+                        LoadLevel(targetlevel);
+                    }
                     fireSound();
 
                     loading = 3;
@@ -5882,6 +5927,12 @@ void Game::TickOnceAfter()
                      (Hotspot::killhotspot))) {
                     loading = 1;
                 }
+                // Endless (Extras): everyone is down - the score and time of the run
+                if (EX::GenMode() == EX::GEN_ENDLESS && EX::AllHumansDead() && changedelay <= 0 && changedelay > -999 && !loading) {
+                    wonleveltime = EX::GenRunTime();
+                    winfreeze = true;
+                    changedelay = -999;
+                }
                 if ((EX::AllHumansDead() ||
                      (alldead && maptype == mapkilleveryone) ||
                      (winhotspot) ||
@@ -5892,7 +5943,7 @@ void Game::TickOnceAfter()
                         winfreeze = true;
                         changedelay = -999;
                     }
-                    if (EX::AllHumansDead() && !EX::CoopWaitsForRestart()) {
+                    if (EX::AllHumansDead() && !EX::CoopWaitsForRestart() && EX::GenMode() != EX::GEN_ENDLESS) {
                         loading = 1;
                     }
                 }

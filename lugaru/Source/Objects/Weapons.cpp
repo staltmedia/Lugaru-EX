@@ -24,6 +24,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExMath.hpp"
 #include "EX/ExNet.hpp"
 #include "EX/ExLocal.hpp"
+#include "EX/ExGen.hpp"
 #include "EX/ExLighting.hpp"
 
 #include "Animation/Animation.hpp"
@@ -350,7 +351,7 @@ void Weapon::doStuff(int i)
                             // LugaruEX: the bonus goes to whoever threw it, and only for hitting an enemy
                             // (a knife that hits a partner hurts them like anyone, but scores nothing)
                             if (oldowner >= 0 && oldowner < (int)Person::players.size() && Person::players[oldowner]->isPlayerControlled() &&
-                                !Person::players[j]->isPlayerControlled()) {
+                                (!Person::players[j]->isPlayerControlled() || EX::Versus())) { // (PvP: other players are enemies)
                                 if (Animation::animations[Person::players[oldowner]->animTarget].height == highheight) {
                                     award_bonus(oldowner, ninja);
                                 } else {
@@ -1297,4 +1298,16 @@ bool Weapon::exSomethingUnder()
         }
     }
     return false;
+}
+
+// LugaruEX Extras Endless: the window moved along the endless land - every place this weapon
+// keeps moves with it
+void Weapon::exShift(const XYZ& d)
+{
+    position -= d;
+    tippoint -= d;
+    oldposition -= d;
+    oldtippoint -= d;
+    lastdrawnposition -= d;
+    lastdrawntippoint -= d;
 }

@@ -435,8 +435,17 @@ public:
     int exAiBodyOf = -1, exAiBodyLeft = 0; // body checks rolled for that body, how many are left
     float exAiBodyWait = 0;
     int exAiBody = -1; // the person a started ground / body / sneak move is aimed at (kept as the victim)
+    // flying because of an Expanded AI move (its own leg cannon, or a body an enemy kicked) until
+    // this level time: hits it causes earn the players no Nice Aim / Heavy Impact / Touch of Death
+    float exAiFlungUntil = 0;
+    // Expanded AI: how cruel this enemy is (0 = never touches bodies), rolled once; -1 = not yet
+    float exAiCruelty = -1;
+    float exFightTime = 0; // Expanded AI: seconds this enemy has spent fighting (this life)
+    int exLastFoe = -1;    // ...and the player it last went after
+    float exBasePower = 0, exBaseTol = 0; // Extras Endless: its kind's strength and toughness (0 = not yet known)
     // score pop-up in the middle of this player's own screen
     int exPopBonus = 0, exPopValue = 0;
+    int exScore = 0; // PvP (Extras): this player's own score
     float exPopTime = 10;
     // skin texture set by the launcher's character choice ("" = the creature's own skins[whichskin])
     std::string exSkinPath;

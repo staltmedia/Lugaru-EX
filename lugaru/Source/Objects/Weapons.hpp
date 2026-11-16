@@ -59,6 +59,7 @@ public:
     bool isOnFire() const { return onfire; } // LugaruEX: fire lighting
 
     void drop(XYZ velocity, XYZ tipvelocity, bool sethitsomething = true);
+    void exShift(const XYZ& d); // LugaruEX Extras Endless: the world moved by -d (every place it keeps)
     void thrown(XYZ velocity, bool sethitsomething = true);
 
     int owner;

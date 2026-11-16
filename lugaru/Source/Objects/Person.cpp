@@ -22,6 +22,7 @@ along with Lugaru.  If not, see <http://www.gnu.org/licenses/>.
 #include "EX/ExMath.hpp"
 #include "EX/ExLocal.hpp"
 #include "EX/ExBot.hpp"
+#include "EX/ExGen.hpp"
 #include "EX/ExNet.hpp"
 #include "EX/ExLighting.hpp"
 
@@ -109,7 +110,7 @@ static int exBonusPlayer(const Person* p)
     float best = 1e30f;
     for (size_t i = 0; i < Person::players.size(); i++) {
         Person& h = *Person::players[i];
-        if (!h.isPlayerControlled() || h.dead) {
+        if (!h.isPlayerControlled() || h.dead || &h == p) { // (PvP: never one's own fall)
             continue;
         }
         XYZ hc = h.coords, pc = p->coords;
@@ -118,6 +119,10 @@ static int exBonusPlayer(const Person* p)
             best = d;
             who = (int)i;
         }
+    }
+    if (EX::Versus() && p->isPlayerControlled()) {
+        // PvP: a player's fall scores only for the player who did it (not the nearest one)
+        return (who >= 0 && Person::players[who]->victim.get() == p) ? who : -1;
     }
     // nobody alive (player 1 died too): the original still gave player 1 the bonus
     return who >= 0 ? who : (Person::players.empty() ? -1 : 0);
@@ -597,7 +602,7 @@ static float exFoeWeight(const Person& me, const Person& o, bool aiPlayersOnly)
         if (!o.isPlayerControlled()) {
             return 1;
         }
-        return EX::FriendlyFire() ? 4.f : 0.f;
+        return EX::Versus() ? 1.f : EX::FriendlyFire() ? 4.f : 0.f; // (PvP: a foe like any other)
     }
     if (aiPlayersOnly) {
         return o.isPlayerControlled() ? 1.f : 0.f;
@@ -2869,7 +2874,7 @@ void Person::DoAnimations()
                     }
                 }
 
-                if ((animCurrent == crouchstabanim || animCurrent == swordgroundstabanim) && currentFrame().label == 5) {
+                if ((animCurrent == crouchstabanim || animCurrent == swordgroundstabanim) && currentFrame().label == 5 && hasWeapon()) { // (LugaruEX: an Endless revive is this move with no knife)
 
                     if (hasvictim) {
                         if (!victim->skeleton.free) {
@@ -2966,7 +2971,7 @@ void Person::DoAnimations()
                     }
                 }
 
-                if ((animCurrent == crouchstabanim || animCurrent == swordgroundstabanim) && currentFrame().label == 6) {
+                if ((animCurrent == crouchstabanim || animCurrent == swordgroundstabanim) && currentFrame().label == 6 && hasWeapon()) {
                     if (!hasvictim) {
                         emit_sound_at(knifedrawsound, coords, 128);
                     }
@@ -5064,7 +5069,7 @@ void Person::DoStuff()
 
         // Touch of Death: an enemy knocked out at once. The 2005 game gave it only for enemies
         // (id != 0); the open-source port passed the person's own id (only player 1 counted).
-        if (!isPlayerControlled() && unconscioustime < .1 && (bonus != spinecrusher || bonustime > 1) && (bonus != FinishedBonus || bonustime > 1) && bloodloss < damagetolerance) {
+        if ((!isPlayerControlled() || EX::Versus()) && exAiFlungUntil <= Game::leveltime && unconscioustime < .1 && (bonus != spinecrusher || bonustime > 1) && (bonus != FinishedBonus || bonustime > 1) && bloodloss < damagetolerance) {
             award_bonus(exBonusPlayer(this), touchofdeath);
         }
         if (id != 0 && unconscioustime > .1) {
@@ -5113,7 +5118,7 @@ void Person::DoStuff()
         // only for enemies (id != 0); the open-source port passed the ragdoll's own id, which
         // awarded it for the player's own fatal falls instead. LugaruEX: for enemies again, to
         // the player who is fighting this one (else the nearest player).
-        if (!isPlayerControlled() && damage > damagetolerance - damageamount && !dead && (bonus != spinecrusher || bonustime > 1) && (bonus != style || bonustime > 1) && (bonus != cannon || bonustime > 1)) {
+        if ((!isPlayerControlled() || EX::Versus()) && exAiFlungUntil <= Game::leveltime && damage > damagetolerance - damageamount && !dead && (bonus != spinecrusher || bonustime > 1) && (bonus != style || bonustime > 1) && (bonus != cannon || bonustime > 1)) {
             award_bonus(exBonusPlayer(this), deepimpact);
         }
         DoDamage(damageamount / ((protectionhigh + protectionhead + protectionlow) / 3));

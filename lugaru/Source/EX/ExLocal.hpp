@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <string>
 #include <vector>
+#include "Math/XYZ.hpp"
 
 class Person;
 
@@ -84,6 +85,14 @@ bool HiddenInScene(int person);
 /** the human player AI `self` goes after (closest living one, with hysteresis) */
 int AITarget(Person& self);
 bool AllHumansDead();
+/** a human player (any PC); how many are in the level */
+bool IsHuman(int person);
+/** turn a player's view (player 1 or a split-screen player here) to look along yaw */
+void LocalFaceView(int person, float yaw);
+/** Extras Endless: the window moved by -d - every view here (and spawn marks) move along */
+void LocalShiftViews(const XYZ& d);
+/** Extras: player 1's launcher look on a generated level (Default / Random parts are random) */
+void GenApplyPlayerLook(Person& p, bool tutorial);
 /** AFK players (host option AfkTimer): idle clock, countdown over the head, the friendly AI
     playing for them until they move. Once per simulation step, right after everyone's input */
 void LocalAfkStep();

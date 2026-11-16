@@ -14,7 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <string>
 
-#define EX_VERSION_STRING "0.5.7" // also tools/package.ps1, launcher.rc, the launcher label and launcher-sdl/main.cpp
+#define EX_VERSION_STRING "0.5.8" // also tools/package.ps1, launcher.rc, the launcher label and launcher-sdl/main.cpp
 
 namespace EX
 {

@@ -1462,9 +1462,10 @@ int Game::DrawGLScene(StereoSide side)
 
             //Awards
             int awards[award_count];
-            int numawards = EX::NetGuestAwards(awards); // online guests show the host's (they don't keep the counts)
+            const int awardsOf = EX::Versus() ? EX::ViewPerson() : -1; // (PvP: this player's own)
+            int numawards = EX::NetGuestAwards(awards, awardsOf); // online guests show the host's (they don't keep the counts)
             if (numawards < 0) {
-                numawards = award_awards(awards);
+                numawards = awardsOf >= 0 ? award_awards_for(awardsOf, awards) : award_awards(awards);
             }
 
             for (int i = 0; i < numawards && i < 6; i++) {

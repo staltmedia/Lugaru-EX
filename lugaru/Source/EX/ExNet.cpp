@@ -1114,15 +1114,18 @@ int NetDifficulty()
 }
 
 static std::vector<int> g_awards; // guest: the host's awards when the level was won, in its order
+static std::vector<std::vector<int>> g_pvpAwards; // guest, PvP: each player's own awards [person]
 static int g_dlgWhich = -1, g_dlgScene = 0, g_dlgOwner = 0; // guest: the host's dialogue scene (-1 = none)
 
-int NetGuestAwards(int* awards)
+int NetGuestAwards(int* awards, int person)
 {
     if (g_role != R_GUEST) {
         return -1;
     }
     int n = 0;
-    for (int a : g_awards) {
+    static const std::vector<int> none;
+    const std::vector<int>& list = person < 0 ? g_awards : person < (int)g_pvpAwards.size() ? g_pvpAwards[person] : none;
+    for (int a : list) {
         if (a >= 0 && a < award_count && n < award_count) {
             awards[n++] = a;
         }
@@ -1275,6 +1278,22 @@ static void hostSnapshots()
             w.u8(n);
             for (int i = 0; i < n; i++) {
                 w.u8(awards[i]);
+            }
+            // PvP: every player's own list (person, count, awards), for each guest's own end screen
+            std::vector<int> who;
+            for (int i = 0; winfreeze && GenMode() == GEN_PVP && i < (int)Person::players.size() && who.size() < 16; i++) {
+                if (Person::players[i]->isPlayerControlled()) {
+                    who.push_back(i);
+                }
+            }
+            w.u8((int)who.size());
+            for (int i : who) {
+                const int m = std::min(award_awards_for(i, awards), 12);
+                w.u8(i);
+                w.u8(m);
+                for (int k = 0; k < m; k++) {
+                    w.u8(awards[k]);
+                }
             }
         }
         // bushes and trees set on fire by a burning character (campfires always burn): they
@@ -3315,6 +3334,20 @@ static void guestSnap(Reader& r)
     for (auto& a : awardList) {
         a = r.u8();
     }
+    std::vector<std::vector<int>> pvpAwards; // (PvP: [person] = that player's own list)
+    for (int k = 0, nk = r.u8(); k < nk; k++) {
+        const int who = r.u8();
+        std::vector<int> list(r.u8());
+        for (auto& a : list) {
+            a = r.u8();
+        }
+        if (who < 250) {
+            if ((int)pvpAwards.size() <= who) {
+                pvpAwards.resize(who + 1);
+            }
+            pvpAwards[who] = list;
+        }
+    }
     std::vector<int> burning(r.u8());
     for (auto& o : burning) {
         o = r.u16();
@@ -3363,6 +3396,7 @@ static void guestSnap(Reader& r)
         Game::wonleveltime = wonTime;
         GenGuestOrigin(genOx, genOz); // (Endless: the host's window moved on - before this snapshot's places)
         g_awards = awardList;
+        g_pvpAwards = pvpAwards;
         g_dlgWhich = dWhich == 255 ? -1 : dWhich;
         g_dlgScene = dScene;
         g_dlgOwner = dOwner;

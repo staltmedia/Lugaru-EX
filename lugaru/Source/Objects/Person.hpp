@@ -429,6 +429,9 @@ public:
     bool exTyping = false; // writing a chat line: "..." over the head
     // LugaruEX Expanded AI: how long this enemy has been in a spot for its extra moves
     float exAiCooldown = 0;
+    float exAiJumpHold = 0;  // Expanded AI: a chase / climb jump keeps the jump key down this long
+    float exAiJumpWait = 0;  // ...and the next one waits this long
+    int exAiTackle = -1;     // Expanded AI: this run-in at a player is a tackle (1) or not (0); -1 = not decided yet
     // its current plan (ExBot.cpp: 1 sneak up, 2 hit a downed player, 3 check a body), on whom and for how long
     int exAiPlan = 0, exAiPlanOn = -1;
     float exAiPlanTime = 0;
@@ -446,6 +449,16 @@ public:
     // score pop-up in the middle of this player's own screen
     int exPopBonus = 0, exPopValue = 0;
     int exScore = 0; // PvP (Extras): this player's own score
+    int exBody = -1; // Extras: this player's body this level (0 normal, 1 big, 2 small, 3 strong, 4 young; -1 none yet)
+    // PvP (Extras): this player's own counts for the end-of-round awards (the game's own
+    // counts - numattacks, numflipped... - are player 1's)
+    struct ExStats
+    {
+        float damage = 0;
+        int attacks = 0, unarmed = 0, knives = 0, swords = 0, staves = 0;
+        int flipped = 0, wallflipped = 0, flipfail = 0, reversals = 0;
+        int throwhits = 0, afterkill = 0;
+    } exStats;
     float exPopTime = 10;
     // skin texture set by the launcher's character choice ("" = the creature's own skins[whichskin])
     std::string exSkinPath;

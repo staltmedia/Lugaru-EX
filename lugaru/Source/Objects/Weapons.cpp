@@ -301,6 +301,9 @@ void Weapon::doStuff(int i)
                                 Person::players[j]->aitype = attacktypecutoff;
                             }
                         } else {
+                            if (oldowner >= 0 && oldowner < (int)Person::players.size() && Person::players[j]->isPlayerControlled()) {
+                                Person::players[oldowner]->exStats.throwhits++; // (PvP: a knife thrown into another player)
+                            }
                             if (j != 0) {
                                 numthrowkill++;
                             }

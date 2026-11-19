@@ -1,4 +1,4 @@
-LugaruEX 0.5.8 - engine update for Lugaru (Windows and Linux)
+LugaruEX 0.5.9 - engine update for Lugaru (Windows and Linux)
 =============================================================
 
 What it is
@@ -145,7 +145,8 @@ Launcher
     Walking: hold Ctrl (unless Ctrl is bound to something), or push the left
     stick only part way (push it all the way to run). Rabbits and wolves.
     Fall over (ragdoll): tap Left Alt (Alt with another key is still the
-    developer keys) or B; you get up like after any knock-over. Revive a
+    developer keys) or B; you get up like after any knock-over, and can
+    fall again a moment after you are back on your feet. Revive a
     partner (Endless): right mouse button or RB. A key or button another
     action already uses is left to that action.
     F12 takes a screenshot, F11 starts and stops recording a video. Both
@@ -177,7 +178,8 @@ Launcher
     when they stand close in front of you and no enemy is near), Expanded AI
     (enemies also use the players' moves: leg cannons, wall kicks, knife
     throws, wind-up punches, knife follow-ups, sneak attacks when your back
-    is turned, stabs / smashes / drop kicks when you are down (they can miss,
+    is turned, running on all fours and tackling, leaping after you when
+    you run, jumping up to you when you stand on something, stabs / smashes / drop kicks when you are down (they can miss,
     like you); once you are dead some of them (each enemy has its own temper,
     many never do it) check your body, kick it up and punch it, and an
     unarmed one may kick a body over to pull out the knife it
@@ -412,8 +414,10 @@ Extras (Options menu)
   huts, towers, camps, trees, rocks, weapons lying about. Pick Grasslands,
   Desert or Tundra. Players on Default or Random (launcher Character tab or
   Local tab) get a random creature, skin and clothes; a chosen skin, a wolf
-  or custom model, or chosen clothes are kept. Everyone starts unarmed more
-  often than not; a knife now and then, a staff or a sword more rarely.
+  or custom model, or chosen clothes are kept. Every player gets a body for
+  the level too: mostly normal, sometimes big, small, strong or young
+  (wolves: large or young). Everyone starts unarmed more often than not; a
+  knife now and then, a staff or a sword more rarely.
   Works in split screen and online (guests get the host's level by
   themselves).
   Endless: a land without end. Head off in any direction and the land keeps
@@ -424,9 +428,13 @@ Extras (Options menu)
   the chest and they get up again. When everyone is down: the run's score,
   time and awards; Space for a new run on a new land.
   PvP: players only, every one for themselves. Players start round the
-  middle, facing each other. Each player scores on their own. The last one
-  standing (alone: you) gets WINNER! over their head and the round ends like
-  a won challenge; Space for the next round on a new land.
+  middle, facing each other. Every round is its own kind of arena (open
+  field, forest, fort, boulders, camp or hills), size, time of day (day,
+  dawn, dusk, overcast or night) and weapons (as usual, none, everyone a
+  knife, a staff or a sword, or a pile lying about). Each player scores on
+  their own and gets their own awards. The last one standing (alone: you)
+  gets WINNER! over their head and the round ends like a won challenge;
+  Space for the next round on a new land.
 
 Game changes
   - A weapon left hanging in the air (dropped over a ledge, its rock gone)

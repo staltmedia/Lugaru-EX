@@ -42,7 +42,7 @@ void NetGuestShift(const XYZ& d);
 /** difficulty the level is played at: the host's on a guest (minimap on Insane), else this PC's */
 int NetDifficulty();
 /** guest: the host's awards for the end-of-level screen (count; -1 = not a guest, use award_awards) */
-int NetGuestAwards(int* awards);
+int NetGuestAwards(int* awards, int person = -1); // person >= 0: PvP, that player's own
 /** once per rendered frame, before the simulation: network in, discovery, timeouts */
 void NetFrame(double dt);
 /** guest: once per simulation step, before the game's own ticks: place everyone */

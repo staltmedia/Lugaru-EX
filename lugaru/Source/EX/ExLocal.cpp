@@ -63,6 +63,7 @@ struct Slot
     std::string padId;
     std::string ch = "default"; // default | random | <model>:<skin path>
     bool ragHeld = false, revHeld = false; // Ragdoll / Revive held last step (presses act once)
+    float ragUpAt = -100; // level time this player was last down (ragdoll or getting up): Ragdoll waits a while after it
     std::string genLevel; // Extras: the level its random creature was picked for (kept on restarts)
     bool genWolf = false;
     float rx = 0, ry = 0, rw = 1, rh = 1; // screen part, 0..1 from the top-left
@@ -1101,7 +1102,20 @@ static void playerActions(Slot& s, Person& p, bool rag, bool rev)
     static const float testRag = getenv("LUGARUEX_TEST_RAGDOLL") ? (float)atof(getenv("LUGARUEX_TEST_RAGDOLL")) : -1.f;
     static bool testDone = false;
     const bool test = s.person == 0 && testRag >= 0 && !testDone && Game::leveltime > testRag;
-    if ((ragEdge || test) && !p.dead && !p.skeleton.free && !Dialog::inDialog() &&
+    // only from plain standing / walking / running / crouching, and not again right away: the
+    // last fall must be over (got up, or flipped out of it) for a moment first
+    const bool down = p.skeleton.free || p.animTarget == getupfrombackanim || p.animTarget == getupfromfrontanim ||
+                      p.animCurrent == getupfrombackanim || p.animCurrent == getupfromfrontanim || p.isFlip() ||
+                      p.animTarget == rollanim || p.isLanding() || p.isLandhard();
+    if (down || s.ragUpAt > Game::leveltime) { // (a new level starts its clock again)
+        s.ragUpAt = Game::leveltime;
+    }
+    const bool plain = p.isIdle() || p.isRun() || p.isCrouch() || p.isStop() || p.animTarget == walkanim || p.animTarget == sneakanim;
+    const bool rested = Game::leveltime - s.ragUpAt >= 1.5f;
+    if (ragEdge && !test && (!plain || !rested) && !p.dead) {
+        printf("LugaruEX: person %d can't fall over yet (%s)\n", s.person, !rested ? "just got up" : "busy");
+    }
+    if ((ragEdge || test) && !p.dead && !p.skeleton.free && !Dialog::inDialog() && plain && (rested || test) &&
         Animation::animations[p.animTarget].attack == neutral) {
         testDone = testDone || test;
         p.RagDoll(0);

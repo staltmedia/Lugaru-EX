@@ -1651,6 +1651,9 @@ void Person::Reverse()
         }
     }
 
+    if (Animation::animations[victim->animTarget].attack == reversal) {
+        victim->exStats.reversals++; // (PvP: every player's own awards)
+    }
     if (victim->id == 0 && Animation::animations[victim->animTarget].attack == reversal) {
         numreversals++;
     }
@@ -1661,6 +1664,7 @@ void Person::Reverse()
  */
 void Person::DoDamage(float howmuch)
 {
+    exStats.damage += howmuch / power; // (PvP: every player's own awards)
     // stats? (LugaruEX co-op: the whole team - any player hurt is damage taken)
     if (isPlayerControlled()) {
         damagetaken += howmuch / power;
@@ -1914,6 +1918,9 @@ void Person::RagDoll(bool checkcollision)
     if (!skeleton.free) {
         if (id == 0) {
             numfalls++;
+        }
+        if (isFlip()) {
+            exStats.flipfail++;
         }
         if (id == 0 && isFlip()) {
             numflipfail++;
@@ -2201,6 +2208,7 @@ void Person::DoAnimations()
             frameTarget = 0;
             target = 0;
 
+            exStats.flipped++;
             if (id == 0) {
                 numflipped++;
             }
@@ -2541,7 +2549,7 @@ void Person::DoAnimations()
                 dojumpattack = 0;
             }
             if (dojumpattack) {
-                if ((animTarget == rabbitrunninganim || animTarget == wolfrunninganim) && isPlayerControlled()) {
+                if ((animTarget == rabbitrunninganim || animTarget == wolfrunninganim) && (isPlayerControlled() || EX::ExpandedAIDive(*this))) { // (LugaruEX: Expanded AI dives too)
                     animTarget = rabbittackleanim;
                     frameTarget = 0;
                     emit_sound_at(jumpsound, coords);
@@ -4750,6 +4758,19 @@ void Person::DoStuff()
             frameTarget = 0;
         }
     }
+    // LugaruEX Expanded AI: unarmed rabbits and wolves on any difficulty run on all fours to catch up
+    // (on two feet again next to a player standing to fight)
+    if (!isPlayerControlled() && EX::ExpandedAI()) {
+        const bool fours = EX::ExpandedAIAllFours(*this);
+        superruntoggle = superruntoggle || fours;
+        if (!fours && !superruntoggle && (animTarget == rabbitrunninganim || (animTarget == wolfrunninganim && difficulty != 2))) {
+            animTarget = getRun();
+            frameTarget = 0;
+        } else if (fours && animTarget == PersonType::types[creature].animRun && getRun() != animTarget) {
+            animTarget = getRun(); // (already running upright: drop to all fours)
+            frameTarget = 0;
+        }
+    }
     if (!hasWeapon() && num_weapons > 0) {
         if (weapons[weaponids[0]].getType() == staff) {
             weaponactive = 0;
@@ -4893,6 +4914,12 @@ void Person::DoStuff()
                 for (unsigned i = 0; i < skeleton.joints.size(); i++) {
                     skeleton.joints[i].velocity = 0;
                     skeleton.joints[i].velocity.y = -2;
+                }
+            }
+            if (unconscioustime > .1 && isPlayerControlled()) { // PvP: a hit on a downed player counts for the one who did it
+                const int by = exBonusPlayer(this);
+                if (by >= 0) {
+                    Person::players[by]->exStats.afterkill++;
                 }
             }
             if (id != 0 && unconscioustime > .1) {
@@ -5071,6 +5098,12 @@ void Person::DoStuff()
         // (id != 0); the open-source port passed the person's own id (only player 1 counted).
         if ((!isPlayerControlled() || EX::Versus()) && exAiFlungUntil <= Game::leveltime && unconscioustime < .1 && (bonus != spinecrusher || bonustime > 1) && (bonus != FinishedBonus || bonustime > 1) && bloodloss < damagetolerance) {
             award_bonus(exBonusPlayer(this), touchofdeath);
+        }
+        if (unconscioustime > .1 && isPlayerControlled()) { // PvP: a hit on a downed player counts for the one who did it
+            const int by = exBonusPlayer(this);
+            if (by >= 0) {
+                Person::players[by]->exStats.afterkill++;
+            }
         }
         if (id != 0 && unconscioustime > .1) {
             numafterkill++;

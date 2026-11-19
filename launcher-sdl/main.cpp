@@ -65,7 +65,7 @@ Copyright (C) 2026 - LugaruEX contributors. GPLv2 or later.
 #include <unistd.h>
 #endif
 
-#define LUGARUEX_VERSION "0.5.8"
+#define LUGARUEX_VERSION "0.5.9"
 
 namespace
 {

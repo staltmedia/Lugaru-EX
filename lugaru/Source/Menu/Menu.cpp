@@ -395,6 +395,36 @@ Values of mainmenu :
 18 stereo configuration
 */
 
+// LugaruEX: a label that wraps under itself (10 menu units per letter, 640 wide)
+static void addWrappedLabel(int id, const string& text, int x, int y, int lineHeight = 20)
+{
+    const size_t maxChars = (size_t)std::max(10, (630 - x) / 10);
+    string line, word;
+    auto flush = [&]() {
+        if (!line.empty()) {
+            Menu::addLabel(id, line, x, y);
+            y -= lineHeight;
+            line.clear();
+        }
+    };
+    for (size_t i = 0; i <= text.size(); i++) {
+        const char c = i < text.size() ? text[i] : ' ';
+        if (c != ' ') {
+            word += c;
+            continue;
+        }
+        if (word.empty()) {
+            continue;
+        }
+        if (!line.empty() && line.size() + 1 + word.size() > maxChars) {
+            flush();
+        }
+        line += (line.empty() ? "" : " ") + word;
+        word.clear();
+    }
+    flush();
+}
+
 void Menu::Load()
 {
     clearMenu();
@@ -409,9 +439,9 @@ void Menu::Load()
         case 21: // LugaruEX Extras
             addLabel(-1, "Extras", 10, 440);
             addButton(1, "Endless", 10, 330);
-            addLabel(-2, "A land without end: travel on, fight what you meet, revive fallen partners.", 40, 305);
-            addButton(2, "PvP", 10, 250);
-            addLabel(-3, "Players only, every one for themselves. The last one standing wins.", 40, 225);
+            addWrappedLabel(-2, "A land without end: travel on, fight what you meet, revive fallen partners.", 40, 305);
+            addButton(2, "PvP", 10, 230);
+            addWrappedLabel(-3, "Players only, every one for themselves. The last one standing wins.", 40, 205);
             addButton(3, "Back", 10, 10);
             break;
         case 22: // Extras: which land

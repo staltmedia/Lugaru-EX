@@ -64,6 +64,8 @@ static std::set<const Person*> g_seen; // players already given their start spot
 static int g_seenOrder = 0;
 static bool g_looseDone = false;
 static int g_maxHumans = 0; // PvP: the most players the round had
+static float g_ringR = 45;  // PvP: how far from the middle the players start (this round)
+static int g_weaponRule = 0; // PvP: 0 as usual, 1 none, 2 knives, 3 staves, 4 swords, 5 a pile lying about
 // Endless: where the window lies on the endless land (its first cell), the parts the players came near
 static int g_ox = 0, g_oz = 0;
 static std::set<std::pair<int, int>> g_visited;
@@ -240,6 +242,10 @@ struct Gen
     float cx = kN / 2 * kCell, cz = kN / 2 * kCell;
     // measured models (world size at scale 1)
     float boxW = 1, boxH = 1, boxBottom = 0;
+    // PvP: this round's arena - its kind, how hilly the middle is, how far apart players start, the
+    // weapons (0 as usual, 1 none, 2 knives, 3 staves, 4 swords, 5 a pile lying about), time of day
+    int theme = -1, weaponRule = 0, sky = 0;
+    float hills = 1, ringR = 45;
 
     Gen(int m, int e, int w, uint32_t s) : mode(m), env(e), wave(w), seed(s), rng(s), world(s) {}
 
@@ -314,7 +320,7 @@ struct Gen
             for (int z = 0; z < kN; z++) {
                 const float dx = x - c, dz = z - c, r = sqrtf(dx * dx + dz * dz);
                 const float n1 = fbm(x / 38.f, z / 38.f, 4, seed), n2 = fbm(x / 11.f + 50, z / 11.f + 50, 3, seed + 7);
-                const float amp = .3f + .7f * smoothstep(kArena * .7f, kArena * 1.5f, r); // gentle where the fight is
+                const float amp = std::min(1.f, .3f * hills + .7f * smoothstep(kArena * .7f, kArena * 1.5f, r)); // gentle where the fight is (PvP hills: less so)
                 float v;
                 if (env == desertenvironment) {
                     const float dune = powf(sinf((x * cs + z * sn) / 6.5f + n1 * 6) * .5f + .5f, 2);
@@ -585,13 +591,42 @@ struct Gen
     Json::Value make()
     {
         measure();
+        // PvP: every round its own kind of arena
+        static const char* kThemes[] = { "open field", "forest", "fort", "boulders", "camp", "hills" };
+        float treeMul = 1, rockMul = 1, bigRocks = .25f, bushMul = 1;
+        int nCamps = mode == GEN_PVP ? rng.i(2) : 1 + rng.i(2);
+        int nBuilds = 3 + rng.i(4);
+        if (mode == GEN_PVP) {
+            const int weights[6] = { 20, env == desertenvironment ? 4 : 20, 18, 16, 12, 14 };
+            int r = rng.i(20 + weights[1] + 18 + 16 + 12 + 14);
+            theme = 0;
+            while (theme < 5 && r >= weights[theme]) {
+                r -= weights[theme++];
+            }
+            ringR = rng.r(30, 58); // (how far apart the players start)
+            switch (theme) {
+                case 0: nBuilds = 1 + rng.i(3), nCamps = 0, treeMul = .35f, bushMul = .6f; break;
+                case 1: nBuilds = rng.i(3), nCamps = rng.i(2), treeMul = 2.4f, bushMul = 1.8f, ringR = rng.r(28, 45); break;
+                case 2: nBuilds = 8 + rng.i(5), nCamps = rng.i(2), treeMul = .5f, ringR = rng.r(30, 48); break;
+                case 3: nBuilds = 1 + rng.i(3), nCamps = 0, rockMul = 2.6f, bigRocks = .55f; break;
+                case 4: nBuilds = 2 + rng.i(3), nCamps = 2 + rng.i(2); break;
+                default: hills = rng.r(2.f, 3.2f); break;
+            }
+            const int w = rng.i(100);
+            weaponRule = w < 55 ? 0 : w < 67 ? 1 : w < 79 ? 2 : w < 87 ? 3 : w < 94 ? 4 : 5;
+            const int s = rng.i(100);
+            sky = s < 45 ? 0 : s < 60 ? 1 : s < 75 ? 2 : s < 90 ? 3 : 4;
+            static const char* kWeapons[] = { "as usual", "none", "knives", "staves", "swords", "a pile lying about" };
+            static const char* kSkies[] = { "day", "dawn", "dusk", "overcast", "night" };
+            printf("LugaruEX: PvP round - %s, players %.0f apart, weapons %s, %s\n", kThemes[theme], ringR * 2, kWeapons[weaponRule], kSkies[sky]);
+        }
         makeGround();
         const float A = kArena * kCell;
         // where players start: one spot (Endless) or a ring facing the middle (PvP)
         float px = cx, pz = cz, pyaw = 0;
         std::vector<Spot> ring;
         if (mode == GEN_PVP) {
-            const float R = 45;
+            const float R = ringR;
             for (int k = 0; k < 8; k++) {
                 const float a = k * .785398f;
                 ring.push_back({ cx + cosf(a) * R, cz + sinf(a) * R, 0 });
@@ -613,8 +648,6 @@ struct Gen
 
         // builds
         std::vector<Spot> camps;
-        const int nCamps = mode == GEN_PVP ? rng.i(2) : 1 + rng.i(2);
-        const int nBuilds = 3 + rng.i(4);
         for (int k = 0; k < nCamps + nBuilds; k++) {
             float x, z;
             if (!spot(15, A * .85f, 9, 1.5f, x, z)) {
@@ -623,8 +656,11 @@ struct Gen
             const size_t before = taken.size();
             if (k < nCamps) {
                 camp(x, z, camps);
+            } else if (theme == 4 && k < nCamps + 2) {
+                hut(x, z); // (a camp: huts round the fires)
             } else {
-                const int kind = rng.i(env == snowyenvironment || env == grassyenvironment ? 6 : 5);
+                // (a fort: walls, towers and blockhouses)
+                const int kind = theme == 2 ? 1 + rng.i(4) : rng.i(env == snowyenvironment || env == grassyenvironment ? 6 : 5);
                 if (kind == 0) {
                     cratePile(x, z);
                 } else if (kind == 1) {
@@ -644,7 +680,7 @@ struct Gen
             }
         }
         // trees in groves, bushes, rocks
-        const int nTrees = env == desertenvironment ? 6 + rng.i(7) : env == snowyenvironment ? 16 + rng.i(10) : 24 + rng.i(16);
+        const int nTrees = (int)((env == desertenvironment ? 6 + rng.i(7) : env == snowyenvironment ? 16 + rng.i(10) : 24 + rng.i(16)) * treeMul);
         for (int k = 0, tries = 0; k < nTrees && tries < 600; tries++) {
             float x, z;
             if (!spot(10, A * 1.25f, 3, 2.5f, x, z)) {
@@ -656,7 +692,7 @@ struct Gen
             tree(x, z);
             k++;
         }
-        const int nBushes = env == desertenvironment ? 6 + rng.i(6) : 15 + rng.i(15);
+        const int nBushes = (int)((env == desertenvironment ? 6 + rng.i(6) : 15 + rng.i(15)) * bushMul);
         for (int k = 0; k < nBushes; k++) {
             float x, z;
             if (spot(6, A * 1.2f, 1.2f, 3, x, z)) {
@@ -664,10 +700,10 @@ struct Gen
                 take(x, z, 1);
             }
         }
-        const int nRocks = 14 + rng.i(14);
+        const int nRocks = (int)((14 + rng.i(14)) * rockMul);
         for (int k = 0; k < nRocks; k++) {
             float x, z;
-            const bool big = rng.chance(.25f);
+            const bool big = rng.chance(bigRocks);
             if (spot(6, A * 1.3f, big ? 4 : 1.5f, 6, x, z)) {
                 const float s = big ? rng.r(1.1f, 2.f) : rng.r(.3f, .9f);
                 object(rocktype, x, -s * .45f, z, rng.r(0, 360), 0, s);
@@ -759,8 +795,24 @@ struct Gen
         map["fadestart"] = .6;
         map["environment"] = env;
         map["skybox"]["texture"] = true;
-        for (const char* k : { "r", "g", "b", "lightr", "lightg", "lightb" }) {
-            map["skybox"][k] = 1.0;
+        {
+            // PvP: the time of day tints the sky and the sun (day = the game's own colours)
+            static const float kSky[5][6] = {
+                { 1, 1, 1, 1, 1, 1 },                 // day
+                { 1, .82f, .7f, 1, .8f, .62f },       // dawn
+                { .9f, .7f, .85f, .95f, .68f, .7f },  // dusk
+                { .78f, .8f, .84f, .8f, .82f, .86f }, // overcast
+                { .38f, .44f, .66f, .5f, .56f, .8f }, // night
+            };
+            const float* c = kSky[std::max(0, std::min(4, sky))];
+            const char* keys[6] = { "r", "g", "b", "lightr", "lightg", "lightb" };
+            for (int k = 0; k < 6; k++) {
+                map["skybox"][keys[k]] = c[k] * (sky ? rng.r(.96f, 1.04f) : 1.f);
+            }
+            if (sky == 3) {
+                map["viewdistance"] = rng.r(110.f, 140.f); // (overcast: closer fog)
+                map["fadestart"] = .4;
+            }
         }
         map["objects"] = itemsJson(items, 0, 0);
         map["hotspots"] = Json::Value(Json::arrayValue);
@@ -775,6 +827,11 @@ struct Gen
         gen["seed"] = (Json::UInt)seed;
         gen["size"] = kN;
         gen["heights"] = heightsBase64();
+        if (mode == GEN_PVP) {
+            gen["ring"] = ringR;
+            gen["weapons"] = weaponRule;
+            gen["theme"] = theme;
+        }
         map["exGen"] = gen;
         Json::Value doc;
         doc["version"] = 13;
@@ -1127,6 +1184,8 @@ void GenMapRead(const Json::Value& map, const std::string& name)
     g_mode = mode;
     g_wave = std::max(1, gen.get("wave", 1).asInt());
     g_seed = gen.get("seed", 0).asUInt();
+    g_ringR = std::max(15.f, std::min(70.f, gen.get("ring", 45.0).asFloat()));
+    g_weaponRule = std::max(0, std::min(5, gen.get("weapons", 0).asInt()));
     g_env = map["environment"].asInt();
     terrain.exHeights = h;
     g_name = name;
@@ -1735,6 +1794,7 @@ void GenTick()
     if (!GenActive() || NetIsGuest() || Person::players.empty()) {
         return;
     }
+    GenBodies();
     static Rng rng(1);
     rng.s ^= (uint64_t)SDL_GetTicks() * 0x2545F4914F6CDD1Dull;
     int humans = 0;
@@ -1752,7 +1812,8 @@ void GenTick()
         if (Versus() && !p.dead) {
             // PvP: round the ring, facing the middle (opposite sides first)
             static const int order[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
-            const float a = order[k % 8] * .785398f, R = 45;
+            // (more than 8: the next ones between them, a little further in)
+            const float a = order[k % 8] * .785398f + ((k / 8) & 1) * .3927f, R = g_ringR * ((k / 8) & 1 ? .7f : 1.f);
             XYZ c = Game::mapcenter, at = Game::mapcenter;
             at.x = c.x + cosf(a) * R;
             at.z = c.z + sinf(a) * R;
@@ -1766,7 +1827,8 @@ void GenTick()
         static const bool noWeapons = getenv("LUGARUEX_TEST_NOWEAPONS") != nullptr; // test hook: players start unarmed
         if (p.num_weapons == 0 && !noWeapons) {
             const int r = rng.i(100);
-            giveWeapon(i, r < 58 ? 0 : r < 80 ? knife : r < 92 ? staff : sword);
+            const int rule = Versus() ? g_weaponRule : 0; // (PvP: this round's weapons)
+            giveWeapon(i, rule == 1 || rule == 5 ? 0 : rule == 2 ? knife : rule == 3 ? staff : rule == 4 ? sword : r < 58 ? 0 : r < 80 ? knife : r < 92 ? staff : sword);
         }
     }
     g_maxHumans = std::max(g_maxHumans, humans);
@@ -1798,11 +1860,14 @@ void GenTick()
     // a few weapons lying about
     if (!g_looseDone && Game::leveltime > .5f) {
         g_looseDone = true;
-        const int n = Versus() ? 2 + rng.i(3) : 1 + rng.i(2);
+        // (PvP: by this round's rule - none, one kind, or a pile of them)
+        const int rule = Versus() ? g_weaponRule : 0;
+        const int n = !Versus() ? 1 + rng.i(2) : rule == 1 ? 0 : rule == 5 ? 8 + rng.i(5) : rule == 4 ? 2 + rng.i(2) : 2 + rng.i(3);
         for (int k = 0; k < n; k++) {
-            const float a = rng.r(0, 6.283f), d = rng.r(10, kArena * kCell * .6f);
+            const float a = rng.r(0, 6.283f), d = rng.r(10, std::max(20.f, Versus() ? g_ringR * 1.1f : kArena * kCell * .6f));
             const int r = rng.i(100);
-            looseWeapon(Game::mapcenter.x + cosf(a) * d, Game::mapcenter.z + sinf(a) * d, r < 60 ? knife : r < 85 ? staff : sword);
+            const int type = rule == 2 ? knife : rule == 3 ? staff : rule == 4 ? sword : r < 60 ? knife : r < 85 ? staff : sword;
+            looseWeapon(Game::mapcenter.x + cosf(a) * d, Game::mapcenter.z + sinf(a) * d, type);
         }
     }
 }
@@ -1837,6 +1902,63 @@ void GenScore(int person, int value)
 {
     if (Versus() && person >= 0 && person < (int)Person::players.size()) {
         Person::players[person]->exScore += value;
+    }
+}
+
+// ------------------------------------------------------------------ players' bodies
+// Like the Endless enemies' kinds: rabbits 55% normal, 12% big, 12% small, 13% strong, 8% young;
+// wolves 62% normal, 20% large, 18% young. From the level's seed and the player's number, so
+// every PC gives the same player the same body; a new round / run rolls again.
+static int bodyRoll(int person, int creature)
+{
+    uint32_t h = g_seed * 2654435761u ^ (uint32_t)(person + 1) * 2246822519u ^ 0x9E3779B9u;
+    h = (h ^ (h >> 15)) * 2246822519u;
+    h ^= h >> 13;
+    const int r = (int)(h % 100);
+    if (creature == wolftype) {
+        return r < 62 ? 0 : r < 82 ? 1 : 4;
+    }
+    return r < 55 ? 0 : r < 67 ? 1 : r < 79 ? 2 : r < 92 ? 3 : 4;
+}
+
+void GenBodies()
+{
+    if (!GenActive()) {
+        return;
+    }
+    static const char* kNames[5] = { "normal", "big", "small", "strong", "young" };
+    for (int i = 0; i < (int)Person::players.size(); i++) {
+        if (!IsHuman(i)) {
+            continue;
+        }
+        Person& p = *Person::players[i];
+        const bool wolf = p.creature == wolftype;
+        const int body = bodyRoll(i, p.creature);
+        float scale = wolf ? .23f : .2f, power = 1, speed = 1, prop[4] = { 1, 1, 1, 1 };
+        switch (body) {
+            case 1: scale = wolf ? .276f : .245f, power = wolf ? 1.25f : 1.15f, speed = wolf ? .95f : .92f, prop[1] = wolf ? 1 : 1.05f; break;
+            case 2: scale = .172f, power = .85f, speed = 1.1f; break;
+            case 3: scale = .212f, power = 1.35f, prop[1] = 1.06f, prop[2] = 1.12f; break;
+            case 4: scale = wolf ? .184f : .142f, power = wolf ? .7f : .6f, speed = wolf ? 1.1f : 1.15f, prop[0] = wolf ? 1 : 1.25f, prop[3] = wolf ? 1 : .9f; break;
+            default: break;
+        }
+        bool same = p.exBody == body && fabsf(p.scale - scale) < 1e-4f;
+        for (int k = 0; k < 4; k++) {
+            same = same && fabsf(p.getProportion(k) - prop[k]) < 1e-4f;
+        }
+        if (same || p.skeleton.free) {
+            continue; // (a body lying about keeps its size)
+        }
+        const float normal = wolf ? .23f : .2f;
+        p.scale = scale;
+        p.setProportions(prop[0], prop[1], prop[2], prop[3]);
+        p.power = power;
+        p.speedmult = speed;
+        p.damagetolerance = PersonType::types[p.creature].defaultDamageTolerance * std::max(.6f, std::min(1.35f, scale / normal));
+        if (p.exBody != body) {
+            printf("LugaruEX: player %d is %s %s this level\n", i, kNames[body], wolf ? "(wolf)" : "(rabbit)");
+        }
+        p.exBody = body;
     }
 }
 

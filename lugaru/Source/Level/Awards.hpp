@@ -50,6 +50,7 @@ enum award_types
 extern const char* award_names[award_count];
 
 extern int award_awards(int*);
+extern int award_awards_for(int person, int* awards); // LugaruEX PvP: one player's own awards
 
 extern float damagetaken;
 extern int numfalls;

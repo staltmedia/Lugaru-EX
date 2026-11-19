@@ -34,6 +34,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <cstdlib>
 #include <vector>
 
+extern float multiplier;
+
 extern int difficulty;
 extern int hostile;
 extern bool winfreeze;
@@ -57,9 +59,12 @@ bool ExpandedAI()
     return !NetIsGuest() && cfg.mpMode != "join" && !Tutorial::active && cfg.mpExpandedAI;
 }
 
+// the game time of this tick: a simulation step runs the game's tick 2-3 times (main.cpp
+// SimStep: 200 ticks a second, at least 2 a step), so 1 / SimRate() counted every second
+// 2-3 times over (slow motion: slower, as everything else)
 static float stepTime()
 {
-    return 1.f / (float)std::max(30, SimRate());
+    return std::max(0.f, std::min(.1f, multiplier));
 }
 
 bool AIChance(float perSecond)
@@ -357,6 +362,11 @@ void ExpandedAIStep(int person)
     }
     P.exAiCooldown -= dt;
     P.exAiBodyWait -= dt;
+    P.exAiJumpWait -= dt;
+    if (P.exAiJumpHold > 0) { // (a chase / climb jump: held a moment for its full height, as a player does)
+        P.exAiJumpHold -= dt;
+        P.jumpkeydown = 1;
+    }
     if (P.exAiPlan && (P.exAiPlanTime -= dt) <= 0) {
         P.exAiPlan = 0;
     }
@@ -366,8 +376,9 @@ void ExpandedAIStep(int person)
         float& t = tt[person & 255];
         if ((t += dt) > 1) {
             t = 0;
-            printf("EXTEST ai %d: aitype=%d anim=%d ready=%d plan=%d bodyOf=%d left=%d wait=%.1f target=%d\n", person, P.aitype, P.animTarget, ready(P),
-                   P.exAiPlan, P.exAiBodyOf, P.exAiBodyLeft, P.exAiBodyWait, P.exTarget);
+            printf("EXTEST ai %d: aitype=%d anim=%d ready=%d plan=%d bodyOf=%d left=%d wait=%.1f target=%d at %.1f,%.1f,%.1f vy=%.1f d=%.1f\n", person, P.aitype,
+                   P.animTarget, ready(P), P.exAiPlan, P.exAiBodyOf, P.exAiBodyLeft, P.exAiBodyWait, P.exTarget, P.coords.x, P.coords.y, P.coords.z,
+                   P.velocity.y, valid(P.exTarget) ? sqrtf(dist2(P.coords, Person::players[P.exTarget]->coords)) : -1.f);
         }
     }
     // fighting: every move; calm again (back on its rounds after a kill): only bodies
@@ -474,8 +485,28 @@ void ExpandedAIStep(int person)
         const float d2 = distsq(&P.coords, &V->coords);
         const bool vStanding = Animation::animations[V->animTarget].height != lowheight && V->animTarget != getupfrombackanim &&
                                V->animTarget != getupfromfrontanim;
+        // chase jumps: a leap after a player running away, and up to one standing on something
+        // higher (an enemy's jump is the high crouch jump)
+        const bool running = P.isRun() || P.animTarget == rabbitrunninganim || P.animTarget == wolfrunninganim;
+        if (P.exAiJumpWait <= 0 && running && flatDot(P, V->coords) > .85f) {
+            const float up = V->coords.y - P.coords.y;
+            const float flat2 = (V->coords.x - P.coords.x) * (V->coords.x - P.coords.x) + (V->coords.z - P.coords.z) * (V->coords.z - P.coords.z);
+            const bool vRuns = V->isRun() || V->animTarget == rabbitrunninganim || V->animTarget == wolfrunninganim;
+            const bool leap = vRuns && behind(P, *V, .5f) && flat2 > 5 * 5 && flat2 < 11 * 11 && fabsf(up) < 1.5f && AIChance(1.f * rate());
+            // (up: only to a player standing on top of something - not just higher up a slope)
+            const float vOver = V->coords.y - terrain.getHeight(V->coords.x, V->coords.z);
+            const bool vOnTop = vOver > .6f && (V->isIdle() || V->isRun() || V->isCrouch() || V->isStop() || V->animTarget == walkanim || V->animTarget == sneakanim);
+            const bool climb = vOnTop && up > .7f && up < 3.2f && flat2 < 6 * 6 && AIChance(3.f * rate());
+            if (leap || climb) {
+                P.jumpkeydown = 1;
+                P.exAiJumpHold = .35f;
+                P.exAiJumpWait = leap ? 2.5f : 1.2f;
+                printf("LugaruEX: Expanded AI - person %d jumps %s %d\n", person, leap ? "after" : "up to", vi);
+                return;
+            }
+        }
         // sneak attack: the player's back is turned (a rabbit; a staff has no sneak attack)
-        if (P.creature == rabbittype && weapon != staff && d2 < 25 && sneakable(*V) && behind(P, *V, .5f) && AIChance(.35f * rate())) {
+        if (P.creature == rabbittype && weapon != staff && d2 < 25 && sneakable(*V) && behind(P, *V, .5f) && AIChance(.7f * rate())) {
             P.exAiPlan = kSneak;
             P.exAiPlanOn = vi;
             P.exAiPlanTime = 4;
@@ -486,7 +517,7 @@ void ExpandedAIStep(int person)
             // leg cannon: running at the player from a few steps away (a miss throws the kicker
             // down, as it does a player)
             if (P.creature == rabbittype && P.isRun() && P.wasRun() && d2 < 12 * s2 && d2 > 7 * s2 && vStanding &&
-                flatDot(P, V->coords) > .8f && AIChance(1.2f * rate())) {
+                flatDot(P, V->coords) > .8f && AIChance(2.4f * rate())) {
                 P.victim = Person::players[vi];
                 P.hasvictim = 1;
                 P.setTargetAnimation(rabbitkickanim);
@@ -496,7 +527,7 @@ void ExpandedAIStep(int person)
                 return;
             }
             // knife throw: a knife in hand, the player in sight but out of reach
-            if (hasKnifeOut(P) && (P.isIdle() || P.isRun()) && d2 > 9 && d2 < 100 && flatDot(P, V->coords) > .7f && AIChance(.25f * rate()) &&
+            if (hasKnifeOut(P) && (P.isIdle() || P.isRun()) && d2 > 9 && d2 < 100 && flatDot(P, V->coords) > .7f && AIChance(.5f * rate()) &&
                 canSee(P, *V)) {
                 P.throwtogglekeydown = 1;
                 P.victim = Person::players[vi];
@@ -509,14 +540,14 @@ void ExpandedAIStep(int person)
                 return;
             }
             // knife follow-up: a staggering, badly bleeding player
-            if (weapon == knife && V->staggerdelay > 0 && V->bloodloss > V->damagetolerance / 2 && d2 < 2.5f * s2 && AIChance(1.5f * rate())) {
+            if (weapon == knife && V->staggerdelay > 0 && V->bloodloss > V->damagetolerance / 2 && d2 < 2.5f * s2 && AIChance(3.f * rate())) {
                 startKnifeFollow(P, vi);
                 P.exAiCooldown = 2;
                 printf("LugaruEX: Expanded AI - person %d knife follow-up on %d\n", person, vi);
                 return;
             }
             // wind-up punch, the player's close unarmed move
-            if (P.creature == rabbittype && !weapon && d2 < 1.5f * s2 && vStanding && flatDot(P, V->coords) > .5f && AIChance(.6f * rate())) {
+            if (P.creature == rabbittype && !weapon && d2 < 1.5f * s2 && vStanding && flatDot(P, V->coords) > .5f && AIChance(1.2f * rate())) {
                 startMove(P, vi, winduppunchanim);
                 P.exAiBody = -1;
                 P.exAiCooldown = 1.5f;
@@ -529,7 +560,7 @@ void ExpandedAIStep(int person)
     if (P.creature != rabbittype) { // (wolves keep their own moves)
         return;
     }
-    if (V && !V->dead && V->skeleton.free && distsq(&P.coords, &V->coords) < 36 && AIChance(1.2f * rate())) {
+    if (V && !V->dead && V->skeleton.free && distsq(&P.coords, &V->coords) < 36 && AIChance(2.4f * rate())) {
         P.exAiPlan = kDowned;
         P.exAiPlanOn = vi;
         P.exAiPlanTime = 2.5f;
@@ -566,7 +597,7 @@ void ExpandedAIStep(int person)
     }
     // a knife stuck in a body: an unarmed rabbit sometimes goes to get it (kicking the body
     // over first when it lies on it)
-    if (knifeBody >= 0 && !P.hasWeapon() && P.num_weapons == 0 && P.creature == rabbittype && AIChance(.15f * rate())) {
+    if (knifeBody >= 0 && !P.hasWeapon() && P.num_weapons == 0 && P.creature == rabbittype && AIChance(.3f * rate())) {
         P.exAiPlan = kKnife;
         P.exAiPlanOn = knifeBody;
         P.exAiPlanTime = 7;
@@ -626,6 +657,54 @@ bool ExpandedAIWallJump(const Person& p)
     }
     const Person* V = chased(p);
     return V && dist2(p.coords, V->coords) < 100;
+}
+
+// all fours (the players' fast run): when the chased player is a way off or running away;
+// back on two feet next to one who stands to fight (as the original's Insane wolves do)
+bool ExpandedAIAllFours(Person& p)
+{
+    if (!fighting(p) || (p.creature == rabbittype && p.hasWeapon()) || (p.creature == wolftype && p.scale < .2f)) {
+        p.exAiTackle = -1;
+        return false; // (young wolves never did)
+    }
+    const Person* V = chased(p);
+    if (!V) {
+        p.exAiTackle = -1;
+        return false;
+    }
+    const float d2 = dist2(p.coords, V->coords);
+    if (d2 > 9 * 9) {
+        p.exAiTackle = -1; // (far off again: the next run-in decides afresh)
+    } else if (p.exAiTackle < 0 && p.creature == rabbittype) {
+        // each run-in: a tackle (stays on all fours and dives when in reach) or not (stands up to
+        // fight): 40% on Normal, 20% Easy, 80% Insane
+        p.exAiTackle = rand() % 100 < (int)(40 * rate()) ? 1 : 0;
+    }
+    const bool onFours = p.animTarget == rabbitrunninganim || p.animTarget == wolfrunninganim;
+    const bool vRuns = V->isRun() || V->animTarget == rabbitrunninganim || V->animTarget == wolfrunninganim;
+    if (vRuns || (p.exAiTackle == 1 && onFours)) {
+        return d2 > 1;
+    }
+    return d2 > (onFours ? 3.5f * 3.5f : 5.f * 5.f);
+}
+
+// the dive from the all-fours run (the player's jump / attack at that moment): it catches a
+// player within reach of the point just ahead (Person.cpp: about 3 units)
+bool ExpandedAIDive(const Person& p)
+{
+    if (!fighting(p) || p.creature != rabbittype || p.exAiTackle != 1) {
+        return false;
+    }
+    const Person* V = chased(p);
+    if (!V || V->skeleton.free || Animation::animations[V->animTarget].height == lowheight) {
+        return false;
+    }
+    const float d2 = dist2(p.coords, V->coords);
+    if (d2 < 1.2f * 1.2f || d2 > 3.2f * 3.2f || flatDot(p, V->coords) < .85f) {
+        return false;
+    }
+    printf("LugaruEX: Expanded AI - person %d dives at %d\n", p.id, p.exTarget);
+    return true;
 }
 
 bool ExpandedAIWallKick(const Person& p)

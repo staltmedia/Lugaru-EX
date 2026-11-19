@@ -1873,6 +1873,30 @@ void Game::ProcessDevInput()
                     foe = (int)j;
                 }
             }
+            if (foe <= 0 && strstr(foeEnv, "partner@")) {
+                // (PvP: no enemies - only the other player in front, and player 1's weapon)
+                XYZ fwd;
+                fwd = 0;
+                fwd.z = -1;
+                fwd = DoRotation(fwd, 0, -yaw, 0);
+                for (unsigned j = 1; j < Person::players.size(); j++) {
+                    if (Person::players[j]->isPlayerControlled()) {
+                        Person& q = *Person::players[j];
+                        q.coords = p1.coords + fwd * (float)atof(strstr(foeEnv, "partner@") + 8);
+                        q.coords.y = std::max(p1.coords.y, terrain.getHeight(q.coords.x, q.coords.z));
+                        q.oldcoords = q.realoldcoords = q.coords;
+                        q.yaw = q.targetyaw = roughDirectionTo(q.coords, p1.coords);
+                        printf("EXTEST partner: person %d in front of player 1 (no enemy)\n", (int)j);
+                        break;
+                    }
+                }
+                const int give = strstr(foeEnv, "knife") ? knife : strstr(foeEnv, "sword") ? sword : strstr(foeEnv, "staff") ? staff : 0;
+                if (give && p1.creature != wolftype && p1.num_weapons < 2) {
+                    weapons.push_back(Weapon(give, -1));
+                    p1.takeWeapon((int)weapons.size() - 1);
+                    p1.weaponactive = 0;
+                }
+            }
             if (foe > 0) {
                 const float dist = (float)atof(foeEnv);
                 XYZ fwd; // the camera's forward, where the forward key runs
@@ -2764,6 +2788,7 @@ void doAerialAcrobatics()
                                 }
                                 Person::players[k]->targetyaw = Person::players[k]->yaw;
                                 Person::players[k]->lowyaw = Person::players[k]->yaw;
+                                Person::players[k]->exStats.wallflipped++;
                                 if (k == 0) {
                                     numwallflipped++;
                                 }
@@ -2785,6 +2810,7 @@ void doAerialAcrobatics()
                                     }
                                     Person::players[k]->targetyaw = Person::players[k]->yaw;
                                     Person::players[k]->lowyaw = Person::players[k]->yaw;
+                                    Person::players[k]->exStats.wallflipped++;
                                     if (k == 0) {
                                         numwallflipped++;
                                     }
@@ -2806,6 +2832,7 @@ void doAerialAcrobatics()
                                         }
                                         Person::players[k]->targetyaw = Person::players[k]->yaw;
                                         Person::players[k]->lowyaw = Person::players[k]->yaw;
+                                        Person::players[k]->exStats.wallflipped++;
                                         if (k == 0) {
                                             numwallflipped++;
                                         }
@@ -2828,6 +2855,7 @@ void doAerialAcrobatics()
                                             Person::players[k]->yaw += 180;
                                             Person::players[k]->targetyaw = Person::players[k]->yaw;
                                             Person::players[k]->lowyaw = Person::players[k]->yaw;
+                                            Person::players[k]->exStats.wallflipped++;
                                             if (k == 0) {
                                                 numwallflipped++;
                                             }
@@ -3208,6 +3236,7 @@ void doAttacks()
                             }
                         }
                         if (Person::players[k]->animTarget != dodgebackanim) {
+                            Person::players[k]->exStats.flipped++;
                             if (k == 0) {
                                 numflipped++;
                             }
@@ -3672,6 +3701,11 @@ void doAttacks()
                         }
                     }
                     //update counts
+                    if (Animation::animations[Person::players[k]->animTarget].attack && Person::players[k]->isPlayerControlled()) {
+                        auto& st = Person::players[k]->exStats; // (PvP: every player's own awards)
+                        st.attacks++;
+                        (attackweapon == knife ? st.knives : attackweapon == sword ? st.swords : attackweapon == staff ? st.staves : st.unarmed)++;
+                    }
                     if (Animation::animations[Person::players[k]->animTarget].attack && k == 0) {
                         numattacks++;
                         switch (attackweapon) {
@@ -3993,6 +4027,7 @@ void doPlayerCollisions()
 // 3D listener at the guest's own camera
 void Game::exGuestAmbient()
 {
+    EX::GenBodies(); // Extras: the players' bodies (big, small...), as the host gives them
     for (auto& pp : Person::players) {
         pp->exPopTime += multiplier; // per-player score pop-ups fade here too (they stuck on screen)
     }
@@ -4954,7 +4989,7 @@ void Game::Tick()
                                     Person::players[i]->isFlip()) {
                                     if (Person::players.size() > 1) {
                                         for (unsigned j = 0; j < Person::players.size(); j++) {
-                                            if (i != j && !Person::players[j]->isPlayerControlled()) { // LugaruEX: never aim at a partner (a knife still hits them if it flies into them)
+                                            if (i != j && (!Person::players[j]->isPlayerControlled() || !EX::Partners(*Person::players[i], *Person::players[j]))) { // LugaruEX: never aim at a partner (a knife still hits them if it flies into them); PvP: players are fair game
                                                 if (!Tutorial::active || Tutorial::stage == 49) {
                                                     if (hostile) {
                                                         if (normaldotproduct(Person::players[i]->facing, Person::players[i]->coords - Person::players[j]->coords) < 0 &&
@@ -6066,7 +6101,19 @@ static void exCameraUpdate()
             if (Person::players[EX::ViewPerson()]->skeleton.free == 0 && Person::players[EX::ViewPerson()]->animTarget != hanganim && Person::players[EX::ViewPerson()]->animTarget != climbanim) {
                 target.y += 1.4;
             }
-            if (exSnap) {
+            // LugaruEX: online guests and Extras levels - a camera far from its player (the level
+            // loader put it at player 1's start; the host put this guest on its own start spot, or
+            // brought a straggler back) cuts to them instead of flying in from far away
+            const bool exFar = (EX::NetIsGuest() || EX::GenActive()) && !exSnap && distsq(&cameraloc, &target) > 12 * 12;
+            if (exFar) {
+                EX::InterpInvalidate();
+                EX::LocalInvalidateViews();
+                if (EX::Versus() && !Person::players[EX::ViewPerson()]->dead) {
+                    yaw = Person::players[EX::ViewPerson()]->yaw; // (PvP: start facing the middle, as placed)
+                }
+                printf("LugaruEX: camera cut to person %d (was %.0f away)\n", EX::ViewPerson(), sqrtf(distsq(&cameraloc, &target)));
+            }
+            if (exSnap || exFar) {
                 cameraloc = target; // instant cut to the newly watched player
                 cameradist = 2.3;
             }

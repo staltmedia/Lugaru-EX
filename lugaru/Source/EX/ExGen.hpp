@@ -51,6 +51,9 @@ void GenGroundPeople();                  // people and path points were made: on
 
 /** host, every simulation step: players' start spots and weapons, loose weapons */
 void GenTick();
+/** Extras: every player gets a body for this level (big, small, strong, young - like the Endless
+    enemies); the same on every PC (from the level and the player's number). Host and guests. */
+void GenBodies();
 /** PvP: the last player standing once there were two or more (-1 = none yet) */
 int GenWinner();
 /** PvP: the round is decided (one left) - the challenge "level cleared" flow follows */

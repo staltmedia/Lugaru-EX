@@ -31,6 +31,10 @@ void ExpandedAIStep(int person);
 bool ExpandedAIWallJump(const Person& p);
 /** Expanded AI: an enemy jumping off a wall kicks the player below */
 bool ExpandedAIWallKick(const Person& p);
+/** Expanded AI: run on all fours to catch up (unarmed rabbits, wolves on any difficulty) */
+bool ExpandedAIAllFours(Person& p);
+/** Expanded AI: dive at the chased player from the all-fours run, as a player tackles */
+bool ExpandedAIDive(const Person& p);
 /** Expanded AI: an enemy in one of its own ground / body / sneak moves keeps that move's victim (true; sets it) */
 bool ExpandedAIKeepsVictim(Person& p);
 
